@@ -69,6 +69,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
     let state: AutoModeState = {
       checkedActions: 0,
       blockedActions: 0,
+      classifierChecks: 0,
       recentDenials: [],
     };
     let loadedContext = "";
@@ -215,6 +216,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       if (event.toolName === "write" || event.toolName === "edit") {
         const path = resolveInputPath(ctx.cwd, input.path);
         if (path && isProtectedPath(path, ctx.cwd, cfg.protectedPaths)) {
+          state.classifierChecks += 1;
           const decision = await classify(ctx, cfg, summary, loadedContext);
           if (decision.decision === "allow") {
             state.lastDecision = "allow";
@@ -233,6 +235,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }
       }
 
+      state.classifierChecks += 1;
       const decision = await classify(ctx, cfg, summary, loadedContext);
       if (decision.decision === "allow") {
         state.lastDecision = "allow";
@@ -295,6 +298,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         state = {
           checkedActions: 0,
           blockedActions: 0,
+          classifierChecks: 0,
           recentDenials: [],
           enabledOverride: state.enabledOverride,
         };
