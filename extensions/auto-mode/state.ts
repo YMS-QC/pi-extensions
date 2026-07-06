@@ -15,15 +15,12 @@ export function statusLine(
   state: AutoModeState,
 ): string {
   const enabled = state.enabledOverride ?? config.enabled;
-  if (!enabled) return "Auto-mode off";
-  let line = `Auto-mode on • checked: ${state.checkedActions}`;
-  if (state.blockedActions > 0) {
-    line =
-      `Auto-mode on · blocked: ${state.blockedActions}/${state.checkedActions}`;
-    const last = state.recentDenials.at(-1);
-    if (last) line += ` · last: ${truncateMiddle(last.reason, 60)}`;
-  }
-  return line;
+  const circle = enabled ? "●" : "○";
+  const allowed = state.checkedActions - state.blockedActions;
+  const classifier = state.classifierChecks > 0
+    ? ` c:${state.classifierChecks}`
+    : "";
+  return `AM${circle} a:${allowed} d:${state.blockedActions}${classifier}`;
 }
 
 export function statusText(
@@ -35,6 +32,7 @@ export function statusText(
     `classifier: ${config.classifierModel ?? "current session model"}`,
     `checked actions: ${state.checkedActions}`,
     `blocked actions: ${state.blockedActions}`,
+    `classifier checks: ${state.classifierChecks}`,
     `permissions.deny rules: ${config.permissionDeny.length}`,
     `permissions.ask rules: ${config.permissionAsk.length}`,
     `environment entries: ${config.environment.length}`,
@@ -90,10 +88,11 @@ export function restoreState(ctx: ExtensionContext): AutoModeState {
       lastReason: entry.data.lastReason,
       checkedActions: entry.data.checkedActions ?? 0,
       blockedActions: entry.data.blockedActions ?? 0,
+      classifierChecks: entry.data.classifierChecks ?? 0,
       recentDenials: Array.isArray(entry.data.recentDenials)
         ? entry.data.recentDenials.slice(-DENIAL_HISTORY_LIMIT)
         : [],
     };
   }
-  return { checkedActions: 0, blockedActions: 0, recentDenials: [] };
+  return { checkedActions: 0, blockedActions: 0, classifierChecks: 0, recentDenials: [] };
 }

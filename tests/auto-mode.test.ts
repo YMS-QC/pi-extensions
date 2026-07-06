@@ -16,8 +16,10 @@ import {
 	matchesToolPattern,
 	parseClassifierDecision,
 	parseToolPattern,
+	statusLine,
 	validateSettingsFile,
 	writeGlobalClassifierModel,
+	type AutoModeState,
 	type ClassificationDecision,
 	type EffectiveConfig,
 } from "../extensions/auto-mode.ts";
@@ -118,6 +120,16 @@ function baseConfig(overrides: Partial<EffectiveConfig> = {}): EffectiveConfig {
 		hardDeny: [],
 		permissionDeny: [],
 		permissionAsk: [],
+		...overrides,
+	};
+}
+
+function baseState(overrides: Partial<AutoModeState> = {}): AutoModeState {
+	return {
+		checkedActions: 0,
+		blockedActions: 0,
+		classifierChecks: 0,
+		recentDenials: [],
 		...overrides,
 	};
 }
@@ -677,4 +689,39 @@ test("cross-project write to protected path triggers classifier", async () => {
 		rmSync(projectA, { recursive: true, force: true });
 		rmSync(projectB, { recursive: true, force: true });
 	}
+});
+
+test("statusLine: enabled with no classifier calls omits the c segment", () => {
+	const config = baseConfig();
+	const state = baseState({ checkedActions: 6, blockedActions: 1 });
+	assert.equal(statusLine(config, state), "AM● a:5 d:1");
+});
+
+test("statusLine: enabled with classifier calls appends c segment", () => {
+	const config = baseConfig();
+	const state = baseState({ checkedActions: 6, blockedActions: 1, classifierChecks: 3 });
+	assert.equal(statusLine(config, state), "AM● a:5 d:1 c:3");
+});
+
+test("statusLine: disabled shows empty circle with frozen counts", () => {
+	const config = baseConfig({ enabled: false });
+	const state = baseState({ checkedActions: 18, blockedActions: 3, classifierChecks: 12 });
+	assert.equal(statusLine(config, state), "AM○ a:15 d:3 c:12");
+});
+
+test("statusLine: enabledOverride:false overrides an enabled config", () => {
+	const config = baseConfig({ enabled: true });
+	const state = baseState({ enabledOverride: false, checkedActions: 4, blockedActions: 1 });
+	assert.equal(statusLine(config, state), "AM○ a:3 d:1");
+});
+
+test("statusLine: allowed is derived from checked minus blocked", () => {
+	const config = baseConfig();
+	const state = baseState({ checkedActions: 10, blockedActions: 3, classifierChecks: 2 });
+	assert.equal(statusLine(config, state), "AM● a:7 d:3 c:2");
+});
+
+test("statusLine: zero counts render a:0 d:0 with no c segment", () => {
+	const config = baseConfig();
+	assert.equal(statusLine(config, baseState()), "AM● a:0 d:0");
 });
