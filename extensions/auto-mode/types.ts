@@ -52,7 +52,8 @@ export type AutoModeState = {
   lastReason?: string;
   checkedActions: number;
   blockedActions: number;
-  classifierChecks: number;
+  classifierAllowed: number;
+  classifierDenied: number;
   recentDenials: DenialRecord[];
 };
 

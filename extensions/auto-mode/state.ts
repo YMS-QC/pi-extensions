@@ -17,8 +17,8 @@ export function statusLine(
   const enabled = state.enabledOverride ?? config.enabled;
   const circle = enabled ? "●" : "○";
   const allowed = state.checkedActions - state.blockedActions;
-  const classifier = state.classifierChecks > 0
-    ? ` c:${state.classifierChecks}`
+  const classifier = state.classifierAllowed > 0 || state.classifierDenied > 0
+    ? ` ca:${state.classifierAllowed} cd:${state.classifierDenied}`
     : "";
   return `AM${circle} a:${allowed} d:${state.blockedActions}${classifier}`;
 }
@@ -32,7 +32,8 @@ export function statusText(
     `classifier: ${config.classifierModel ?? "current session model"}`,
     `checked actions: ${state.checkedActions}`,
     `blocked actions: ${state.blockedActions}`,
-    `classifier checks: ${state.classifierChecks}`,
+    `classifier allowed: ${state.classifierAllowed}`,
+    `classifier denied: ${state.classifierDenied}`,
     `permissions.deny rules: ${config.permissionDeny.length}`,
     `permissions.ask rules: ${config.permissionAsk.length}`,
     `environment entries: ${config.environment.length}`,
@@ -88,11 +89,12 @@ export function restoreState(ctx: ExtensionContext): AutoModeState {
       lastReason: entry.data.lastReason,
       checkedActions: entry.data.checkedActions ?? 0,
       blockedActions: entry.data.blockedActions ?? 0,
-      classifierChecks: entry.data.classifierChecks ?? 0,
+      classifierAllowed: entry.data.classifierAllowed ?? 0,
+      classifierDenied: entry.data.classifierDenied ?? 0,
       recentDenials: Array.isArray(entry.data.recentDenials)
         ? entry.data.recentDenials.slice(-DENIAL_HISTORY_LIMIT)
         : [],
     };
   }
-  return { checkedActions: 0, blockedActions: 0, classifierChecks: 0, recentDenials: [] };
+  return { checkedActions: 0, blockedActions: 0, classifierAllowed: 0, classifierDenied: 0, recentDenials: [] };
 }

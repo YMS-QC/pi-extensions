@@ -69,7 +69,8 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
     let state: AutoModeState = {
       checkedActions: 0,
       blockedActions: 0,
-      classifierChecks: 0,
+      classifierAllowed: 0,
+      classifierDenied: 0,
       recentDenials: [],
     };
     let loadedContext = "";
@@ -216,15 +217,16 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       if (event.toolName === "write" || event.toolName === "edit") {
         const path = resolveInputPath(ctx.cwd, input.path);
         if (path && isProtectedPath(path, ctx.cwd, cfg.protectedPaths)) {
-          state.classifierChecks += 1;
           const decision = await classify(ctx, cfg, summary, loadedContext);
           if (decision.decision === "allow") {
+            state.classifierAllowed += 1;
             state.lastDecision = "allow";
             state.lastReason = decision.reason;
             persist();
             updateUi(ctx);
             return undefined;
           }
+          state.classifierDenied += 1;
           return block(ctx, {
             timestamp: Date.now(),
             toolName: event.toolName,
@@ -235,9 +237,9 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }
       }
 
-      state.classifierChecks += 1;
       const decision = await classify(ctx, cfg, summary, loadedContext);
       if (decision.decision === "allow") {
+        state.classifierAllowed += 1;
         state.lastDecision = "allow";
         state.lastReason = decision.reason;
         persist();
@@ -245,6 +247,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         return undefined;
       }
 
+      state.classifierDenied += 1;
       return block(ctx, {
         timestamp: Date.now(),
         toolName: event.toolName,
@@ -298,7 +301,8 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         state = {
           checkedActions: 0,
           blockedActions: 0,
-          classifierChecks: 0,
+          classifierAllowed: 0,
+          classifierDenied: 0,
           recentDenials: [],
           enabledOverride: state.enabledOverride,
         };

@@ -103,6 +103,8 @@ function createFakeCtx(entries: any[] = [], overrides: Record<string, unknown> =
 				},
 			},
 		},
+		statuses,
+		notifications,
 		isProjectTrusted: () => true,
 		getSystemPrompt: () => "",
 		...overrides,
@@ -128,7 +130,8 @@ function baseState(overrides: Partial<AutoModeState> = {}): AutoModeState {
 	return {
 		checkedActions: 0,
 		blockedActions: 0,
-		classifierChecks: 0,
+		classifierAllowed: 0,
+		classifierDenied: 0,
 		recentDenials: [],
 		...overrides,
 	};
@@ -535,6 +538,38 @@ test("tool_call hook allows classifier-approved non-read-only actions", async ()
 	assert.equal(harness.classifierCalls, 1);
 });
 
+test("classifier-allowed action increments ca but not ad in statusline", async () => {
+	const harness = await setupHookTest({
+		classifier: async () => ({ decision: "allow", tier: "allow", reason: "mock allow" }),
+	});
+
+	await harness.emit("tool_call", {
+		toolName: "bash",
+		input: { command: "npm test" },
+	}, harness.ctx);
+
+	const last = (harness.ctx.statuses as Array<{ key: string; text?: string }>)
+		.filter((s) => s.key === "pi-automode")
+		.at(-1)?.text;
+	assert.match(last ?? "", /ca:1 cd:0/);
+});
+
+test("classifier-denied action increments cd but not ca in statusline", async () => {
+	const harness = await setupHookTest({
+		classifier: async () => ({ decision: "block", tier: "soft_deny", reason: "mock block" }),
+	});
+
+	await harness.emit("tool_call", {
+		toolName: "bash",
+		input: { command: "npm publish" },
+	}, harness.ctx);
+
+	const last = (harness.ctx.statuses as Array<{ key: string; text?: string }>)
+		.filter((s) => s.key === "pi-automode")
+		.at(-1)?.text;
+	assert.match(last ?? "", /ca:0 cd:1/);
+});
+
 test("tool_call hook blocks classifier-needed actions when no classifier is available", async () => {
 	const fake = createFakePi();
 	createPiAutomode({ loadConfig: () => baseConfig() })(fake.pi);
@@ -691,22 +726,22 @@ test("cross-project write to protected path triggers classifier", async () => {
 	}
 });
 
-test("statusLine: enabled with no classifier calls omits the c segment", () => {
+test("statusLine: enabled with no classifier calls omits the ca/cd segment", () => {
 	const config = baseConfig();
 	const state = baseState({ checkedActions: 6, blockedActions: 1 });
 	assert.equal(statusLine(config, state), "AM● a:5 d:1");
 });
 
-test("statusLine: enabled with classifier calls appends c segment", () => {
+test("statusLine: enabled with classifier calls appends ca/cd segment", () => {
 	const config = baseConfig();
-	const state = baseState({ checkedActions: 6, blockedActions: 1, classifierChecks: 3 });
-	assert.equal(statusLine(config, state), "AM● a:5 d:1 c:3");
+	const state = baseState({ checkedActions: 6, blockedActions: 1, classifierAllowed: 2, classifierDenied: 1 });
+	assert.equal(statusLine(config, state), "AM● a:5 d:1 ca:2 cd:1");
 });
 
 test("statusLine: disabled shows empty circle with frozen counts", () => {
 	const config = baseConfig({ enabled: false });
-	const state = baseState({ checkedActions: 18, blockedActions: 3, classifierChecks: 12 });
-	assert.equal(statusLine(config, state), "AM○ a:15 d:3 c:12");
+	const state = baseState({ checkedActions: 18, blockedActions: 3, classifierAllowed: 7, classifierDenied: 5 });
+	assert.equal(statusLine(config, state), "AM○ a:15 d:3 ca:7 cd:5");
 });
 
 test("statusLine: enabledOverride:false overrides an enabled config", () => {
@@ -717,11 +752,23 @@ test("statusLine: enabledOverride:false overrides an enabled config", () => {
 
 test("statusLine: allowed is derived from checked minus blocked", () => {
 	const config = baseConfig();
-	const state = baseState({ checkedActions: 10, blockedActions: 3, classifierChecks: 2 });
-	assert.equal(statusLine(config, state), "AM● a:7 d:3 c:2");
+	const state = baseState({ checkedActions: 10, blockedActions: 3, classifierAllowed: 1, classifierDenied: 1 });
+	assert.equal(statusLine(config, state), "AM● a:7 d:3 ca:1 cd:1");
 });
 
-test("statusLine: zero counts render a:0 d:0 with no c segment", () => {
+test("statusLine: zero counts render a:0 d:0 with no ca/cd segment", () => {
 	const config = baseConfig();
 	assert.equal(statusLine(config, baseState()), "AM● a:0 d:0");
+});
+
+test("statusLine: classifier segment shows when only allows have happened", () => {
+	const config = baseConfig();
+	const state = baseState({ checkedActions: 4, blockedActions: 0, classifierAllowed: 3, classifierDenied: 0 });
+	assert.equal(statusLine(config, state), "AM● a:4 d:0 ca:3 cd:0");
+});
+
+test("statusLine: classifier segment shows when only denials have happened", () => {
+	const config = baseConfig();
+	const state = baseState({ checkedActions: 2, blockedActions: 2, classifierAllowed: 0, classifierDenied: 2 });
+	assert.equal(statusLine(config, state), "AM● a:0 d:2 ca:0 cd:2");
 });

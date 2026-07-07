@@ -43,6 +43,19 @@ pi -e ./extensions/auto-mode.ts
 
 `/auto-mode` is an alias.
 
+## Status line
+
+When the Pi TUI is available, the extension renders a persistent status line:
+
+```text
+AM● a:12 d:2 ca:5 cd:1
+```
+
+- `AM` — auto-mode prefix; `●` when enabled, `○` when disabled (via config or `/automode off`).
+- `a:` — actions allowed so far (checked minus blocked).
+- `d:` — actions blocked so far, for any reason (permission rule, deterministic hard-deny, or classifier).
+- `ca:` / `cd:` — classifier decisions split into allowed vs denied. These segments appear only after the classifier has run at least once; `d:` counts all blocks, so `d:` is always `>= cd:`.
+
 ## Docs
 
 - [Defaults and rule-list behavior](docs/defaults.md)
