@@ -52,9 +52,9 @@ AM● a:12 d:2 ca:5 cd:1
 ```
 
 - `AM` — auto-mode prefix; `●` when enabled, `○` when disabled (via config or `/automode off`).
-- `a:` — actions allowed so far (checked minus blocked).
-- `d:` — actions blocked so far, for any reason (permission rule, deterministic hard-deny, or classifier).
-- `ca:` / `cd:` — classifier decisions split into allowed vs denied. These segments appear only after the classifier has run at least once; `d:` counts all blocks, so `d:` is always `>= cd:`.
+- `a:` — actions allowed so far (checked minus denied).
+- `d:` — actions denied so far, for any reason (permission rule, deterministic hard-deny, or classifier).
+- `ca:` / `cd:` — classifier decisions split into allowed vs denied. These segments appear only after the classifier has run at least once; `d:` counts all denials, so `d:` is always `>= cd:`.
 
 ## Docs
 
