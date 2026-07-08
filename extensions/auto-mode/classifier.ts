@@ -6,11 +6,13 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CLASSIFIER_SYSTEM_PROMPT } from "./constants.ts";
-import { parseModelSpec } from "./model.ts";
+import { formatModelSpec, parseModelSpec } from "./model.ts";
 import { buildTranscript } from "./transcript.ts";
 import type {
   ClassificationDecision,
   ClassifyAction,
+  ClassifierIoAttempt,
+  ClassifyResult,
   EffectiveConfig,
 } from "./types.ts";
 
@@ -71,19 +73,26 @@ export type RetryOptions = {
   maxAttempts?: number;
   maxTokens?: number;
   temperature?: number;
+  /** Receives each attempt's raw response (or error) and parsed decision, for observability logging. */
+  onAttempt?: (attempt: ClassifierIoAttempt) => void;
 };
 
-/** Parse the classifier's JSON-only response. Invalid output is handled fail-closed by the caller. */
-export function parseClassifierDecision(
-  message: AssistantMessage,
-): ClassificationDecision | undefined {
-  const text = message.content
+/** Concatenate all text blocks of an assistant message into a single string. */
+function extractAssistantText(message: AssistantMessage): string {
+  return message.content
     .filter(
       (block): block is { type: "text"; text: string } => block.type === "text",
     )
     .map((block) => block.text)
     .join("\n")
     .trim();
+}
+
+/** Parse the classifier's JSON-only response. Invalid output is handled fail-closed by the caller. */
+export function parseClassifierDecision(
+  message: AssistantMessage,
+): ClassificationDecision | undefined {
+  const text = extractAssistantText(message);
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
   const candidates = [fenced, text, text.match(/\{[\s\S]*\}/)?.[0]].filter(
     Boolean,
@@ -133,9 +142,11 @@ export async function classifyWithRetry(
   const maxAttempts = options.maxAttempts ?? 2;
   const maxTokens = options.maxTokens ?? 1200;
   const temperature = options.temperature ?? 0;
+  const onAttempt = options.onAttempt;
   let lastReason =
     "Classifier response was not valid decision JSON; auto mode fails closed.";
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const started = Date.now();
     let response: AssistantMessage;
     try {
       response = await completeFn(
@@ -150,15 +161,29 @@ export async function classifyWithRetry(
         },
       );
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      onAttempt?.({
+        attempt: attempt + 1,
+        error: message,
+        durationMs: Date.now() - started,
+      });
       return {
         decision: "block",
         tier: "none",
-        reason: `Classifier failed; auto mode fails closed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        reason: `Classifier failed; auto mode fails closed: ${message}`,
       };
     }
+    const durationMs = Date.now() - started;
     const decision = parseClassifierDecision(response);
+    onAttempt?.({
+      attempt: attempt + 1,
+      response: {
+        stopReason: response.stopReason,
+        text: extractAssistantText(response),
+      },
+      parsed: decision,
+      durationMs,
+    });
     if (decision) return decision;
     lastReason =
       response.stopReason === "length"
@@ -173,7 +198,7 @@ export const defaultClassifyAction: ClassifyAction = async (
   config,
   action,
   loadedContext,
-): Promise<ClassificationDecision> => {
+): Promise<ClassifyResult> => {
   const classifier = await resolveClassifier(ctx, config);
   if (!classifier) {
     return {
@@ -183,25 +208,35 @@ export const defaultClassifyAction: ClassifyAction = async (
     };
   }
 
+  const systemPrompt = buildClassifierPrompt(config);
+  const userText = `<loaded-project-instructions>\n${
+    loadedContext || "(none)"
+  }\n</loaded-project-instructions>\n\n<transcript>\n${
+    buildTranscript(ctx, config.maxTranscriptLines) || "(none)"
+  }\n</transcript>\n\nLatest action to classify:\n${action}`;
   const userMessage: UserMessage = {
     role: "user",
-    content: [
-      {
-        type: "text",
-        text: `<loaded-project-instructions>\n${
-          loadedContext || "(none)"
-        }\n</loaded-project-instructions>\n\n<transcript>\n${
-          buildTranscript(ctx, config.maxTranscriptLines) || "(none)"
-        }\n</transcript>\n\nLatest action to classify:\n${action}`,
-      },
-    ],
+    content: [{ type: "text", text: userText }],
     timestamp: Date.now(),
   };
 
-  return classifyWithRetry(
+  const attempts: ClassifierIoAttempt[] = [];
+  const started = Date.now();
+  const decision = await classifyWithRetry(
     complete,
     classifier,
-    { systemPrompt: buildClassifierPrompt(config), messages: [userMessage] },
+    { systemPrompt, messages: [userMessage] },
     ctx.signal,
+    { onAttempt: (attempt) => attempts.push(attempt) },
   );
+
+  return {
+    ...decision,
+    io: {
+      model: formatModelSpec(classifier.model),
+      prompt: { system: systemPrompt, user: userText },
+      attempts,
+      durationMs: Date.now() - started,
+    },
+  };
 };

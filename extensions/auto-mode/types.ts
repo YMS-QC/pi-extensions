@@ -1,5 +1,12 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+/** Observability log configuration. Off by default. */
+export type LogConfig = {
+  enabled: boolean;
+  /** When true, also log classifier prompt/response payloads. */
+  classifierIo: boolean;
+};
+
 export type AutoModeSettings = {
   enabled?: boolean;
   classifierModel?: string;
@@ -11,6 +18,7 @@ export type AutoModeSettings = {
   softDeny?: unknown;
   hard_deny?: unknown;
   hardDeny?: unknown;
+  log?: Partial<LogConfig>;
 };
 
 export type SettingsFile = {
@@ -44,6 +52,7 @@ export type EffectiveConfig = {
   hardDeny: string[];
   permissionDeny: ToolPattern[];
   permissionAsk: ToolPattern[];
+  log: LogConfig;
 };
 
 export type AutoModeState = {
@@ -70,11 +79,34 @@ export type DenialRecord = {
     | "setup";
 };
 
+/** Denial kind plus the read-only fast path, used for decision log entries. */
+export type DecisionKind = DenialRecord["kind"] | "read-only";
+
 export type ClassificationDecision = {
   decision: "allow" | "block";
   tier: "hard_deny" | "soft_deny" | "allow" | "explicit_intent" | "none";
   reason: string;
 };
+
+/** One classifier attempt: the raw model response (or error) and parsed decision. */
+export type ClassifierIoAttempt = {
+  attempt: number;
+  response?: { stopReason?: string; text: string };
+  parsed?: ClassificationDecision;
+  error?: string;
+  durationMs: number;
+};
+
+/** Full classifier I/O for an action, surfaced for optional observability logging. */
+export type ClassifierIo = {
+  model: string;
+  prompt: { system: string; user: string };
+  attempts: ClassifierIoAttempt[];
+  durationMs: number;
+};
+
+/** Classification decision plus the I/O that produced it (when available). */
+export type ClassifyResult = ClassificationDecision & { io?: ClassifierIo };
 
 export type SettingsSources = {
   globalSettings?: SettingsFile[];
@@ -93,4 +125,4 @@ export type ClassifyAction = (
   config: EffectiveConfig,
   action: string,
   loadedContext: string,
-) => Promise<ClassificationDecision>;
+) => Promise<ClassifyResult>;

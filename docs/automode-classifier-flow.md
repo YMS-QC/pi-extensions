@@ -169,7 +169,7 @@ At the moment, all non-read-only actions reach the classifier anyway, so the pro
 
 The classifier call is made by `defaultClassifyAction`.
 
-The model receives a system prompt and one user message.
+The model receives a system prompt and one user message. To inspect exactly what's sent on each call — and the model's raw response — enable `autoMode.log.classifierIo`; see [Observability logging](observability-logging.md).
 
 ### System prompt
 

@@ -4,6 +4,7 @@ import {
   DEFAULT_ALLOW,
   DEFAULT_ENVIRONMENT,
   DEFAULT_HARD_DENY,
+  DEFAULT_LOG_CONFIG,
   DEFAULT_MAX_TRANSCRIPT_LINES,
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_SOFT_DENY,
@@ -17,6 +18,7 @@ import type {
   ConfigLoadResult,
   EffectiveConfig,
   LoadedSettingsFile,
+  LogConfig,
   SettingsFile,
   SettingsSources,
   ToolPattern,
@@ -102,6 +104,7 @@ export function validateSettingsFile(
         "softDeny",
         "hard_deny",
         "hardDeny",
+        "log",
       ]);
       for (const key of Object.keys(autoMode)) {
         if (!knownAutoMode.has(key)) {
@@ -160,6 +163,9 @@ export function validateSettingsFile(
         "autoMode.hard_deny",
         diagnostics,
       );
+      if (hasOwn(autoMode, "log")) {
+        validateLogSetting(autoMode.log, source, diagnostics);
+      }
     }
   }
 
@@ -228,6 +234,37 @@ function finalizeRuleSetting(accumulator: RuleAccumulator): string[] {
   return [...new Set([...base, ...accumulator.entries])];
 }
 
+function validateLogSetting(
+  value: unknown,
+  source: string,
+  diagnostics: string[],
+): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    diagnostics.push(`${source}: autoMode.log must be an object`);
+    return;
+  }
+  const log = value as Record<string, unknown>;
+  if (hasOwn(log, "enabled") && typeof log.enabled !== "boolean") {
+    diagnostics.push(`${source}: autoMode.log.enabled must be a boolean`);
+  }
+  if (
+    hasOwn(log, "classifierIo") && typeof log.classifierIo !== "boolean"
+  ) {
+    diagnostics.push(`${source}: autoMode.log.classifierIo must be a boolean`);
+  }
+}
+
+function mergeLog(
+  base: LogConfig,
+  patch: Partial<LogConfig> | undefined,
+): LogConfig {
+  if (!patch) return base;
+  return {
+    enabled: patch.enabled ?? base.enabled,
+    classifierIo: patch.classifierIo ?? base.classifierIo,
+  };
+}
+
 function applyAutoModeScalars(
   base: EffectiveConfig,
   settings: AutoModeSettings | undefined,
@@ -238,6 +275,7 @@ function applyAutoModeScalars(
     enabled: settings.enabled ?? base.enabled,
     classifierModel: settings.classifierModel ?? base.classifierModel,
     maxTranscriptLines: settings.maxTranscriptLines ?? base.maxTranscriptLines,
+    log: mergeLog(base.log, settings.log),
   };
 }
 
@@ -276,6 +314,7 @@ export function buildEffectiveConfigFromSources(
     hardDeny: [...DEFAULT_HARD_DENY],
     permissionDeny: [],
     permissionAsk: [],
+    log: { ...DEFAULT_LOG_CONFIG },
   };
 
   const globalSettings = sources.globalSettings ?? [];

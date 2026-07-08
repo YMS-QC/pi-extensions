@@ -1,26 +1,32 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
 	DEFAULT_ALLOW,
+	DEFAULT_LOG_CONFIG,
 	DEFAULT_PROTECTED_PATHS,
 	DEFAULT_SOFT_DENY,
 	PI_GLOBAL_SETTINGS,
 	buildEffectiveConfigFromSources,
 	classifyWithRetry,
+	createLogger,
 	createPiAutomode,
 	deterministicHardDeny,
 	matchesToolPattern,
+	newDecisionId,
 	parseClassifierDecision,
 	parseToolPattern,
+	resolveLogPath,
 	statusLine,
 	validateSettingsFile,
 	writeGlobalClassifierModel,
 	type AutoModeState,
 	type ClassificationDecision,
+	type ClassifierIoAttempt,
+	type ClassifyAction,
 	type EffectiveConfig,
 } from "../extensions/auto-mode.ts";
 
@@ -59,6 +65,7 @@ function createFakePi() {
 }
 
 function createFakeCtx(entries: any[] = [], overrides: Record<string, unknown> = {}) {
+	const { sessionFile, ...rest } = overrides;
 	const notifications: Array<{ message: string; type?: string }> = [];
 	const statuses: Array<{ key: string; text: string | undefined }> = [];
 	const widgets: Array<{ key: string; content: string[] | undefined }> = [];
@@ -80,6 +87,9 @@ function createFakeCtx(entries: any[] = [], overrides: Record<string, unknown> =
 		sessionManager: {
 			getEntries: () => entries,
 			getBranch: () => [],
+			getSessionFile: () => sessionFile as string | undefined,
+			getSessionDir: () => sessionFile ? dirname(sessionFile) : "/tmp",
+			getSessionId: () => "test-session",
 		},
 		ui: {
 			notify(message: string, type?: string) {
@@ -107,7 +117,7 @@ function createFakeCtx(entries: any[] = [], overrides: Record<string, unknown> =
 		notifications,
 		isProjectTrusted: () => true,
 		getSystemPrompt: () => "",
-		...overrides,
+		...rest,
 	};
 }
 
@@ -122,6 +132,7 @@ function baseConfig(overrides: Partial<EffectiveConfig> = {}): EffectiveConfig {
 		hardDeny: [],
 		permissionDeny: [],
 		permissionAsk: [],
+		log: { ...DEFAULT_LOG_CONFIG },
 		...overrides,
 	};
 }
@@ -771,4 +782,287 @@ test("statusLine: classifier segment shows when only denials have happened", () 
 	const config = baseConfig();
 	const state = baseState({ checkedActions: 2, blockedActions: 2, classifierAllowed: 0, classifierDenied: 2 });
 	assert.equal(statusLine(config, state), "AM● a:0 d:2 ca:0 cd:2");
+});
+
+// --- observability logging -------------------------------------------------
+
+test("log config defaults to disabled with classifier I/O off", () => {
+	const config = buildEffectiveConfigFromSources({});
+	assert.deepEqual(config.log, { enabled: false, classifierIo: false });
+});
+
+test("log config merges field-by-field across configurable scopes", () => {
+	const config = buildEffectiveConfigFromSources({
+		globalSettings: [{ autoMode: { log: { enabled: true } } }],
+		projectLocalSettings: [{ autoMode: { log: { classifierIo: true } } }],
+	});
+	assert.equal(config.log.enabled, true);
+	assert.equal(config.log.classifierIo, true);
+});
+
+test("shared project settings cannot set log config", () => {
+	const config = buildEffectiveConfigFromSources({
+		projectSharedSettings: [{ autoMode: { log: { enabled: true, classifierIo: true } } }],
+	});
+	assert.equal(config.log.enabled, false);
+	assert.equal(config.log.classifierIo, false);
+});
+
+test("log config validation reports wrong types", () => {
+	const diagnostics = validateSettingsFile({
+		autoMode: { log: { enabled: "yes", classifierIo: 1 } },
+	} as any, "test-config");
+	assert.equal(diagnostics.some((d) => d.includes("autoMode.log.enabled must be a boolean")), true);
+	assert.equal(diagnostics.some((d) => d.includes("autoMode.log.classifierIo must be a boolean")), true);
+
+	const diagnostics2 = validateSettingsFile({
+		autoMode: { log: "nope" },
+	} as any, "test-config");
+	assert.equal(diagnostics2.some((d) => d.includes("autoMode.log must be an object")), true);
+});
+
+test("resolveLogPath inserts -pi-automode before the extension", () => {
+	assert.equal(
+		resolveLogPath("/home/.pi/agent/sessions/slug/abc123.jsonl", "/dir", "id"),
+		"/home/.pi/agent/sessions/slug/abc123-pi-automode.jsonl",
+	);
+});
+
+test("resolveLogPath falls back to sessionDir/sessionId when no session file", () => {
+	assert.equal(
+		resolveLogPath(undefined, "/dir/slug", "abc123"),
+		"/dir/slug/abc123-pi-automode.jsonl",
+	);
+});
+
+test("newDecisionId returns distinct ids", () => {
+	assert.notEqual(newDecisionId(), newDecisionId());
+});
+
+test("createLogger is a no-op when disabled", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-log-"));
+	try {
+		const sessionFile = join(dir, "abc.jsonl");
+		const logger = createLogger({ enabled: false, classifierIo: true, sessionFile, sessionDir: dir, sessionId: "abc" });
+		logger.append({ type: "decision", ts: "t", decisionId: "d", cwd: "/tmp", tool: "bash", summary: "s", kind: "classifier", outcome: "block", reason: "r" });
+		assert.equal(existsSync(join(dir, "abc-pi-automode.jsonl")), false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("createLogger writes decision entries when enabled", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-log-"));
+	try {
+		const sessionFile = join(dir, "abc.jsonl");
+		const logger = createLogger({ enabled: true, classifierIo: false, sessionFile, sessionDir: dir, sessionId: "abc" });
+		logger.append({ type: "decision", ts: "t", decisionId: "d1", cwd: "/tmp", tool: "bash", summary: "s", kind: "classifier", outcome: "block", reason: "r" });
+		const logPath = join(dir, "abc-pi-automode.jsonl");
+		assert.equal(existsSync(logPath), true);
+		const lines = readFileSync(logPath, "utf8").trim().split("\n");
+		assert.equal(lines.length, 1);
+		assert.deepEqual(JSON.parse(lines[0]), { type: "decision", ts: "t", decisionId: "d1", cwd: "/tmp", tool: "bash", summary: "s", kind: "classifier", outcome: "block", reason: "r" });
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("createLogger skips classifier entries when classifierIo is false", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-log-"));
+	try {
+		const sessionFile = join(dir, "abc.jsonl");
+		const logger = createLogger({ enabled: true, classifierIo: false, sessionFile, sessionDir: dir, sessionId: "abc" });
+		logger.append({ type: "classifier", ts: "t", decisionId: "d1", model: "m", prompt: { system: "s", user: "u" }, attempts: [], durationMs: 5, parsed: { decision: "allow", tier: "none", reason: "r" } });
+		assert.equal(existsSync(join(dir, "abc-pi-automode.jsonl")), false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("createLogger writes classifier entries when classifierIo is true", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-log-"));
+	try {
+		const sessionFile = join(dir, "abc.jsonl");
+		const logger = createLogger({ enabled: true, classifierIo: true, sessionFile, sessionDir: dir, sessionId: "abc" });
+		logger.append({ type: "classifier", ts: "t", decisionId: "d1", model: "m", prompt: { system: "s", user: "u" }, attempts: [], durationMs: 5, parsed: { decision: "allow", tier: "none", reason: "r" } });
+		const lines = readFileSync(join(dir, "abc-pi-automode.jsonl"), "utf8").trim().split("\n");
+		assert.equal(lines.length, 1);
+		assert.equal(JSON.parse(lines[0]).type, "classifier");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("classifyWithRetry reports each attempt via onAttempt", async () => {
+	const { fn } = fakeComplete([assistantWith(GARBAGE), assistantWith(VALID_ALLOW)]);
+	const attempts: ClassifierIoAttempt[] = [];
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+		{ onAttempt: (a) => attempts.push(a) },
+	);
+	assert.equal(decision.decision, "allow");
+	assert.equal(attempts.length, 2);
+	assert.equal(attempts[0]?.parsed, undefined);
+	assert.equal(attempts[0]?.response?.text, GARBAGE);
+	assert.equal(attempts[1]?.parsed?.decision, "allow");
+});
+
+test("classifyWithRetry reports a thrown attempt via onAttempt and fails closed", async () => {
+	const attempts: ClassifierIoAttempt[] = [];
+	const fn = async () => {
+		throw new Error("network down");
+	};
+	const decision = await classifyWithRetry(
+		fn as never,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+		{ onAttempt: (a) => attempts.push(a) },
+	);
+	assert.equal(decision.decision, "block");
+	assert.equal(attempts.length, 1);
+	assert.match(attempts[0]?.error ?? "", /network down/);
+	assert.equal(attempts[0]?.response, undefined);
+});
+
+async function setupLogTest(options: {
+	config?: EffectiveConfig;
+	classifier?: ClassifyAction;
+} = {}) {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-log-"));
+	const sessionFile = join(dir, "sess.jsonl");
+	const classifier = options.classifier ?? (async () => ({ decision: "block", tier: "soft_deny", reason: "mock block" }));
+	const fake = createFakePi();
+	createPiAutomode({
+		loadConfig: () => options.config ?? baseConfig({ log: { enabled: true, classifierIo: false } }),
+		classifyAction: async () => classifier(),
+	})(fake.pi);
+	const ctx = createFakeCtx(fake.entries, { sessionFile });
+	await fake.emit("session_start", { type: "session_start" }, ctx);
+	return { dir, sessionFile, fake, ctx, logPath: join(dir, "sess-pi-automode.jsonl") };
+}
+
+test("tool_call writes no log file when logging is disabled", async () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-log-"));
+	try {
+		const sessionFile = join(dir, "sess.jsonl");
+		const fake = createFakePi();
+		createPiAutomode({
+			loadConfig: () => baseConfig(),
+			classifyAction: async () => ({ decision: "block", tier: "soft_deny", reason: "mock" }),
+		})(fake.pi);
+		const ctx = createFakeCtx(fake.entries, { sessionFile });
+		await fake.emit("session_start", { type: "session_start" }, ctx);
+		await fake.emit("tool_call", { toolName: "bash", input: { command: "npm publish" } }, ctx);
+		assert.equal(existsSync(join(dir, "sess-pi-automode.jsonl")), false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("tool_call logs blocked classifier decisions to the session log file", async () => {
+	const t = await setupLogTest({
+		classifier: async () => ({ decision: "block", tier: "soft_deny", reason: "mock block" }),
+	});
+	try {
+		await t.fake.emit("tool_call", { toolName: "bash", input: { command: "npm publish" } }, t.ctx);
+		assert.equal(existsSync(t.logPath), true);
+		const lines = readFileSync(t.logPath, "utf8").trim().split("\n");
+		assert.equal(lines.length, 1);
+		const entry = JSON.parse(lines[0]);
+		assert.equal(entry.type, "decision");
+		assert.equal(entry.outcome, "block");
+		assert.equal(entry.kind, "classifier");
+		assert.equal(entry.tool, "bash");
+		assert.equal(entry.sessionId, "test-session");
+	} finally {
+		rmSync(t.dir, { recursive: true, force: true });
+	}
+});
+
+test("tool_call logs read-only allows with kind read-only", async () => {
+	const t = await setupLogTest();
+	try {
+		await t.fake.emit("tool_call", { toolName: "read", input: { path: "README.md" } }, t.ctx);
+		const entry = JSON.parse(readFileSync(t.logPath, "utf8").trim());
+		assert.equal(entry.type, "decision");
+		assert.equal(entry.outcome, "allow");
+		assert.equal(entry.kind, "read-only");
+		assert.equal(entry.tool, "read");
+	} finally {
+		rmSync(t.dir, { recursive: true, force: true });
+	}
+});
+
+test("tool_call logs deterministic hard-deny blocks", async () => {
+	const t = await setupLogTest();
+	try {
+		await t.fake.emit("tool_call", { toolName: "write", input: { path: ".pi/automode.local.json", content: "{}" } }, t.ctx);
+		const entry = JSON.parse(readFileSync(t.logPath, "utf8").trim());
+		assert.equal(entry.type, "decision");
+		assert.equal(entry.outcome, "block");
+		assert.equal(entry.kind, "deterministic-hard-deny");
+	} finally {
+		rmSync(t.dir, { recursive: true, force: true });
+	}
+});
+
+test("tool_call does not log classifier I/O when classifierIo disabled", async () => {
+	const t = await setupLogTest({
+		classifier: async () => ({ decision: "allow", tier: "allow", reason: "ok", io: { model: "m", prompt: { system: "s", user: "u" }, attempts: [], durationMs: 1 } }),
+	});
+	try {
+		await t.fake.emit("tool_call", { toolName: "bash", input: { command: "npm test" } }, t.ctx);
+		const lines = readFileSync(t.logPath, "utf8").trim().split("\n");
+		assert.equal(lines.length, 1);
+		assert.equal(JSON.parse(lines[0]).type, "decision");
+	} finally {
+		rmSync(t.dir, { recursive: true, force: true });
+	}
+});
+
+test("tool_call logs classifier I/O and decision with shared decisionId", async () => {
+	const t = await setupLogTest({
+		config: baseConfig({ log: { enabled: true, classifierIo: true } }),
+		classifier: async () => ({
+			decision: "allow",
+			tier: "allow",
+			reason: "ok",
+			io: { model: "test/classifier", prompt: { system: "sys", user: "usr" }, attempts: [{ attempt: 1, response: { stopReason: "stop", text: '{"decision":"allow"}' }, parsed: { decision: "allow", tier: "allow", reason: "ok" }, durationMs: 4 }], durationMs: 5 },
+		}),
+	});
+	try {
+		await t.fake.emit("tool_call", { toolName: "bash", input: { command: "npm test" } }, t.ctx);
+		const lines = readFileSync(t.logPath, "utf8").trim().split("\n");
+		assert.equal(lines.length, 2);
+		const classifierEntry = JSON.parse(lines[0]);
+		const decisionEntry = JSON.parse(lines[1]);
+		assert.equal(classifierEntry.type, "classifier");
+		assert.equal(decisionEntry.type, "decision");
+		assert.equal(classifierEntry.decisionId, decisionEntry.decisionId);
+		assert.equal(decisionEntry.outcome, "allow");
+		assert.equal(decisionEntry.kind, "classifier");
+		assert.equal(classifierEntry.model, "test/classifier");
+	} finally {
+		rmSync(t.dir, { recursive: true, force: true });
+	}
+});
+
+test("/automode config names the current log file", async () => {
+	const t = await setupLogTest({
+		config: baseConfig({ log: { enabled: true, classifierIo: false } }),
+	});
+	try {
+		await t.fake.commands.get("automode")?.handler("config", t.ctx);
+		const notify = t.ctx.notifications.at(-1);
+		assert.ok(notify);
+		const parsed = JSON.parse(notify.message);
+		assert.equal(parsed.logFile, t.logPath);
+		assert.equal(parsed.config.log.enabled, true);
+	} finally {
+		rmSync(t.dir, { recursive: true, force: true });
+	}
 });

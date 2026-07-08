@@ -35,7 +35,7 @@ pi -e ./extensions/auto-mode.ts
 /automode reload    # reload config from disk
 /automode reset     # reset denial counters only
 /automode defaults  # print the built-in rule lists
-/automode config    # current effective config + diagnostics
+/automode config    # effective config, resolved log file path, + diagnostics
 /automode denials   # denial history for this session
 /automode model     # open classifier model selector and save to ~/.pi/agent/automode.json
 /automode model provider/model-id # save classifier model to ~/.pi/agent/automode.json
@@ -60,6 +60,7 @@ AM● a:12 d:2 ca:5 cd:1
 
 - [Defaults and rule-list behavior](docs/defaults.md)
 - [Auto-mode classifier flow](docs/automode-classifier-flow.md)
+- [Observability logging](docs/observability-logging.md)
 
 ## Configuration
 
@@ -118,6 +119,23 @@ Example:
 ### `$defaults`
 
 See [Defaults and rule-list behavior](docs/defaults.md) for built-in `environment`, `allow`, `protectedPaths`, `soft_deny`, and `hard_deny` entries, plus replacement behavior when `$defaults` is omitted.
+
+### Observability logging
+
+Auto mode can write a JSONL decision log next to the current Pi session file, so you can see what it allowed or blocked and how. It is off by default.
+
+```json
+{
+  "autoMode": {
+    "log": {
+      "enabled": true,
+      "classifierIo": false
+    }
+  }
+}
+```
+
+See [Observability logging](docs/observability-logging.md) for the log file location, entry schema, and the `classifierIo` privacy tradeoff. Run `/automode config` to see the resolved log file path.
 
 ### Permission patterns
 

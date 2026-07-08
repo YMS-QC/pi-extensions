@@ -166,3 +166,9 @@ export const PROFILE_FILES = new Set([
 ]);
 
 export const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
+
+/** Default observability log config: off, classifier I/O off. */
+export const DEFAULT_LOG_CONFIG = {
+  enabled: false,
+  classifierIo: false,
+};

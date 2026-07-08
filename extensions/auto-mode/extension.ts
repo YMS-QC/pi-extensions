@@ -19,6 +19,12 @@ import {
   writeGlobalClassifierModel,
 } from "./config.ts";
 import { deterministicHardDeny } from "./hard-deny.ts";
+import {
+  createLogger,
+  newDecisionId,
+  resolveLogPath,
+  type Logger,
+} from "./log.ts";
 import { formatModelSpec, parseModelSpec } from "./model.ts";
 import { promptForClassifierModel } from "./model-selector.ts";
 import { matchesToolPattern } from "./permissions.ts";
@@ -35,7 +41,9 @@ import { loadedContextFromSystemPromptOptions } from "./transcript.ts";
 import type {
   AutoModeState,
   ClassifyAction,
+  ClassifyResult,
   ConfigLoadResult,
+  DecisionKind,
   DenialRecord,
   EffectiveConfig,
 } from "./types.ts";
@@ -49,6 +57,31 @@ export type PiAutomodeOptions = {
   /** Override classifier-model persistence in tests. Runtime code writes ~/.pi/agent/automode.json. */
   saveClassifierModel?: (classifierModel: string) => void;
 };
+
+type LogCtx = {
+  logger: Logger;
+  decisionId: string;
+  classifierModel?: string;
+};
+
+/** Append a classifier I/O entry when classifier logging is enabled. */
+function logClassifierIo(decision: ClassifyResult, log: LogCtx): void {
+  if (!log.logger.enabled || !log.logger.classifierIo || !decision.io) return;
+  log.logger.append({
+    type: "classifier",
+    ts: new Date().toISOString(),
+    decisionId: log.decisionId,
+    model: decision.io.model,
+    prompt: decision.io.prompt,
+    attempts: decision.io.attempts,
+    durationMs: decision.io.durationMs,
+    parsed: {
+      decision: decision.decision,
+      tier: decision.tier,
+      reason: decision.reason,
+    },
+  });
+}
 
 /** Create a Pi extension instance. Default export uses production dependencies. */
 export function createPiAutomode(options: PiAutomodeOptions = {}) {
@@ -101,6 +134,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
     function block(
       ctx: ExtensionContext,
       denial: DenialRecord,
+      logCtx: LogCtx,
     ): { block: true; reason: string } {
       state.blockedActions += 1;
       state.lastDecision = "block";
@@ -108,6 +142,21 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       pushDenial(state, denial);
       persist();
       updateUi(ctx);
+      if (logCtx.logger.enabled) {
+        logCtx.logger.append({
+          type: "decision",
+          ts: new Date().toISOString(),
+          decisionId: logCtx.decisionId,
+          sessionId: ctx.sessionManager.getSessionId?.(),
+          cwd: ctx.cwd,
+          tool: denial.toolName,
+          summary: denial.action,
+          kind: denial.kind,
+          outcome: "block",
+          reason: denial.reason,
+          classifierModel: logCtx.classifierModel,
+        });
+      }
       if (ctx.hasUI) {
         ctx.ui.notify(
           `Auto mode blocked ${denial.toolName}: ${denial.reason}`,
@@ -115,6 +164,36 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         );
       }
       return { block: true, reason: `[pi-automode] ${denial.reason}` };
+    }
+
+    function allow(
+      ctx: ExtensionContext,
+      kind: DecisionKind,
+      reason: string,
+      toolName: string,
+      summary: string,
+      logCtx: LogCtx,
+    ): undefined {
+      state.lastDecision = "allow";
+      state.lastReason = reason;
+      persist();
+      updateUi(ctx);
+      if (logCtx.logger.enabled) {
+        logCtx.logger.append({
+          type: "decision",
+          ts: new Date().toISOString(),
+          decisionId: logCtx.decisionId,
+          sessionId: ctx.sessionManager.getSessionId?.(),
+          cwd: ctx.cwd,
+          tool: toolName,
+          summary,
+          kind,
+          outcome: "allow",
+          reason,
+          classifierModel: logCtx.classifierModel,
+        });
+      }
+      return undefined;
     }
 
     pi.on("session_start", (_event, ctx) => {
@@ -147,6 +226,17 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       const input = event.input as Record<string, unknown>;
       const summary = actionSummary(event.toolName, input);
       state.checkedActions += 1;
+      const logCtx: LogCtx = {
+        logger: createLogger({
+          enabled: cfg.log.enabled,
+          classifierIo: cfg.log.classifierIo,
+          sessionFile: ctx.sessionManager.getSessionFile?.(),
+          sessionDir: ctx.sessionManager.getSessionDir?.() ?? ctx.cwd,
+          sessionId: ctx.sessionManager.getSessionId?.() ?? "unknown",
+        }),
+        decisionId: newDecisionId(),
+        classifierModel: cfg.classifierModel,
+      };
 
       for (const pattern of cfg.permissionDeny) {
         if (matchesToolPattern(pattern, event.toolName, input, ctx.cwd)) {
@@ -156,7 +246,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
             reason: `Blocked by permissions.deny: ${pattern.raw}`,
             action: summary,
             kind: "permissions.deny",
-          });
+          }, logCtx);
         }
       }
 
@@ -172,7 +262,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
               `Matched permissions.ask (${pattern.raw}) but no UI is available`,
             action: summary,
             kind: "permissions.ask",
-          });
+          }, logCtx);
         }
         const allowed = await ctx.ui.confirm(
           "Auto mode permission ask",
@@ -186,7 +276,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
             reason: `Declined permissions.ask: ${pattern.raw}`,
             action: summary,
             kind: "permissions.ask",
-          });
+          }, logCtx);
         }
       }
 
@@ -202,15 +292,18 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           reason: deterministicReason,
           action: summary,
           kind: "deterministic-hard-deny",
-        });
+        }, logCtx);
       }
 
       if (READ_ONLY_TOOLS.has(event.toolName)) {
-        state.lastDecision = "allow";
-        state.lastReason = `Read-only built-in tool: ${event.toolName}`;
-        persist();
-        updateUi(ctx);
-        return undefined;
+        return allow(
+          ctx,
+          "read-only",
+          `Read-only built-in tool: ${event.toolName}`,
+          event.toolName,
+          summary,
+          logCtx,
+        );
       }
 
       // Protected paths go to the classifier regardless of allow rules.
@@ -218,13 +311,17 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         const path = resolveInputPath(ctx.cwd, input.path);
         if (path && isProtectedPath(path, ctx.cwd, cfg.protectedPaths)) {
           const decision = await classify(ctx, cfg, summary, loadedContext);
+          logClassifierIo(decision, logCtx);
           if (decision.decision === "allow") {
             state.classifierAllowed += 1;
-            state.lastDecision = "allow";
-            state.lastReason = decision.reason;
-            persist();
-            updateUi(ctx);
-            return undefined;
+            return allow(
+              ctx,
+              "classifier",
+              decision.reason,
+              event.toolName,
+              summary,
+              logCtx,
+            );
           }
           state.classifierDenied += 1;
           return block(ctx, {
@@ -233,18 +330,22 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
             reason: decision.reason,
             action: summary,
             kind: "classifier",
-          });
+          }, logCtx);
         }
       }
 
       const decision = await classify(ctx, cfg, summary, loadedContext);
+      logClassifierIo(decision, logCtx);
       if (decision.decision === "allow") {
         state.classifierAllowed += 1;
-        state.lastDecision = "allow";
-        state.lastReason = decision.reason;
-        persist();
-        updateUi(ctx);
-        return undefined;
+        return allow(
+          ctx,
+          "classifier",
+          decision.reason,
+          event.toolName,
+          summary,
+          logCtx,
+        );
       }
 
       state.classifierDenied += 1;
@@ -254,7 +355,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         reason: decision.reason,
         action: summary,
         kind: "classifier",
-      });
+      }, logCtx);
     });
 
     async function handleAutomodeCommand(
@@ -328,9 +429,18 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         return;
       }
       if (command === "config") {
+        const logFile = resolveLogPath(
+          ctx.sessionManager.getSessionFile?.(),
+          ctx.sessionManager.getSessionDir?.() ?? ctx.cwd,
+          ctx.sessionManager.getSessionId?.() ?? "unknown",
+        );
         ctx.ui.notify(
           safeJson(
-            { config: effectiveConfig(), diagnostics: configDiagnostics },
+            {
+              config: effectiveConfig(),
+              logFile,
+              diagnostics: configDiagnostics,
+            },
             16000,
           ),
           configDiagnostics.length > 0 ? "warning" : "info",
