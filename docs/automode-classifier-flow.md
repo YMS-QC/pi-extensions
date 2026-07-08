@@ -80,6 +80,18 @@ The effective config combines these sources:
 
 Shared project `.pi/automode.json` cannot change `autoMode` rules. That is deliberate: a checked-in repo must not be able to weaken auto-mode. It may still add Pi permission rules.
 
+To disable pi-automode for the current project, set `autoMode.enabled` to `false` in `.pi/automode.local.json`:
+
+```json
+{
+  "autoMode": {
+    "enabled": false
+  }
+}
+```
+
+This affects only that project-local config. Shared project `.pi/automode.json` cannot disable auto-mode.
+
 List settings such as `allow`, `soft_deny`, `hard_deny`, `environment`, and `protectedPaths` support `$defaults`. Omitting `$defaults` replaces the built-ins for that section only. See [Defaults and rule-list behavior](defaults.md).
 
 ## Context captured before classification

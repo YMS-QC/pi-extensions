@@ -73,6 +73,18 @@ It reads `autoMode` from Pi-owned config only:
 
 It deliberately does not read `autoMode` from shared project `.pi/automode.json`, because a checked-in repo should not be able to weaken auto-mode rules. Shared project config may still contribute `permissions.deny` and `permissions.ask`.
 
+To disable pi-automode for the current project, create or edit `.pi/automode.local.json`:
+
+```json
+{
+  "autoMode": {
+    "enabled": false
+  }
+}
+```
+
+This is project-local and should not be committed. Shared project `.pi/automode.json` cannot disable auto-mode.
+
 Set a global default classifier model in `~/.pi/agent/automode.json`; override it per project in `.pi/automode.local.json`.
 
 Example:
