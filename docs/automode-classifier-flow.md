@@ -265,10 +265,12 @@ No classifier model/API key available; auto mode fails closed.
 Classifier calls use:
 
 ```text
-temperature: 0
-maxTokens: 700
+maxTokens: 1200
 signal: ctx.signal
 ```
+
+The classifier does not force a temperature, because some providers reject the
+parameter. Provider defaults are used instead.
 
 ## Parsing the classifier result
 
@@ -287,7 +289,7 @@ If parsing fails, the action is blocked with this reason:
 Classifier response was not valid decision JSON; auto mode fails closed.
 ```
 
-If the model call throws, the action is blocked with a classifier failure message.
+If the model call throws or returns a provider error, the action is blocked with a classifier failure message.
 
 ## State, UI, and denial history
 

@@ -65,7 +65,7 @@ export type ClassifierCompletionFn = (
     headers?: Record<string, string>;
     signal?: AbortSignal;
     maxTokens: number;
-    temperature: number;
+    temperature?: number;
   },
 ) => Promise<AssistantMessage>;
 
@@ -125,8 +125,8 @@ export function parseClassifierDecision(
  *
  * Safety is preserved: an "allow" is only returned when a response actually
  * parses to a valid allow decision. If every attempt fails to parse, the
- * function fails closed with a block decision. Thrown errors (network/auth)
- * are not retried — they fail closed immediately, matching prior behavior.
+ * function fails closed with a block decision. Thrown or provider-reported
+ * errors are not retried — they fail closed immediately.
  */
 export async function classifyWithRetry(
   completeFn: ClassifierCompletionFn,
@@ -141,7 +141,7 @@ export async function classifyWithRetry(
 ): Promise<ClassificationDecision> {
   const maxAttempts = options.maxAttempts ?? 2;
   const maxTokens = options.maxTokens ?? 1200;
-  const temperature = options.temperature ?? 0;
+  const temperature = options.temperature;
   const onAttempt = options.onAttempt;
   let lastReason =
     "Classifier response was not valid decision JSON; auto mode fails closed.";
@@ -157,7 +157,7 @@ export async function classifyWithRetry(
           headers: classifier.headers,
           signal,
           maxTokens,
-          temperature,
+          ...(temperature === undefined ? {} : { temperature }),
         },
       );
     } catch (error) {
@@ -174,7 +174,10 @@ export async function classifyWithRetry(
       };
     }
     const durationMs = Date.now() - started;
-    const decision = parseClassifierDecision(response);
+    const providerError = response.stopReason === "error";
+    const decision = providerError
+      ? undefined
+      : parseClassifierDecision(response);
     onAttempt?.({
       attempt: attempt + 1,
       response: {
@@ -183,10 +186,22 @@ export async function classifyWithRetry(
         model: response.model,
         timestamp: response.timestamp,
         usage: response.usage,
+        ...(response.errorMessage === undefined
+          ? {}
+          : { errorMessage: response.errorMessage }),
       },
       parsed: decision,
       durationMs,
     });
+    if (providerError) {
+      const errorMessage = response.errorMessage ||
+        "Classifier model returned an error response.";
+      return {
+        decision: "block",
+        tier: "none",
+        reason: `Classifier failed; auto mode fails closed: ${errorMessage}`,
+      };
+    }
     if (decision) return decision;
     lastReason =
       response.stopReason === "length"

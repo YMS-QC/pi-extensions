@@ -394,14 +394,14 @@ const VALID_ALLOW = '{"decision":"allow","tier":"allow","reason":"read-only"}';
 const GARBAGE = "and I'm ready to go. I'll start by listing the ability to ability to ability to";
 
 function fakeComplete(responses: AssistantMessage[]) {
-	const calls: Array<{ maxTokens: number; temperature: number }> = [];
+	const calls: Array<{ maxTokens: number; temperature?: number }> = [];
 	let i = 0;
 	const fn = async (
 		_model: unknown,
 		_options: unknown,
-		callOptions: { maxTokens: number; temperature: number },
+		callOptions: { maxTokens: number; temperature?: number },
 	): Promise<AssistantMessage> => {
-		calls.push({ maxTokens: callOptions.maxTokens, temperature: callOptions.temperature });
+		calls.push({ ...callOptions });
 		const res = responses[i];
 		i += 1;
 		return res;
@@ -419,6 +419,21 @@ test("classifyWithRetry returns a valid decision on the first attempt without re
 	);
 	assert.equal(decision.decision, "allow");
 	assert.equal(calls.length, 1);
+	assert.equal(calls[0]?.maxTokens, 1200);
+	assert.equal(Object.hasOwn(calls[0] ?? {}, "temperature"), false);
+});
+
+test("classifyWithRetry forwards an explicitly configured temperature", async () => {
+	const { fn, calls } = fakeComplete([assistantWith(VALID_ALLOW)]);
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+		{ temperature: 0 },
+	);
+	assert.equal(decision.decision, "allow");
+	assert.equal(calls[0]?.temperature, 0);
 });
 
 test("classifyWithRetry recovers when the first response is garbage and the second is valid", async () => {
@@ -476,6 +491,47 @@ test("classifyWithRetry fails closed immediately without retrying when complete 
 	assert.equal(decision.decision, "block");
 	assert.match(decision.reason, /Classifier failed/);
 	assert.equal(calls, 1);
+});
+
+test("classifyWithRetry surfaces provider-reported errors without retrying", async () => {
+	const response = {
+		...assistantWith("", "error"),
+		errorMessage: "Unsupported parameter: temperature",
+	};
+	const { fn, calls } = fakeComplete([response, assistantWith(VALID_ALLOW)]);
+	const attempts: ClassifierIoAttempt[] = [];
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+		{ onAttempt: (attempt) => attempts.push(attempt) },
+	);
+	assert.equal(decision.decision, "block");
+	assert.match(decision.reason, /Unsupported parameter: temperature/);
+	assert.equal(calls.length, 1);
+	assert.equal(attempts[0]?.response?.errorMessage, "Unsupported parameter: temperature");
+});
+
+test("classifyWithRetry fails closed on an error stopReason with an empty message and valid allow JSON", async () => {
+	const response = {
+		...assistantWith(VALID_ALLOW, "error"),
+		errorMessage: "",
+	};
+	const { fn, calls } = fakeComplete([response, assistantWith(VALID_ALLOW)]);
+	const attempts: ClassifierIoAttempt[] = [];
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+		{ onAttempt: (attempt) => attempts.push(attempt) },
+	);
+	assert.equal(decision.decision, "block");
+	assert.match(decision.reason, /Classifier model returned an error response/);
+	assert.equal(calls.length, 1);
+	assert.equal(attempts[0]?.parsed, undefined);
+	assert.equal(attempts[0]?.response?.errorMessage, "");
 });
 
 test("tool_call hook blocks permissions.deny before deterministic checks and classifier", async () => {

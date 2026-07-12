@@ -86,7 +86,7 @@ Written only for classifier-routed actions, and only when `classifierIo: true`. 
 
 Each `attempts[]` entry is `{ attempt, response?, parsed?, error?, durationMs }`:
 
-- `response` — `{ stopReason, text, model, timestamp, usage }`, the raw model output and provider-reported usage for that attempt.
+- `response` — `{ stopReason, text, model, timestamp, usage, errorMessage? }`, the raw model output and provider-reported usage for that attempt, including provider-reported errors.
 - `parsed` — the decision parsed from the response, or absent if it did not parse.
 - `error` — present when the call threw (network/auth); `response` is then absent.
 
