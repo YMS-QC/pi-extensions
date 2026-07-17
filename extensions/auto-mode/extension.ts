@@ -64,9 +64,25 @@ type LogCtx = {
   classifierModel?: string;
 };
 
-/** Append a classifier I/O entry when classifier logging is enabled. */
+/** Append ccusage-compatible usage and optional classifier I/O entries. */
 function logClassifierIo(decision: ClassifyResult, log: LogCtx): void {
-  if (!log.logger.enabled || !log.logger.classifierIo || !decision.io) return;
+  if (!log.logger.enabled || !decision.io) return;
+
+  for (const attempt of decision.io.attempts) {
+    const response = attempt.response;
+    if (!response) continue;
+    log.logger.append({
+      type: "message",
+      timestamp: new Date(response.timestamp).toISOString(),
+      message: {
+        role: "assistant",
+        model: response.model,
+        usage: response.usage,
+      },
+    });
+  }
+
+  if (!log.logger.classifierIo) return;
   log.logger.append({
     type: "classifier",
     ts: new Date().toISOString(),

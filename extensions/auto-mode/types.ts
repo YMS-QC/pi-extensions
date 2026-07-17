@@ -1,3 +1,4 @@
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /** Observability log configuration. Off by default. */
@@ -91,7 +92,13 @@ export type ClassificationDecision = {
 /** One classifier attempt: the raw model response (or error) and parsed decision. */
 export type ClassifierIoAttempt = {
   attempt: number;
-  response?: { stopReason?: string; text: string };
+  response?: {
+    stopReason?: string;
+    text: string;
+    model: string;
+    timestamp: number;
+    usage: AssistantMessage["usage"];
+  };
   parsed?: ClassificationDecision;
   error?: string;
   durationMs: number;

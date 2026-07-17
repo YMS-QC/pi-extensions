@@ -893,8 +893,12 @@ test("createLogger writes classifier entries when classifierIo is true", () => {
 	}
 });
 
-test("classifyWithRetry reports each attempt via onAttempt", async () => {
-	const { fn } = fakeComplete([assistantWith(GARBAGE), assistantWith(VALID_ALLOW)]);
+test("classifyWithRetry reports each attempt's usage via onAttempt", async () => {
+	const first = assistantWith(GARBAGE);
+	first.model = "glm-5.2";
+	first.timestamp = Date.parse("2026-07-10T12:00:00.000Z");
+	first.usage = { input: 11, output: 12, cacheRead: 13, cacheWrite: 14, totalTokens: 50, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const { fn } = fakeComplete([first, assistantWith(VALID_ALLOW)]);
 	const attempts: ClassifierIoAttempt[] = [];
 	const decision = await classifyWithRetry(
 		fn,
@@ -906,7 +910,13 @@ test("classifyWithRetry reports each attempt via onAttempt", async () => {
 	assert.equal(decision.decision, "allow");
 	assert.equal(attempts.length, 2);
 	assert.equal(attempts[0]?.parsed, undefined);
-	assert.equal(attempts[0]?.response?.text, GARBAGE);
+	assert.deepEqual(attempts[0]?.response, {
+		stopReason: "stop",
+		text: GARBAGE,
+		model: "glm-5.2",
+		timestamp: Date.parse("2026-07-10T12:00:00.000Z"),
+		usage: { input: 11, output: 12, cacheRead: 13, cacheWrite: 14, totalTokens: 50, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+	});
 	assert.equal(attempts[1]?.parsed?.decision, "allow");
 });
 
@@ -1010,36 +1020,99 @@ test("tool_call logs deterministic hard-deny blocks", async () => {
 	}
 });
 
-test("tool_call does not log classifier I/O when classifierIo disabled", async () => {
+test("tool_call logs ccusage-compatible classifier usage without classifier I/O", async () => {
 	const t = await setupLogTest({
-		classifier: async () => ({ decision: "allow", tier: "allow", reason: "ok", io: { model: "m", prompt: { system: "s", user: "u" }, attempts: [], durationMs: 1 } }),
+		classifier: async () => ({
+			decision: "allow",
+			tier: "allow",
+			reason: "ok",
+			io: {
+				model: "test/glm-5.2",
+				prompt: { system: "s", user: "u" },
+				attempts: [{
+					attempt: 1,
+					response: {
+						stopReason: "stop",
+						text: '{"decision":"allow"}',
+						model: "glm-5.2",
+						timestamp: Date.parse("2026-07-10T12:00:00.000Z"),
+						usage: { input: 11, output: 12, cacheRead: 13, cacheWrite: 14, totalTokens: 50, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+					},
+					durationMs: 1,
+				}],
+				durationMs: 1,
+			},
+		}),
 	});
 	try {
 		await t.fake.emit("tool_call", { toolName: "bash", input: { command: "npm test" } }, t.ctx);
-		const lines = readFileSync(t.logPath, "utf8").trim().split("\n");
-		assert.equal(lines.length, 1);
-		assert.equal(JSON.parse(lines[0]).type, "decision");
+		const lines = readFileSync(t.logPath, "utf8").trim().split("\n").map(JSON.parse);
+		assert.deepEqual(lines[0], {
+			type: "message",
+			timestamp: "2026-07-10T12:00:00.000Z",
+			message: {
+				role: "assistant",
+				model: "glm-5.2",
+				usage: { input: 11, output: 12, cacheRead: 13, cacheWrite: 14, totalTokens: 50, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			},
+		});
+		assert.equal(lines[1].type, "decision");
+		assert.equal(lines[1].outcome, "allow");
+		assert.equal(lines[1].kind, "classifier");
 	} finally {
 		rmSync(t.dir, { recursive: true, force: true });
 	}
 });
 
-test("tool_call logs classifier I/O and decision with shared decisionId", async () => {
+test("tool_call logs ccusage-compatible usage, classifier I/O, and decision", async () => {
 	const t = await setupLogTest({
 		config: baseConfig({ log: { enabled: true, classifierIo: true } }),
 		classifier: async () => ({
 			decision: "allow",
 			tier: "allow",
 			reason: "ok",
-			io: { model: "test/classifier", prompt: { system: "sys", user: "usr" }, attempts: [{ attempt: 1, response: { stopReason: "stop", text: '{"decision":"allow"}' }, parsed: { decision: "allow", tier: "allow", reason: "ok" }, durationMs: 4 }], durationMs: 5 },
+			io: {
+				model: "test/classifier",
+				prompt: { system: "sys", user: "usr" },
+				attempts: [
+					{
+						attempt: 1,
+						response: {
+							stopReason: "length",
+							text: "not json",
+							model: "classifier",
+							timestamp: Date.parse("2026-07-10T12:00:00.000Z"),
+							usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+						},
+						durationMs: 4,
+					},
+					{
+						attempt: 2,
+						response: {
+							stopReason: "stop",
+							text: '{"decision":"allow"}',
+							model: "classifier",
+							timestamp: Date.parse("2026-07-10T12:00:01.000Z"),
+							usage: { input: 11, output: 12, cacheRead: 13, cacheWrite: 14, totalTokens: 50, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+						},
+						parsed: { decision: "allow", tier: "allow", reason: "ok" },
+						durationMs: 4,
+					},
+				],
+				durationMs: 5,
+			},
 		}),
 	});
 	try {
 		await t.fake.emit("tool_call", { toolName: "bash", input: { command: "npm test" } }, t.ctx);
-		const lines = readFileSync(t.logPath, "utf8").trim().split("\n");
-		assert.equal(lines.length, 2);
-		const classifierEntry = JSON.parse(lines[0]);
-		const decisionEntry = JSON.parse(lines[1]);
+		const lines = readFileSync(t.logPath, "utf8").trim().split("\n").map(JSON.parse);
+		assert.equal(lines.length, 4);
+		assert.deepEqual(lines.slice(0, 2).map((line) => line.message), [
+			{ role: "assistant", model: "classifier", usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
+			{ role: "assistant", model: "classifier", usage: { input: 11, output: 12, cacheRead: 13, cacheWrite: 14, totalTokens: 50, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
+		]);
+		const classifierEntry = lines[2];
+		const decisionEntry = lines[3];
 		assert.equal(classifierEntry.type, "classifier");
 		assert.equal(decisionEntry.type, "decision");
 		assert.equal(classifierEntry.decisionId, decisionEntry.decisionId);

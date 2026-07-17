@@ -1,6 +1,6 @@
 # Observability logging
 
-Auto mode can write a JSONL decision log next to the current Pi session file, so you can see what it allowed or blocked, and how. It is off by default and fail-open: a write error never changes an allow/block decision.
+Auto mode can write a JSONL observability log next to the current Pi session file, so you can inspect decisions and classifier usage. It is off by default and fail-open: a write error never changes an allow/block decision.
 
 ## Enabling
 
@@ -17,7 +17,7 @@ Set `autoMode.log` in any Pi-owned config source (`~/.pi/agent/automode.json`, `
 }
 ```
 
-- `enabled` — write one `decision` line per tool-call decision.
+- `enabled` — write one `decision` line per tool-call decision and one ccusage-compatible `message` line per classifier model response.
 - `classifierIo` — also write the classifier's prompt, raw model responses, and parsed decision for classifier-routed actions. Off by default; see [Privacy](#privacy) below.
 
 Fields merge independently across config scopes (set `enabled` globally and `classifierIo` per project, for example). Shared project `.pi/automode.json` cannot set `log` — it follows the same `autoMode` exclusion as the rest of the config. Shape is validated and reported by `/automode config`.
@@ -56,9 +56,22 @@ One per tool-call decision. Every allow and every block goes through exactly one
 | `reason` | the reason string (classifier reason, or the deterministic/permission reason) |
 | `classifierModel` | the configured classifier model, when relevant |
 
+### `message` (classifier usage)
+
+One per classifier model response, including malformed responses that trigger a retry. Written whenever logging is enabled, before the matching `decision` line. Its shape is intentionally compatible with `ccusage pi`:
+
+| field | meaning |
+| --- | --- |
+| `timestamp` | ISO timestamp from the classifier response |
+| `message.role` | always `assistant` |
+| `message.model` | model ID returned by the classifier provider |
+| `message.usage` | provider-reported input, output, cache, total-token, and cost fields |
+
+`ccusage` reports this sidecar as a separate `-pi-automode` session. This entry contains no prompt or response text, so it is written even when `classifierIo` is off.
+
 ### `classifier`
 
-Written only for classifier-routed actions, and only when `classifierIo: true`. It precedes the matching `decision` line in the file.
+Written only for classifier-routed actions, and only when `classifierIo: true`. It follows any classifier-usage `message` entries and precedes the matching `decision` line in the file.
 
 | field | meaning |
 | --- | --- |
@@ -73,7 +86,7 @@ Written only for classifier-routed actions, and only when `classifierIo: true`. 
 
 Each `attempts[]` entry is `{ attempt, response?, parsed?, error?, durationMs }`:
 
-- `response` — `{ stopReason, text }`, the raw model output for that attempt.
+- `response` — `{ stopReason, text, model, timestamp, usage }`, the raw model output and provider-reported usage for that attempt.
 - `parsed` — the decision parsed from the response, or absent if it did not parse.
 - `error` — present when the call threw (network/auth); `response` is then absent.
 

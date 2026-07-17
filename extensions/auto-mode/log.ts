@@ -34,7 +34,21 @@ export type ClassifierLogEntry = {
   parsed: ClassificationDecision;
 };
 
-export type LogEntry = DecisionLogEntry | ClassifierLogEntry;
+/** A ccusage-compatible record for one classifier model response. */
+export type ClassifierUsageLogEntry = {
+  type: "message";
+  timestamp: string;
+  message: {
+    role: "assistant";
+    model: string;
+    usage: NonNullable<ClassifierIoAttempt["response"]>["usage"];
+  };
+};
+
+export type LogEntry =
+  | DecisionLogEntry
+  | ClassifierLogEntry
+  | ClassifierUsageLogEntry;
 
 export type Logger = {
   enabled: boolean;

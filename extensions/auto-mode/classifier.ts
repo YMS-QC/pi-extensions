@@ -180,6 +180,9 @@ export async function classifyWithRetry(
       response: {
         stopReason: response.stopReason,
         text: extractAssistantText(response),
+        model: response.model,
+        timestamp: response.timestamp,
+        usage: response.usage,
       },
       parsed: decision,
       durationMs,

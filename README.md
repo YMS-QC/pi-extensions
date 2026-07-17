@@ -122,7 +122,7 @@ See [Defaults and rule-list behavior](docs/defaults.md) for built-in `environmen
 
 ### Observability logging
 
-Auto mode can write a JSONL decision log next to the current Pi session file, so you can see what it allowed or blocked and how. It is off by default.
+Auto mode can write a JSONL observability log next to the current Pi session file, so you can inspect decisions and classifier usage. It is off by default.
 
 ```json
 {
