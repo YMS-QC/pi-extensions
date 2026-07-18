@@ -256,7 +256,7 @@ The extension asks Pi's model registry for API credentials. If the model cannot 
 No classifier model/API key available; auto mode fails closed.
 ```
 
-Classifier calls use `temperature: 0`, `ctx.signal`, a stable classifier-specific session ID, and `cacheRetention: "short"`. Unsupported providers ignore cache affinity.
+Classifier calls use `ctx.signal`, a stable classifier-specific session ID, and `cacheRetention: "short"`. They do not force a temperature, because some providers reject the parameter; provider defaults are used instead. Unsupported providers ignore cache affinity.
 
 The fast stage requires one visible digit but allows `maxTokens: 4`, because some OpenAI-compatible servers count control and end-of-sequence tokens against the generation limit. Detailed review uses `maxTokens: 1200` and may retry once after malformed or truncated output.
 
@@ -272,7 +272,7 @@ If detailed parsing fails after its retry, the action is blocked with this reaso
 Classifier response was not valid decision JSON; auto mode fails closed.
 ```
 
-If the model call throws, the action is blocked with a classifier failure message.
+If the model call throws or returns an error or aborted response, the action is blocked immediately with a classifier failure message.
 
 ## State, UI, and denial history
 

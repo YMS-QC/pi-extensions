@@ -101,6 +101,7 @@ export type ClassifierIoAttempt = {
     model: string;
     timestamp: number;
     usage: AssistantMessage["usage"];
+    errorMessage?: string;
   };
   parsed?: ClassificationDecision;
   error?: string;

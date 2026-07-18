@@ -70,7 +70,7 @@ export type ClassifierCompletionFn = (
     headers?: Record<string, string>;
     signal?: AbortSignal;
     maxTokens: number;
-    temperature: number;
+    temperature?: number;
     sessionId?: string;
     cacheRetention?: "none" | "short" | "long";
   },
@@ -181,9 +181,31 @@ function responseAttempt(
       model: response.model,
       timestamp: response.timestamp,
       usage: response.usage,
+      ...(response.errorMessage === undefined
+        ? {}
+        : { errorMessage: response.errorMessage }),
     },
     parsed,
     durationMs,
+  };
+}
+
+function classifierFailure(
+  response: AssistantMessage,
+  label: "Classifier" | "Fast classifier",
+): ClassificationDecision | undefined {
+  if (response.stopReason !== "error" && response.stopReason !== "aborted") {
+    return undefined;
+  }
+  const fallback = response.stopReason === "aborted"
+    ? "Classifier model request was aborted."
+    : "Classifier model returned an error response.";
+  return {
+    decision: "block",
+    tier: "none",
+    reason: `${label} failed; auto mode fails closed: ${
+      response.errorMessage || fallback
+    }`,
   };
 }
 
@@ -204,7 +226,7 @@ export async function classifyWithRetry(
 ): Promise<ClassificationDecision> {
   const maxAttempts = options.maxAttempts ?? 2;
   const maxTokens = options.maxTokens ?? 1200;
-  const temperature = options.temperature ?? 0;
+  const temperature = options.temperature;
   const stage = options.stage ?? "detailed";
   const onAttempt = options.onAttempt;
   let lastReason =
@@ -221,7 +243,7 @@ export async function classifyWithRetry(
           headers: classifier.headers,
           signal,
           maxTokens,
-          temperature,
+          ...(temperature === undefined ? {} : { temperature }),
           sessionId: options.sessionId,
           cacheRetention: options.cacheRetention,
         },
@@ -241,10 +263,12 @@ export async function classifyWithRetry(
       };
     }
     const durationMs = Date.now() - started;
-    const decision = parseClassifierDecision(response);
+    const failure = classifierFailure(response, "Classifier");
+    const decision = failure ? undefined : parseClassifierDecision(response);
     onAttempt?.(
       responseAttempt(stage, attempt + 1, response, durationMs, decision, false),
     );
+    if (failure) return failure;
     if (decision) return decision;
     lastReason =
       response.stopReason === "length"
@@ -285,7 +309,6 @@ export async function classifyInStages(
         // Some OpenAI-compatible servers count an initial control token and
         // EOS against max_tokens. Four tokens reliably permit one visible digit.
         maxTokens: FAST_CLASSIFIER_MAX_TOKENS,
-        temperature: 0,
         sessionId: options.sessionId,
         cacheRetention: "short",
       },
@@ -306,6 +329,7 @@ export async function classifyInStages(
   }
 
   const fastText = extractAssistantText(fastResponse, false);
+  const failure = classifierFailure(fastResponse, "Fast classifier");
   options.onAttempt?.(
     responseAttempt(
       "fast",
@@ -316,6 +340,7 @@ export async function classifyInStages(
       false,
     ),
   );
+  if (failure) return failure;
   if (fastText === "0") {
     return {
       decision: "allow",

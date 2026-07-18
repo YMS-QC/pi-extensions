@@ -517,7 +517,7 @@ const GARBAGE = "and I'm ready to go. I'll start by listing the ability to abili
 function fakeComplete(responses: AssistantMessage[]) {
 	const calls: Array<{
 		maxTokens: number;
-		temperature: number;
+		temperature?: number;
 		sessionId?: string;
 		cacheRetention?: string;
 		messages: unknown;
@@ -529,14 +529,16 @@ function fakeComplete(responses: AssistantMessage[]) {
 		options: { systemPrompt: string; messages: unknown },
 		callOptions: {
 			maxTokens: number;
-			temperature: number;
+			temperature?: number;
 			sessionId?: string;
 			cacheRetention?: string;
 		},
 	): Promise<AssistantMessage> => {
 		calls.push({
 			maxTokens: callOptions.maxTokens,
-			temperature: callOptions.temperature,
+			...(Object.hasOwn(callOptions, "temperature")
+				? { temperature: callOptions.temperature }
+				: {}),
 			sessionId: callOptions.sessionId,
 			cacheRetention: callOptions.cacheRetention,
 			messages: options.messages,
@@ -588,6 +590,7 @@ test("classifyInStages allows after the fast stage and uses classifier cache aff
 	assert.equal(decision.decision, "allow");
 	assert.equal(calls.length, 1);
 	assert.equal(calls[0]?.maxTokens, 4);
+	assert.equal(Object.hasOwn(calls[0] ?? {}, "temperature"), false);
 	assert.equal(calls[0]?.sessionId, "pi-automode:test-session");
 	assert.equal(calls[0]?.cacheRetention, "short");
 	assert.equal(attempts[0]?.stage, "fast");
@@ -618,6 +621,7 @@ test("classifyInStages runs detailed review and retries with the same cached pre
 		"pi-automode:test-session",
 	]);
 	assert.deepEqual(calls.map((call) => call.cacheRetention), ["short", "short", "short"]);
+	assert.equal(calls.every((call) => !Object.hasOwn(call, "temperature")), true);
 	assert.deepEqual(attempts.map((attempt) => attempt.stage), ["fast", "detailed", "detailed"]);
 });
 
@@ -670,6 +674,32 @@ test("classifyInStages fails closed when the fast stage throws", async () => {
 	assert.match(decision.reason, /Fast classifier failed/);
 });
 
+test("classifyInStages fails closed on fast-stage error and aborted allows", async () => {
+	for (const [stopReason, errorMessage] of [
+		["error", "Provider failed"],
+		["aborted", "Request was aborted"],
+	] as const) {
+		const response = {
+			...assistantWith("0", stopReason),
+			errorMessage,
+		};
+		const { fn, calls } = fakeComplete([response]);
+		const attempts: ClassifierIoAttempt[] = [];
+		const decision = await classifyInStages(
+			fn,
+			{ model: { provider: "test", id: "x" } },
+			{ systemPrompt: "policy", contextMessage: { role: "user", content: [{ type: "text", text: "context" }], timestamp: 1 } },
+			undefined,
+			{ sessionId: "pi-automode:test-session", onAttempt: (attempt) => attempts.push(attempt) },
+		);
+
+		assert.equal(decision.decision, "block");
+		assert.match(decision.reason, new RegExp(errorMessage));
+		assert.equal(calls.length, 1);
+		assert.equal(attempts[0]?.response?.errorMessage, errorMessage);
+	}
+});
+
 test("classifyWithRetry returns a valid decision on the first attempt without retrying", async () => {
 	const { fn, calls } = fakeComplete([assistantWith(VALID_ALLOW)]);
 	const decision = await classifyWithRetry(
@@ -680,6 +710,21 @@ test("classifyWithRetry returns a valid decision on the first attempt without re
 	);
 	assert.equal(decision.decision, "allow");
 	assert.equal(calls.length, 1);
+	assert.equal(Object.hasOwn(calls[0] ?? {}, "temperature"), false);
+});
+
+test("classifyWithRetry forwards an explicitly configured temperature", async () => {
+	const { fn, calls } = fakeComplete([assistantWith(VALID_ALLOW)]);
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+		{ temperature: 0 },
+	);
+
+	assert.equal(decision.decision, "allow");
+	assert.equal(calls[0]?.temperature, 0);
 });
 
 test("classifyWithRetry recovers when the first response is garbage and the second is valid", async () => {
@@ -737,6 +782,70 @@ test("classifyWithRetry fails closed immediately without retrying when complete 
 	assert.equal(decision.decision, "block");
 	assert.match(decision.reason, /Classifier failed/);
 	assert.equal(calls, 1);
+});
+
+test("classifyWithRetry surfaces provider-reported errors without retrying", async () => {
+	const response = {
+		...assistantWith("", "error"),
+		errorMessage: "Unsupported parameter: temperature",
+	};
+	const { fn, calls } = fakeComplete([response, assistantWith(VALID_ALLOW)]);
+	const attempts: ClassifierIoAttempt[] = [];
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+		{ onAttempt: (attempt) => attempts.push(attempt) },
+	);
+
+	assert.equal(decision.decision, "block");
+	assert.match(decision.reason, /Unsupported parameter: temperature/);
+	assert.equal(calls.length, 1);
+	assert.equal(attempts[0]?.response?.errorMessage, "Unsupported parameter: temperature");
+});
+
+test("classifyWithRetry fails closed on an empty provider error with valid allow JSON", async () => {
+	const response = {
+		...assistantWith(VALID_ALLOW, "error"),
+		errorMessage: "",
+	};
+	const { fn, calls } = fakeComplete([response, assistantWith(VALID_ALLOW)]);
+	const attempts: ClassifierIoAttempt[] = [];
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+		{ onAttempt: (attempt) => attempts.push(attempt) },
+	);
+
+	assert.equal(decision.decision, "block");
+	assert.match(decision.reason, /Classifier model returned an error response/);
+	assert.equal(calls.length, 1);
+	assert.equal(attempts[0]?.parsed, undefined);
+	assert.equal(attempts[0]?.response?.errorMessage, "");
+});
+
+test("classifyWithRetry fails closed on an aborted detailed-stage allow", async () => {
+	const response = {
+		...assistantWith(VALID_ALLOW, "aborted"),
+		errorMessage: "Request was aborted",
+	};
+	const { fn, calls } = fakeComplete([response, assistantWith(VALID_ALLOW)]);
+	const attempts: ClassifierIoAttempt[] = [];
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+		{ onAttempt: (attempt) => attempts.push(attempt) },
+	);
+
+	assert.equal(decision.decision, "block");
+	assert.match(decision.reason, /Request was aborted/);
+	assert.equal(calls.length, 1);
+	assert.equal(attempts[0]?.response?.errorMessage, "Request was aborted");
 });
 
 test("tool_call hook blocks permissions.deny before deterministic checks and classifier", async () => {

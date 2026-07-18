@@ -89,7 +89,7 @@ Written only for classifier-routed actions, and only when `classifierIo: true`. 
 Each `attempts[]` entry is `{ stage, attempt, response?, parsed?, error?, durationMs }`:
 
 - `stage` — `fast` for the one-token filter or `detailed` for structured review.
-- `response` — `{ stopReason, text, model, timestamp, usage }`, the raw model output and provider-reported usage for that call.
+- `response` — `{ stopReason, text, model, timestamp, usage, errorMessage? }`, the raw model output and provider-reported usage for that call, including provider-reported errors and aborted requests.
 - `parsed` — the decision parsed from the response, or absent if it did not parse.
 - `error` — present when the call threw (network/auth); `response` is then absent.
 
