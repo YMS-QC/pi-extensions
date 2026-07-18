@@ -5,7 +5,8 @@ import {
   DEFAULT_ENVIRONMENT,
   DEFAULT_HARD_DENY,
   DEFAULT_LOG_CONFIG,
-  DEFAULT_MAX_TRANSCRIPT_LINES,
+  DEFAULT_MAX_TOOL_TRANSCRIPT_TOKENS,
+  DEFAULT_MAX_USER_TRANSCRIPT_TOKENS,
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_SOFT_DENY,
   PI_GLOBAL_SETTINGS,
@@ -96,7 +97,8 @@ export function validateSettingsFile(
       const knownAutoMode = new Set([
         "enabled",
         "classifierModel",
-        "maxTranscriptLines",
+        "maxUserTranscriptTokens",
+        "maxToolTranscriptTokens",
         "environment",
         "allow",
         "protectedPaths",
@@ -124,14 +126,20 @@ export function validateSettingsFile(
           `${source}: autoMode.classifierModel must be a provider/model string`,
         );
       }
-      if (
-        hasOwn(autoMode, "maxTranscriptLines") &&
-        (!Number.isInteger(autoMode.maxTranscriptLines) ||
-          Number(autoMode.maxTranscriptLines) <= 0)
+      for (
+        const key of [
+          "maxUserTranscriptTokens",
+          "maxToolTranscriptTokens",
+        ] as const
       ) {
-        diagnostics.push(
-          `${source}: autoMode.maxTranscriptLines must be a positive integer`,
-        );
+        if (
+          hasOwn(autoMode, key) &&
+          (!Number.isInteger(autoMode[key]) || Number(autoMode[key]) < 32)
+        ) {
+          diagnostics.push(
+            `${source}: autoMode.${key} must be an integer of at least 32`,
+          );
+        }
       }
       validateStringArraySetting(
         autoMode.environment,
@@ -265,6 +273,10 @@ function mergeLog(
   };
 }
 
+function validTranscriptBudget(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 32;
+}
+
 function applyAutoModeScalars(
   base: EffectiveConfig,
   settings: AutoModeSettings | undefined,
@@ -274,7 +286,16 @@ function applyAutoModeScalars(
     ...base,
     enabled: settings.enabled ?? base.enabled,
     classifierModel: settings.classifierModel ?? base.classifierModel,
-    maxTranscriptLines: settings.maxTranscriptLines ?? base.maxTranscriptLines,
+    maxUserTranscriptTokens: validTranscriptBudget(
+        settings.maxUserTranscriptTokens,
+      )
+      ? settings.maxUserTranscriptTokens
+      : base.maxUserTranscriptTokens,
+    maxToolTranscriptTokens: validTranscriptBudget(
+        settings.maxToolTranscriptTokens,
+      )
+      ? settings.maxToolTranscriptTokens
+      : base.maxToolTranscriptTokens,
     log: mergeLog(base.log, settings.log),
   };
 }
@@ -306,7 +327,8 @@ export function buildEffectiveConfigFromSources(
 ): EffectiveConfig {
   let config: EffectiveConfig = {
     enabled: true,
-    maxTranscriptLines: DEFAULT_MAX_TRANSCRIPT_LINES,
+    maxUserTranscriptTokens: DEFAULT_MAX_USER_TRANSCRIPT_TOKENS,
+    maxToolTranscriptTokens: DEFAULT_MAX_TOOL_TRANSCRIPT_TOKENS,
     environment: [...DEFAULT_ENVIRONMENT],
     allow: [...DEFAULT_ALLOW],
     protectedPaths: [...DEFAULT_PROTECTED_PATHS],

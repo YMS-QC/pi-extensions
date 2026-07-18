@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { complete } from "@earendil-works/pi-ai";
 import type {
   AssistantMessage,
@@ -5,9 +6,13 @@ import type {
   UserMessage,
 } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CLASSIFIER_SYSTEM_PROMPT } from "./constants.ts";
+import {
+  CLASSIFIER_DETAILED_INSTRUCTION,
+  CLASSIFIER_FAST_INSTRUCTION,
+  CLASSIFIER_SYSTEM_PROMPT,
+} from "./constants.ts";
 import { formatModelSpec, parseModelSpec } from "./model.ts";
-import { buildTranscript } from "./transcript.ts";
+import { buildClassifierTranscript } from "./transcript.ts";
 import type {
   ClassificationDecision,
   ClassifyAction,
@@ -66,6 +71,8 @@ export type ClassifierCompletionFn = (
     signal?: AbortSignal;
     maxTokens: number;
     temperature: number;
+    sessionId?: string;
+    cacheRetention?: "none" | "short" | "long";
   },
 ) => Promise<AssistantMessage>;
 
@@ -73,60 +80,116 @@ export type RetryOptions = {
   maxAttempts?: number;
   maxTokens?: number;
   temperature?: number;
+  sessionId?: string;
+  cacheRetention?: "none" | "short" | "long";
+  stage?: "fast" | "detailed";
   /** Receives each attempt's raw response (or error) and parsed decision, for observability logging. */
   onAttempt?: (attempt: ClassifierIoAttempt) => void;
 };
 
+const FAST_CLASSIFIER_MAX_TOKENS = 4;
+
+export type StagedClassifierOptions = {
+  sessionId: string;
+  onAttempt?: (attempt: ClassifierIoAttempt) => void;
+};
+
 /** Concatenate all text blocks of an assistant message into a single string. */
-function extractAssistantText(message: AssistantMessage): string {
-  return message.content
+function extractAssistantText(message: AssistantMessage, trim = true): string {
+  const text = message.content
     .filter(
       (block): block is { type: "text"; text: string } => block.type === "text",
     )
     .map((block) => block.text)
-    .join("\n")
-    .trim();
+    .join("\n");
+  return trim ? text.trim() : text;
 }
 
-/** Parse the classifier's JSON-only response. Invalid output is handled fail-closed by the caller. */
+/** Parse the exact detailed-stage JSON contract; any wrapper or shape drift fails closed. */
 export function parseClassifierDecision(
   message: AssistantMessage,
 ): ClassificationDecision | undefined {
   const text = extractAssistantText(message);
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
-  const candidates = [fenced, text, text.match(/\{[\s\S]*\}/)?.[0]].filter(
-    Boolean,
-  ) as string[];
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate) as Partial<ClassificationDecision>;
-      if (
-        (parsed.decision === "allow" || parsed.decision === "block") &&
-        typeof parsed.reason === "string"
-      ) {
-        return {
-          decision: parsed.decision,
-          tier: parsed.tier ?? "none",
-          reason: parsed.reason,
-        };
-      }
-    } catch {
-      // Try next candidate.
+  const validTiers = new Set<ClassificationDecision["tier"]>([
+    "hard_deny",
+    "soft_deny",
+    "allow",
+    "explicit_intent",
+    "none",
+  ]);
+  try {
+    for (const key of ["decision", "tier", "reason"]) {
+      const occurrences = text.match(new RegExp(`"${key}"\\s*:`, "g"))?.length ?? 0;
+      if (occurrences !== 1) return undefined;
     }
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const keys = Object.keys(parsed).sort();
+    if (keys.join(",") !== "decision,reason,tier") return undefined;
+    if (parsed.decision !== "allow" && parsed.decision !== "block") {
+      return undefined;
+    }
+    if (!validTiers.has(parsed.tier as ClassificationDecision["tier"])) {
+      return undefined;
+    }
+    const tier = parsed.tier as ClassificationDecision["tier"];
+    if (
+      (parsed.decision === "allow" &&
+        !["allow", "explicit_intent", "none"].includes(tier)) ||
+      (parsed.decision === "block" &&
+        !["hard_deny", "soft_deny", "none"].includes(tier))
+    ) {
+      return undefined;
+    }
+    if (typeof parsed.reason !== "string" || parsed.reason.trim() === "") {
+      return undefined;
+    }
+    return {
+      decision: parsed.decision,
+      tier,
+      reason: parsed.reason,
+    };
+  } catch {
+    return undefined;
   }
-  return undefined;
+}
+
+function stageMessage(text: string): UserMessage {
+  return {
+    role: "user",
+    content: [{ type: "text", text }],
+    timestamp: Date.now(),
+  };
+}
+
+function responseAttempt(
+  stage: "fast" | "detailed",
+  attempt: number,
+  response: AssistantMessage,
+  durationMs: number,
+  parsed?: ClassificationDecision,
+  trimText = true,
+): ClassifierIoAttempt {
+  return {
+    stage,
+    attempt,
+    response: {
+      stopReason: response.stopReason,
+      text: extractAssistantText(response, trimText),
+      model: response.model,
+      timestamp: response.timestamp,
+      usage: response.usage,
+    },
+    parsed,
+    durationMs,
+  };
 }
 
 /**
- * Call the classifier model and parse its decision, retrying when the model
- * returns malformed or truncated output. Small classifier models occasionally
- * ramble into the token cap (stopReason "length") or emit prose instead of
- * JSON; a single retry recovers most of these transient failures.
- *
- * Safety is preserved: an "allow" is only returned when a response actually
- * parses to a valid allow decision. If every attempt fails to parse, the
- * function fails closed with a block decision. Thrown errors (network/auth)
- * are not retried — they fail closed immediately, matching prior behavior.
+ * Call the detailed classifier and parse its decision, retrying malformed or
+ * truncated output. Provider errors and exhausted retries fail closed.
  */
 export async function classifyWithRetry(
   completeFn: ClassifierCompletionFn,
@@ -142,6 +205,7 @@ export async function classifyWithRetry(
   const maxAttempts = options.maxAttempts ?? 2;
   const maxTokens = options.maxTokens ?? 1200;
   const temperature = options.temperature ?? 0;
+  const stage = options.stage ?? "detailed";
   const onAttempt = options.onAttempt;
   let lastReason =
     "Classifier response was not valid decision JSON; auto mode fails closed.";
@@ -158,11 +222,14 @@ export async function classifyWithRetry(
           signal,
           maxTokens,
           temperature,
+          sessionId: options.sessionId,
+          cacheRetention: options.cacheRetention,
         },
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       onAttempt?.({
+        stage,
         attempt: attempt + 1,
         error: message,
         durationMs: Date.now() - started,
@@ -175,18 +242,9 @@ export async function classifyWithRetry(
     }
     const durationMs = Date.now() - started;
     const decision = parseClassifierDecision(response);
-    onAttempt?.({
-      attempt: attempt + 1,
-      response: {
-        stopReason: response.stopReason,
-        text: extractAssistantText(response),
-        model: response.model,
-        timestamp: response.timestamp,
-        usage: response.usage,
-      },
-      parsed: decision,
-      durationMs,
-    });
+    onAttempt?.(
+      responseAttempt(stage, attempt + 1, response, durationMs, decision, false),
+    );
     if (decision) return decision;
     lastReason =
       response.stopReason === "length"
@@ -194,6 +252,111 @@ export async function classifyWithRetry(
         : "Classifier response was not valid decision JSON; auto mode fails closed.";
   }
   return { decision: "block", tier: "none", reason: lastReason };
+}
+
+/** Run the one-token conservative gate, then detailed review only when requested. */
+export async function classifyInStages(
+  completeFn: ClassifierCompletionFn,
+  classifier: {
+    model: Model<any>;
+    apiKey?: string;
+    headers?: Record<string, string>;
+  },
+  prompt: { systemPrompt: string; contextMessage: UserMessage },
+  signal: AbortSignal | undefined,
+  options: StagedClassifierOptions,
+): Promise<ClassificationDecision> {
+  const fastStarted = Date.now();
+  let fastResponse: AssistantMessage;
+  try {
+    fastResponse = await completeFn(
+      classifier.model,
+      {
+        systemPrompt: prompt.systemPrompt,
+        messages: [
+          prompt.contextMessage,
+          stageMessage(CLASSIFIER_FAST_INSTRUCTION),
+        ],
+      },
+      {
+        apiKey: classifier.apiKey,
+        headers: classifier.headers,
+        signal,
+        // Some OpenAI-compatible servers count an initial control token and
+        // EOS against max_tokens. Four tokens reliably permit one visible digit.
+        maxTokens: FAST_CLASSIFIER_MAX_TOKENS,
+        temperature: 0,
+        sessionId: options.sessionId,
+        cacheRetention: "short",
+      },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    options.onAttempt?.({
+      stage: "fast",
+      attempt: 1,
+      error: message,
+      durationMs: Date.now() - fastStarted,
+    });
+    return {
+      decision: "block",
+      tier: "none",
+      reason: `Fast classifier failed; auto mode fails closed: ${message}`,
+    };
+  }
+
+  const fastText = extractAssistantText(fastResponse, false);
+  options.onAttempt?.(
+    responseAttempt(
+      "fast",
+      1,
+      fastResponse,
+      Date.now() - fastStarted,
+      undefined,
+      false,
+    ),
+  );
+  if (fastText === "0") {
+    return {
+      decision: "allow",
+      tier: "none",
+      reason: "Fast classifier found no policy-relevant risk.",
+    };
+  }
+  if (fastText !== "1") {
+    return {
+      decision: "block",
+      tier: "none",
+      reason:
+        "Fast classifier response was not exactly 0 or 1; auto mode fails closed.",
+    };
+  }
+
+  return classifyWithRetry(
+    completeFn,
+    classifier,
+    {
+      systemPrompt: prompt.systemPrompt,
+      messages: [
+        prompt.contextMessage,
+        stageMessage(CLASSIFIER_DETAILED_INSTRUCTION),
+      ],
+    },
+    signal,
+    {
+      stage: "detailed",
+      sessionId: options.sessionId,
+      cacheRetention: "short",
+      onAttempt: options.onAttempt,
+    },
+  );
+}
+
+export function classifierCacheSessionId(ctx: ExtensionContext): string {
+  const source = ctx.sessionManager.getSessionId?.() ??
+    ctx.sessionManager.getSessionFile?.() ?? ctx.cwd;
+  const digest = createHash("sha256").update(source).digest("hex").slice(0, 32);
+  return `pi-automode-${digest}`;
 }
 
 export const defaultClassifyAction: ClassifyAction = async (
@@ -212,32 +375,44 @@ export const defaultClassifyAction: ClassifyAction = async (
   }
 
   const systemPrompt = buildClassifierPrompt(config);
-  const userText = `<loaded-project-instructions>\n${
+  const transcript = buildClassifierTranscript(ctx, {
+    maxUserTokens: config.maxUserTranscriptTokens,
+    maxToolTokens: config.maxToolTranscriptTokens,
+  });
+  const contextText = `<loaded-project-instructions>\n${
     loadedContext || "(none)"
-  }\n</loaded-project-instructions>\n\n<transcript>\n${
-    buildTranscript(ctx, config.maxTranscriptLines) || "(none)"
-  }\n</transcript>\n\nLatest action to classify:\n${action}`;
-  const userMessage: UserMessage = {
+  }\n</loaded-project-instructions>\n\n<classifier-transcript>\n${
+    transcript || "(none)"
+  }\n</classifier-transcript>\n\nLatest action to classify:\n${action}`;
+  const contextMessage: UserMessage = {
     role: "user",
-    content: [{ type: "text", text: userText }],
+    content: [{ type: "text", text: contextText }],
     timestamp: Date.now(),
   };
 
   const attempts: ClassifierIoAttempt[] = [];
   const started = Date.now();
-  const decision = await classifyWithRetry(
+  const decision = await classifyInStages(
     complete,
     classifier,
-    { systemPrompt, messages: [userMessage] },
+    { systemPrompt, contextMessage },
     ctx.signal,
-    { onAttempt: (attempt) => attempts.push(attempt) },
+    {
+      sessionId: classifierCacheSessionId(ctx),
+      onAttempt: (attempt) => attempts.push(attempt),
+    },
   );
 
   return {
     ...decision,
     io: {
       model: formatModelSpec(classifier.model),
-      prompt: { system: systemPrompt, user: userText },
+      prompt: {
+        system: systemPrompt,
+        context: contextText,
+        fastInstruction: CLASSIFIER_FAST_INSTRUCTION,
+        detailedInstruction: CLASSIFIER_DETAILED_INSTRUCTION,
+      },
       attempts,
       durationMs: Date.now() - started,
     },

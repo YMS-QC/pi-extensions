@@ -1,9 +1,8 @@
-import { realpathSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import {
   basename,
   dirname,
   isAbsolute,
-  join,
   normalize,
   relative,
   resolve,
@@ -34,53 +33,85 @@ export function isInside(child: string, parent: string): boolean {
   return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** Resolve symlinks through the nearest existing ancestor of a path. */
+export function resolvePathForPolicy(path: string): string | undefined {
+  return resolvePathForPolicyInner(resolve(path), new Set<string>());
+}
+
+function resolvePathForPolicyInner(
+  path: string,
+  visitedSymlinks: Set<string>,
+): string | undefined {
+  let current = path;
+  const missingSegments: string[] = [];
+
+  while (true) {
+    try {
+      return resolve(realpathSync(current), ...missingSegments);
+    } catch {
+      try {
+        const stat = lstatSync(current);
+        if (!stat.isSymbolicLink() || visitedSymlinks.has(current)) {
+          return undefined;
+        }
+        visitedSymlinks.add(current);
+        const target = resolve(dirname(current), readlinkSync(current));
+        return resolvePathForPolicyInner(
+          resolve(target, ...missingSegments),
+          visitedSymlinks,
+        );
+      } catch (error) {
+        const code = error && typeof error === "object" && "code" in error
+          ? String(error.code)
+          : undefined;
+        if (code !== "ENOENT" && code !== "ENOTDIR") return undefined;
+        const parent = dirname(current);
+        if (parent === current) return undefined;
+        missingSegments.unshift(basename(current));
+        current = parent;
+      }
+    }
+  }
+}
+
+export function matchesProtectedPath(
+  relativePath: string,
+  protectedPaths: string[],
+): boolean {
+  const normalizedPath = relativePath.replace(/\\/g, "/");
+  return protectedPaths.some((pattern) => {
+    const normalizedPattern = pattern.replace(/\\/g, "/");
+    return normalizedPath === normalizedPattern ||
+      normalizedPath.startsWith(`${normalizedPattern}/`);
+  });
+}
+
 export function isProtectedPath(
   path: string,
   cwd: string,
   protectedPaths: string[],
 ): boolean {
-  // Resolve symlinks so writes through symlinks (e.g. not-git -> .git) are caught.
-  let resolved = path;
-  try {
-    resolved = realpathSync(path);
-  } catch {
-    // File doesn't exist yet — try resolving the parent directory.
-    try {
-      const dir = dirname(path);
-      const base = basename(path);
-      resolved = join(realpathSync(dir), base);
-    } catch {
-      // Parent doesn't exist either — fall through with raw path.
-    }
-  }
+  // Resolve through the nearest existing ancestor so symlinked directories are
+  // respected even when the final write target does not exist yet.
+  const resolved = resolvePathForPolicy(path) ?? path;
+  const resolvedCwd = resolvePathForPolicy(cwd) ?? cwd;
 
   // For paths inside the project: use relative path for matching.
-  if (resolved.startsWith(cwd)) {
-    const relativePath = relative(cwd, resolved);
-    for (const pattern of protectedPaths) {
-      if (
-        relativePath === pattern ||
-        relativePath.startsWith(`${pattern}/`)
-      ) {
-        return true;
-      }
-    }
-    return false;
+  if (isInside(resolved, resolvedCwd)) {
+    return matchesProtectedPath(
+      relative(resolvedCwd, resolved),
+      protectedPaths,
+    );
   }
 
   // For paths outside the project: check every path component suffix.
   // This catches writes like ../other-project/.git/config even when cwd
   // doesn't contain the target.
-  const segments = resolved.split("/").filter(Boolean);
+  const normalizedResolved = resolved.replace(/\\/g, "/");
+  const segments = normalizedResolved.split("/").filter(Boolean);
   for (let i = 0; i < segments.length; i++) {
-    const suffix = segments.slice(i).join("/");
-    for (const pattern of protectedPaths) {
-      if (
-        suffix === pattern ||
-        suffix.startsWith(`${pattern}/`)
-      ) {
-        return true;
-      }
+    if (matchesProtectedPath(segments.slice(i).join("/"), protectedPaths)) {
+      return true;
     }
   }
   return false;

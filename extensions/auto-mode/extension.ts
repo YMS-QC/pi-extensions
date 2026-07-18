@@ -28,7 +28,6 @@ import {
 import { formatModelSpec, parseModelSpec } from "./model.ts";
 import { promptForClassifierModel } from "./model-selector.ts";
 import { matchesToolPattern } from "./permissions.ts";
-import { isProtectedPath, resolveInputPath } from "./paths.ts";
 import {
   actionSummary,
   formatDenials,
@@ -230,10 +229,10 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
     });
 
     pi.on("tool_call", async (event, ctx) => {
-      // Enforcement order mirrors Claude Code's documented model:
+      // Enforcement order:
       // 1. permission deny/ask rules,
       // 2. deterministic hard-deny checks that never consult the model,
-      // 3. read-only fast path,
+      // 3. read-only built-in fast path,
       // 4. classifier for every remaining action, fail-closed on setup/parse errors.
       const cfg = effectiveConfig();
       if (!cfg.enabled) return undefined;
@@ -320,34 +319,6 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           summary,
           logCtx,
         );
-      }
-
-      // Protected paths go to the classifier regardless of allow rules.
-      if (event.toolName === "write" || event.toolName === "edit") {
-        const path = resolveInputPath(ctx.cwd, input.path);
-        if (path && isProtectedPath(path, ctx.cwd, cfg.protectedPaths)) {
-          const decision = await classify(ctx, cfg, summary, loadedContext);
-          logClassifierIo(decision, logCtx);
-          if (decision.decision === "allow") {
-            state.classifierAllowed += 1;
-            return allow(
-              ctx,
-              "classifier",
-              decision.reason,
-              event.toolName,
-              summary,
-              logCtx,
-            );
-          }
-          state.classifierDenied += 1;
-          return block(ctx, {
-            timestamp: Date.now(),
-            toolName: event.toolName,
-            reason: decision.reason,
-            action: summary,
-            kind: "classifier",
-          }, logCtx);
-        }
       }
 
       const decision = await classify(ctx, cfg, summary, loadedContext);

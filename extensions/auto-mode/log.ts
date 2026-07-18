@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import type {
+  ClassifierIo,
   ClassifierIoAttempt,
   ClassificationDecision,
   DecisionKind,
@@ -28,7 +29,7 @@ export type ClassifierLogEntry = {
   ts: string;
   decisionId: string;
   model: string;
-  prompt: { system: string; user: string };
+  prompt: ClassifierIo["prompt"];
   attempts: ClassifierIoAttempt[];
   durationMs: number;
   parsed: ClassificationDecision;

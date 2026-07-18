@@ -78,29 +78,32 @@ Written only for classifier-routed actions, and only when `classifierIo: true`. 
 | `ts` | ISO timestamp |
 | `decisionId` | matches the `decision` entry for the same call |
 | `model` | classifier model used, e.g. `anthropic/claude-haiku-4` |
-| `prompt.system` | the full system prompt with `environment`/`allow`/`soft_deny`/`hard_deny` rules interpolated |
-| `prompt.user` | the full user message: loaded project instructions + transcript + action |
-| `attempts` | one entry per classifier attempt (see below) |
+| `prompt.system` | the full system policy with `environment`/`allow`/`soft_deny`/`hard_deny` rules interpolated |
+| `prompt.context` | the shared context message: loaded project instructions + classifier transcript + action |
+| `prompt.fastInstruction` | the exact one-token filter instruction |
+| `prompt.detailedInstruction` | the exact structured-review instruction |
+| `attempts` | one entry per classifier model call (see below) |
 | `durationMs` | total classifier time |
 | `parsed` | the final decision that was acted on (`{ decision, tier, reason }`) |
 
-Each `attempts[]` entry is `{ attempt, response?, parsed?, error?, durationMs }`:
+Each `attempts[]` entry is `{ stage, attempt, response?, parsed?, error?, durationMs }`:
 
-- `response` — `{ stopReason, text, model, timestamp, usage }`, the raw model output and provider-reported usage for that attempt.
+- `stage` — `fast` for the one-token filter or `detailed` for structured review.
+- `response` — `{ stopReason, text, model, timestamp, usage }`, the raw model output and provider-reported usage for that call.
 - `parsed` — the decision parsed from the response, or absent if it did not parse.
 - `error` — present when the call threw (network/auth); `response` is then absent.
 
-This records retries and fail-closed cases verbatim: a call that returned garbage, retried, then succeeded shows two attempts with the first `parsed` absent.
+This records both stages, retries, and fail-closed cases verbatim. A fast allow has one entry. A review followed by malformed detailed JSON and a successful retry has three entries.
 
 ## Privacy
 
-`prompt.user` is **exactly what is sent to the classifier model** — loaded project instructions, the recent transcript, and the action being classified. See [Auto-mode classifier flow → What is sent to the classifier](automode-classifier-flow.md#what-is-sent-to-the-classifier) for how that message is assembled and truncated.
+`prompt.context` is the shared content sent to both classifier stages: loaded project instructions, selected transcript evidence, and the action being classified. The stage-specific final instructions are logged separately. See [Auto-mode classifier flow → What is sent to the classifier](automode-classifier-flow.md#what-is-sent-to-the-classifier) for how the evidence is assembled and truncated.
 
 The log records this payload locally, but the same data is also sent to the classifier model endpoint on every classifier-routed call. If `classifierModel` points at a cloud provider, that payload leaves the machine. Enable `classifierIo` when debugging classifier behavior or tuning rules; leave it off for routine outcome logging.
 
 ## Sizing
 
 - `decision` line: ~0.4–2 KB (driven by `summary`, which carries the tool input, capped at 6 KB).
-- `classifier` line: ~5 KB fixed (the system prompt) plus the transcript, which is variable. In a long session the transcript dominates — roughly 30–40 KB per classifier-routed action.
+- `classifier` line: ~5 KB fixed policy plus loaded project instructions, selected transcript evidence, stage instructions, and recorded responses.
 
-The transcript is bounded by `autoMode.maxTranscriptLines` (default 80). Lowering it shrinks both the `classifier` log line and what the classifier receives, at the cost of less context for the classifier's decision.
+Transcript evidence is bounded separately by `autoMode.maxUserTranscriptTokens` and `autoMode.maxToolTranscriptTokens`, both 4000 approximate tokens by default. Assistant prose and tool results are not included. Provider cache hits can reduce billed or processed input where supported, but the log still records the full classifier payload.

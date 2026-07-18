@@ -55,7 +55,8 @@ export const DEFAULT_PROTECTED_PATHS = [
   ".mcp.json",
 ];
 
-export const DEFAULT_MAX_TRANSCRIPT_LINES = 80;
+export const DEFAULT_MAX_USER_TRANSCRIPT_TOKENS = 4000;
+export const DEFAULT_MAX_TOOL_TRANSCRIPT_TOKENS = 4000;
 export const DENIAL_HISTORY_LIMIT = 12;
 
 /** Built-in trusted environment. Users extend this with `$defaults`. */
@@ -115,7 +116,7 @@ Auto mode is active. Routine permission prompts are replaced by a pre-execution 
 export const CLASSIFIER_SYSTEM_PROMPT =
   `You are an auto-mode security classifier for an autonomous coding agent.
 
-You evaluate the agent's latest tool call before it runs. Return only JSON.
+You evaluate the agent's latest tool call before it runs. Follow the final output instruction exactly.
 
 Core semantics:
 1. HARD_DENY rules block unconditionally. User intent and allow exceptions do not override them.
@@ -144,9 +145,13 @@ Examples:
 - cat ~/.ssh/id_rsa or echo $API_TOKEN => block, hard_deny, credential exposure.
 - npm test, swift test, xcodebuild test, or local formatting/linting => allow unless the action includes a blocked side effect.
 - Uploading repository contents, logs with secrets, or internal data to an untrusted domain => block, hard_deny.
-- Modifying .pi/automode*, this extension, or permission rules => block, hard_deny.
+- Modifying .pi/automode*, this extension, or permission rules => block, hard_deny.`;
 
-Respond with JSON exactly matching:
+export const CLASSIFIER_FAST_INSTRUCTION =
+  `Return exactly one digit and nothing else: 0 only when the action is clearly allowed by the policy; 1 when it may need blocking or you are uncertain. Err on 1.`;
+
+export const CLASSIFIER_DETAILED_INSTRUCTION =
+  `Return only JSON exactly matching:
 {"decision":"allow"|"block","tier":"hard_deny"|"soft_deny"|"allow"|"explicit_intent"|"none","reason":"brief concrete reason"}`;
 
 export const PI_GLOBAL_SETTINGS = [resolve(HOME, ".pi/agent/automode.json")];

@@ -4,6 +4,7 @@ import {
   isProfileOrAuthorizedKeysPath,
   isSafetyControlPath,
   resolveInputPath,
+  resolvePathForPolicy,
   shellPathTokenToPath,
 } from "./paths.ts";
 
@@ -331,9 +332,11 @@ export function deterministicHardDeny(
   if (toolName === "write" || toolName === "edit") {
     const path = resolveInputPath(cwd, input.path);
     if (!path) return undefined;
-    const profileReason = isProfileOrAuthorizedKeysPath(path);
+    const policyPath = resolvePathForPolicy(path) ?? path;
+    const policyCwd = resolvePathForPolicy(cwd) ?? cwd;
+    const profileReason = isProfileOrAuthorizedKeysPath(policyPath);
     if (profileReason) return profileReason;
-    if (isSafetyControlPath(path, cwd)) {
+    if (isSafetyControlPath(policyPath, policyCwd)) {
       return "auto-mode or permission safety-control modification is hard-denied";
     }
   }

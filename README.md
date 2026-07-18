@@ -94,6 +94,8 @@ Example:
 {
   "autoMode": {
     "classifierModel": "provider/model-id",
+    "maxUserTranscriptTokens": 4000,
+    "maxToolTranscriptTokens": 4000,
     "environment": [
       "$defaults",
       "Source control: github.example.com/acme-corp and all repos under it",
@@ -115,6 +117,8 @@ Example:
   }
 }
 ```
+
+`maxUserTranscriptTokens` and `maxToolTranscriptTokens` are approximate per-category budgets; both default to 4000 and accept integers of at least 32. The former `maxTranscriptLines` setting is no longer supported because evidence selection is token-budgeted rather than line-based.
 
 ### `$defaults`
 
@@ -154,11 +158,9 @@ The extension blocks these before any allow or classifier decision:
 - root, home, and system-path destructive deletes
 - edits to `.pi/automode*`, `.pi` auto-mode files, and this extension's safety-control files
 
-Read-only Pi tools (`read`, `grep`, `find`, `ls`) are allowed after those checks.
+Read-only Pi tools (`read`, `grep`, `find`, `ls`) are allowed after those checks. Every side-effecting action goes to the classifier, including all `write` and `edit` calls, `bash`, MCP, subagent, network-capable tools, and unknown tools. This keeps classifier hard-deny rules unconditional; direct file writes cannot bypass them.
 
-Writes to [protected paths](docs/defaults.md#protectedpaths) (shell profiles, tool configs, `.git`, `.vscode`, `.pi`, etc.) always go to the classifier, even if an `allow` rule matches. The classifier decides whether to permit the write.
-
-Everything else goes to the classifier. If the classifier is missing, fails, or returns invalid JSON, the action is blocked.
+Classification starts with a one-token conservative filter and runs structured review only when that filter requests it. Both stages use a classifier-specific session key and short provider cache retention where the provider supports it. Missing models, provider failures, or malformed responses block the action.
 
 ## Examples
 
@@ -176,7 +178,7 @@ npm test
 npm pack --dry-run
 ```
 
-The tests cover the risky parts: scoped permission matching, config-source precedence, `$defaults` behavior, config diagnostics, deterministic hard-deny checks, shell parsing for risky bash fragments, classifier JSON parsing, hook-level blocking/allowing, classifier mocking, and protected-path enforcement.
+The tests cover the risky parts: scoped permission matching, config-source precedence, `$defaults` behavior, config diagnostics, deterministic hard-deny checks, shell parsing, write/edit classifier routing, symlink-aware safety-control checks, token-budgeted transcript selection, staged classifier parsing and caching options, and hook-level blocking/allowing.
 
 ## Publishing
 

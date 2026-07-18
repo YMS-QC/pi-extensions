@@ -3,7 +3,7 @@
  *
  * The enforcement order is deliberately different from simple "auto reviewer" plugins:
  * permission deny/ask rules and deterministic hard-deny checks run before any fast-path allow.
- * Only then do read-only tools pass, and all remaining tools go through the classifier.
+ * Only read-only built-in tools bypass classification; every side-effecting action goes through the classifier.
  */
 
 export * from "./auto-mode/classifier.ts";

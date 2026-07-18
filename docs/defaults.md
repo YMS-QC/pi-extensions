@@ -46,13 +46,13 @@ These are exceptions to `soft_deny`, not to `hard_deny`.
 
 ### `protectedPaths`
 
-`$defaults` expands to paths where writes are never auto-approved — they always go to the classifier, regardless of `allow` rules. This matches Claude Code's protected-paths behavior.
+`$defaults` expands to safety-sensitive paths. Every `write` and `edit` call now goes to the classifier, so `protectedPaths` no longer changes whether a model call occurs; it remains part of the resolved configuration for compatibility and inspection. No path can be reached through a direct-write allow path, and `allow` rules cannot override a classifier hard-deny decision.
 
 Protected directories: `.git`, `.config/git`, `.vscode`, `.idea`, `.husky`, `.cargo`, `.devcontainer`, `.yarn`, `.mvn`, `.pi`.
 
 Protected files: `.gitconfig`, `.gitmodules`, `.gitignore`, `.gitattributes`, shell profiles (`.bashrc`, `.zshrc`, `.profile`, etc.), `.envrc`, package manager configs (`.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.pnp.cjs`, `bunfig.toml`, etc.), Bazel configs (`.bazelrc`, `.bazelversion`, `.bazeliskrc`), hook configs (`.pre-commit-config.yaml`, `lefthook.yml`), Gradle/Maven wrappers, `.devcontainer.json`, `.ripgreprc`, `pyrightconfig.json`, `.mcp.json`.
 
-Read-only tools (`read`, `grep`, `find`, `ls`) bypass this check — reads to protected paths are always allowed. Only `write` and `edit` are affected.
+Read-only tools (`read`, `grep`, `find`, `ls`) remain locally allowed after permission and deterministic checks. Writes and edits always require classification, regardless of their target.
 
 ### `soft_deny`
 
@@ -85,6 +85,17 @@ Soft blocks can be overridden by a matching `allow` exception or by direct, spec
 - posting or updating public/external content that is fabricated, misleading, impersonating a user, or claiming approval/action that did not happen
 
 Hard-deny rules cannot be overridden by `allow` or by user intent.
+
+### Classifier transcript budgets
+
+Classifier evidence has separate approximate-token budgets for user messages and assistant tool-call payloads:
+
+- `maxUserTranscriptTokens`: 4000
+- `maxToolTranscriptTokens`: 4000
+
+The selector keeps the first and latest user messages as intent anchors, then fills remaining space from the newest eligible entries. Individual entries are capped, and omitted or truncated evidence is marked in the classifier transcript. Assistant prose and tool results are excluded.
+
+These are approximate limits based on character counts, not provider-tokenizer guarantees. Override either value with an integer of at least 32 in a Pi-owned `autoMode` config. The former `maxTranscriptLines` setting is no longer supported.
 
 ### Replacement behavior
 

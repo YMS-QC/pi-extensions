@@ -11,7 +11,8 @@ export type LogConfig = {
 export type AutoModeSettings = {
   enabled?: boolean;
   classifierModel?: string;
-  maxTranscriptLines?: number;
+  maxUserTranscriptTokens?: number;
+  maxToolTranscriptTokens?: number;
   environment?: unknown;
   allow?: unknown;
   protectedPaths?: unknown;
@@ -45,7 +46,8 @@ export type ToolPattern = {
 export type EffectiveConfig = {
   enabled: boolean;
   classifierModel?: string;
-  maxTranscriptLines: number;
+  maxUserTranscriptTokens: number;
+  maxToolTranscriptTokens: number;
   environment: string[];
   allow: string[];
   protectedPaths: string[];
@@ -91,6 +93,7 @@ export type ClassificationDecision = {
 
 /** One classifier attempt: the raw model response (or error) and parsed decision. */
 export type ClassifierIoAttempt = {
+  stage: "fast" | "detailed";
   attempt: number;
   response?: {
     stopReason?: string;
@@ -107,7 +110,12 @@ export type ClassifierIoAttempt = {
 /** Full classifier I/O for an action, surfaced for optional observability logging. */
 export type ClassifierIo = {
   model: string;
-  prompt: { system: string; user: string };
+  prompt: {
+    system: string;
+    context: string;
+    fastInstruction: string;
+    detailedInstruction: string;
+  };
   attempts: ClassifierIoAttempt[];
   durationMs: number;
 };
