@@ -258,7 +258,7 @@ No classifier model/API key available; auto mode fails closed.
 
 Classifier calls use `ctx.signal`, a stable classifier-specific session ID, and `cacheRetention: "short"`. They do not force a temperature, because some providers reject the parameter; provider defaults are used instead. Unsupported providers ignore cache affinity.
 
-The fast stage requires one visible digit but allows `maxTokens: 4`, because some OpenAI-compatible servers count control and end-of-sequence tokens against the generation limit. Detailed review uses `maxTokens: 1200` and may retry once after malformed or truncated output.
+The fast stage requires one visible digit but allows `maxTokens: 512`, because reasoning and OpenAI-compatible models may consume hidden reasoning, control, and end-of-sequence tokens before emitting it. Extra visible content still fails parsing. Detailed review uses `maxTokens: 1200` and may retry once after malformed or truncated output.
 
 ## Parsing the classifier result
 

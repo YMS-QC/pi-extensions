@@ -589,7 +589,7 @@ test("classifyInStages allows after the fast stage and uses classifier cache aff
 
 	assert.equal(decision.decision, "allow");
 	assert.equal(calls.length, 1);
-	assert.equal(calls[0]?.maxTokens, 4);
+	assert.equal(calls[0]?.maxTokens, 512);
 	assert.equal(Object.hasOwn(calls[0] ?? {}, "temperature"), false);
 	assert.equal(calls[0]?.sessionId, "pi-automode:test-session");
 	assert.equal(calls[0]?.cacheRetention, "short");

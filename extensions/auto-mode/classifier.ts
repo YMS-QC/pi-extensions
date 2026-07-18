@@ -87,7 +87,7 @@ export type RetryOptions = {
   onAttempt?: (attempt: ClassifierIoAttempt) => void;
 };
 
-const FAST_CLASSIFIER_MAX_TOKENS = 4;
+const FAST_CLASSIFIER_MAX_TOKENS = 512;
 
 export type StagedClassifierOptions = {
   sessionId: string;
@@ -314,8 +314,8 @@ export async function classifyInStages(
         apiKey: classifier.apiKey,
         headers: classifier.headers,
         signal,
-        // Some OpenAI-compatible servers count an initial control token and
-        // EOS against max_tokens. Four tokens reliably permit one visible digit.
+        // Reasoning and OpenAI-compatible models may consume hidden reasoning,
+        // control, and EOS tokens before emitting the required visible digit.
         maxTokens: FAST_CLASSIFIER_MAX_TOKENS,
         sessionId: options.sessionId,
         cacheRetention: "short",
