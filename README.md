@@ -139,6 +139,8 @@ Auto mode can write a JSONL observability log next to the current Pi session fil
 }
 ```
 
+With logging enabled, the sidecar also writes ccusage-compatible entries for every classifier response. `ccusage pi` reports this usage as a separate `-pi-automode` session even when `classifierIo` is off.
+
 See [Observability logging](docs/observability-logging.md) for the log file location, entry schema, and the `classifierIo` privacy tradeoff. Run `/automode config` to see the resolved log file path.
 
 ### Permission patterns
