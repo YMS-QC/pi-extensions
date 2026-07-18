@@ -5,6 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
+	CLASSIFIER_DETAILED_INSTRUCTION,
+	CLASSIFIER_SYSTEM_PROMPT,
 	DEFAULT_ALLOW,
 	DEFAULT_LOG_CONFIG,
 	DEFAULT_PROTECTED_PATHS,
@@ -392,6 +394,12 @@ test("transcript token budgets have conservative defaults and validate overrides
 	assert.equal(invalidConfig.maxToolTranscriptTokens, 4000);
 });
 
+test("classifier policy forbids invented deny rules", () => {
+	assert.match(CLASSIFIER_SYSTEM_PROMPT, /Do not invent deny rules/);
+	assert.match(CLASSIFIER_SYSTEM_PROMPT, /does not need to appear in ALLOW/);
+	assert.match(CLASSIFIER_SYSTEM_PROMPT, /Copying a local app icon or other non-executable asset/);
+});
+
 test("classifier JSON parser accepts valid decisions and rejects invalid output", () => {
 	const message = {
 		role: "assistant",
@@ -622,6 +630,9 @@ test("classifyInStages runs detailed review and retries with the same cached pre
 	]);
 	assert.deepEqual(calls.map((call) => call.cacheRetention), ["short", "short", "short"]);
 	assert.equal(calls.every((call) => !Object.hasOwn(call, "temperature")), true);
+	assert.match(CLASSIFIER_DETAILED_INSTRUCTION, /allow: allow, explicit_intent, or none/);
+	assert.match(CLASSIFIER_DETAILED_INSTRUCTION, /block: hard_deny, soft_deny, or none/);
+	assert.match(JSON.stringify(calls[1]?.messages), /never soft_deny/);
 	assert.deepEqual(attempts.map((attempt) => attempt.stage), ["fast", "detailed", "detailed"]);
 	assert.equal(attempts[0]?.response?.text, " 1\n");
 });
