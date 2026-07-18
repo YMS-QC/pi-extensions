@@ -336,7 +336,7 @@ export async function classifyInStages(
     };
   }
 
-  const fastText = extractAssistantText(fastResponse, false);
+  const fastText = extractAssistantText(fastResponse, false).trim();
   const failure = classifierFailure(fastResponse, "Fast classifier");
   options.onAttempt?.(
     responseAttempt(
@@ -361,7 +361,7 @@ export async function classifyInStages(
       decision: "block",
       tier: "none",
       reason:
-        "Fast classifier response was not exactly 0 or 1; auto mode fails closed.",
+        "Fast classifier response was not 0 or 1 after trimming whitespace; auto mode fails closed.",
     };
   }
 

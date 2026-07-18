@@ -598,7 +598,7 @@ test("classifyInStages allows after the fast stage and uses classifier cache aff
 
 test("classifyInStages runs detailed review and retries with the same cached prefix when requested", async () => {
 	const { fn, calls } = fakeComplete([
-		assistantWith("1"),
+		assistantWith(" 1\n"),
 		assistantWith(GARBAGE),
 		assistantWith(VALID_ALLOW),
 	]);
@@ -623,6 +623,7 @@ test("classifyInStages runs detailed review and retries with the same cached pre
 	assert.deepEqual(calls.map((call) => call.cacheRetention), ["short", "short", "short"]);
 	assert.equal(calls.every((call) => !Object.hasOwn(call, "temperature")), true);
 	assert.deepEqual(attempts.map((attempt) => attempt.stage), ["fast", "detailed", "detailed"]);
+	assert.equal(attempts[0]?.response?.text, " 1\n");
 });
 
 test("classifyInStages fails closed on malformed fast-stage output", async () => {
@@ -640,8 +641,8 @@ test("classifyInStages fails closed on malformed fast-stage output", async () =>
 	assert.equal(calls.length, 1);
 });
 
-test("classifyInStages rejects and logs whitespace-wrapped fast-stage tokens verbatim", async () => {
-	const { fn, calls } = fakeComplete([assistantWith(" 0")]);
+test("classifyInStages accepts surrounding whitespace and logs the fast-stage token verbatim", async () => {
+	const { fn, calls } = fakeComplete([assistantWith(" \t0\n")]);
 	const attempts: ClassifierIoAttempt[] = [];
 	const decision = await classifyInStages(
 		fn,
@@ -654,9 +655,9 @@ test("classifyInStages rejects and logs whitespace-wrapped fast-stage tokens ver
 		},
 	);
 
-	assert.equal(decision.decision, "block");
+	assert.equal(decision.decision, "allow");
 	assert.equal(calls.length, 1);
-	assert.equal(attempts[0]?.response?.text, " 0");
+	assert.equal(attempts[0]?.response?.text, " \t0\n");
 });
 
 test("classifyInStages fails closed when the fast stage throws", async () => {

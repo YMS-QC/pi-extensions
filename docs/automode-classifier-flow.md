@@ -262,7 +262,7 @@ The fast stage requires one visible digit but allows `maxTokens: 4`, because som
 
 ## Parsing the classifier result
 
-The fast-stage parser accepts only the exact output `0` or `1` from a response with `stopReason: "stop"`. Empty, additional, malformed, or non-stop responses block immediately.
+The fast-stage parser requires `stopReason: "stop"`, trims surrounding whitespace, and then accepts only `0` or `1`. Empty responses, additional non-whitespace content, malformed output, and non-stop responses block immediately. Observability logs preserve the untrimmed model response.
 
 The detailed parser accepts only the exact JSON object requested by the prompt from a response with `stopReason: "stop"`. It requires exactly `decision`, `tier`, and `reason`; rejects wrappers, extra fields, unknown tiers, and empty reasons; and fails closed on any shape drift. A truncated response with `stopReason: "length"` is retried but cannot authorize an action itself; other non-stop responses block immediately.
 
