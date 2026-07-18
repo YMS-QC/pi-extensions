@@ -193,13 +193,19 @@ function responseAttempt(
 function classifierFailure(
   response: AssistantMessage,
   label: "Classifier" | "Fast classifier",
+  retryLength = false,
 ): ClassificationDecision | undefined {
-  if (response.stopReason !== "error" && response.stopReason !== "aborted") {
+  if (
+    response.stopReason === "stop" ||
+    (retryLength && response.stopReason === "length")
+  ) {
     return undefined;
   }
   const fallback = response.stopReason === "aborted"
     ? "Classifier model request was aborted."
-    : "Classifier model returned an error response.";
+    : response.stopReason === "error"
+    ? "Classifier model returned an error response."
+    : `${label} response did not stop cleanly (${response.stopReason}).`;
   return {
     decision: "block",
     tier: "none",
@@ -263,8 +269,10 @@ export async function classifyWithRetry(
       };
     }
     const durationMs = Date.now() - started;
-    const failure = classifierFailure(response, "Classifier");
-    const decision = failure ? undefined : parseClassifierDecision(response);
+    const failure = classifierFailure(response, "Classifier", true);
+    const decision = response.stopReason === "stop"
+      ? parseClassifierDecision(response)
+      : undefined;
     onAttempt?.(
       responseAttempt(stage, attempt + 1, response, durationMs, decision, false),
     );

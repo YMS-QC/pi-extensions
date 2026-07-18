@@ -674,8 +674,10 @@ test("classifyInStages fails closed when the fast stage throws", async () => {
 	assert.match(decision.reason, /Fast classifier failed/);
 });
 
-test("classifyInStages fails closed on fast-stage error and aborted allows", async () => {
+test("classifyInStages fails closed on non-stop fast-stage allows", async () => {
 	for (const [stopReason, errorMessage] of [
+		["length", "Fast classifier response did not stop cleanly"],
+		["toolUse", "Fast classifier response did not stop cleanly"],
 		["error", "Provider failed"],
 		["aborted", "Request was aborted"],
 	] as const) {
@@ -752,6 +754,39 @@ test("classifyWithRetry recovers from a truncated (stopReason length) response o
 	);
 	assert.equal(decision.decision, "allow");
 	assert.equal(calls.length, 2);
+});
+
+test("classifyWithRetry retries an allow-shaped truncated response", async () => {
+	const { fn, calls } = fakeComplete([
+		assistantWith(VALID_ALLOW, "length"),
+		assistantWith(VALID_ALLOW),
+	]);
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+	);
+
+	assert.equal(decision.decision, "allow");
+	assert.equal(calls.length, 2);
+});
+
+test("classifyWithRetry fails closed on a tool-use response with valid allow JSON", async () => {
+	const { fn, calls } = fakeComplete([
+		assistantWith(VALID_ALLOW, "toolUse"),
+		assistantWith(VALID_ALLOW),
+	]);
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+	);
+
+	assert.equal(decision.decision, "block");
+	assert.match(decision.reason, /did not stop cleanly/);
+	assert.equal(calls.length, 1);
 });
 
 test("classifyWithRetry fails closed when every attempt returns unparseable output", async () => {
