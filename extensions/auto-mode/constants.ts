@@ -155,6 +155,7 @@ export const CLASSIFIER_FAST_INSTRUCTION =
 export const CLASSIFIER_DETAILED_INSTRUCTION =
   `Return only JSON exactly matching:
 {"decision":"allow"|"block","tier":"hard_deny"|"soft_deny"|"allow"|"explicit_intent"|"none","reason":"brief concrete reason"}
+Do not use Markdown, code fences, prose, or any wrapper. The first character must be { and the last character must be }.
 Valid decision/tier combinations:
 - allow: allow, explicit_intent, or none
 - block: hard_deny, soft_deny, or none

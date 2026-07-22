@@ -632,6 +632,8 @@ test("classifyInStages runs detailed review and retries with the same cached pre
 	assert.equal(calls.every((call) => !Object.hasOwn(call, "temperature")), true);
 	assert.match(CLASSIFIER_DETAILED_INSTRUCTION, /allow: allow, explicit_intent, or none/);
 	assert.match(CLASSIFIER_DETAILED_INSTRUCTION, /block: hard_deny, soft_deny, or none/);
+	assert.match(CLASSIFIER_DETAILED_INSTRUCTION, /Do not use Markdown, code fences, prose, or any wrapper/);
+	assert.match(CLASSIFIER_DETAILED_INSTRUCTION, /first character must be \{ and the last character must be \}/);
 	assert.match(JSON.stringify(calls[1]?.messages), /never soft_deny/);
 	assert.deepEqual(attempts.map((attempt) => attempt.stage), ["fast", "detailed", "detailed"]);
 	assert.equal(attempts[0]?.response?.text, " 1\n");
