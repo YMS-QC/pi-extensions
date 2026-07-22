@@ -28,6 +28,7 @@ import {
 	parseToolPattern,
 	resolveLogPath,
 	statusLine,
+	statusText,
 	validateSettingsFile,
 	writeGlobalClassifierModel,
 	type AutoModeState,
@@ -1410,6 +1411,19 @@ test("cross-project write to protected path triggers classifier", async () => {
 		rmSync(projectA, { recursive: true, force: true });
 		rmSync(projectB, { recursive: true, force: true });
 	}
+});
+
+test("statusText reports server-default classifier reasoning", () => {
+	const text = statusText(baseConfig(), baseState());
+	assert.match(text, /^classifier reasoning: server default$/m);
+});
+
+test("statusText reports the configured classifier reasoning level", () => {
+	const text = statusText(
+		baseConfig({ classifierReasoningLevel: "high" }),
+		baseState(),
+	);
+	assert.match(text, /^classifier reasoning: high$/m);
 });
 
 test("statusLine: enabled with no classifier calls omits the ca/cd segment", () => {

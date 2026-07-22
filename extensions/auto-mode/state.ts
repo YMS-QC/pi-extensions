@@ -30,6 +30,7 @@ export function statusText(
   return [
     `enabled: ${(state.enabledOverride ?? config.enabled) ? "yes" : "no"}`,
     `classifier: ${config.classifierModel ?? "current session model"}`,
+    `classifier reasoning: ${config.classifierReasoningLevel ?? "server default"}`,
     `checked actions: ${state.checkedActions}`,
     `blocked actions: ${state.blockedActions}`,
     `classifier allowed: ${state.classifierAllowed}`,
