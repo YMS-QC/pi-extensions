@@ -1,6 +1,34 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+export type ClassifierReasoningLevel =
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+
+export type EffectiveClassifierReasoningLevel =
+  | "off"
+  | "minimal"
+  | ClassifierReasoningLevel;
+
+export type ClassifierReasoning =
+  | { mode: "server-default" }
+  | {
+    mode: "explicit";
+    requestedLevel: ClassifierReasoningLevel;
+    effectiveLevel: EffectiveClassifierReasoningLevel;
+  };
+
+export type ClassifierReasoningLog =
+  | ClassifierReasoning
+  | {
+    mode: "explicit";
+    requestedLevel: ClassifierReasoningLevel;
+    effectiveLevel?: undefined;
+  };
+
 /** Observability log configuration. Off by default. */
 export type LogConfig = {
   enabled: boolean;
@@ -11,6 +39,7 @@ export type LogConfig = {
 export type AutoModeSettings = {
   enabled?: boolean;
   classifierModel?: string;
+  classifierReasoningLevel?: ClassifierReasoningLevel;
   maxUserTranscriptTokens?: number;
   maxToolTranscriptTokens?: number;
   environment?: unknown;
@@ -46,6 +75,7 @@ export type ToolPattern = {
 export type EffectiveConfig = {
   enabled: boolean;
   classifierModel?: string;
+  classifierReasoningLevel?: ClassifierReasoningLevel;
   maxUserTranscriptTokens: number;
   maxToolTranscriptTokens: number;
   environment: string[];
@@ -111,6 +141,7 @@ export type ClassifierIoAttempt = {
 /** Full classifier I/O for an action, surfaced for optional observability logging. */
 export type ClassifierIo = {
   model: string;
+  reasoning: ClassifierReasoning;
   prompt: {
     system: string;
     context: string;
@@ -121,8 +152,11 @@ export type ClassifierIo = {
   durationMs: number;
 };
 
-/** Classification decision plus the I/O that produced it (when available). */
-export type ClassifyResult = ClassificationDecision & { io?: ClassifierIo };
+/** Classification decision plus resolved reasoning and the I/O that produced it (when available). */
+export type ClassifyResult = ClassificationDecision & {
+  reasoning?: ClassifierReasoningLog;
+  io?: ClassifierIo;
+};
 
 export type SettingsSources = {
   globalSettings?: SettingsFile[];

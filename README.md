@@ -88,12 +88,17 @@ This is project-local and should not be committed. Shared project `.pi/automode.
 
 Set a global default classifier model in `~/.pi/agent/automode.json`; override it per project in `.pi/automode.local.json`.
 
+`classifierReasoningLevel` optionally requests `low`, `medium`, `high`, `xhigh`, or `max` reasoning for both classifier stages. If the key is absent, pi-automode sends no reasoning preference and leaves the choice to the server. Pi AI clamps unsupported values to the nearest level supported by the selected model; a non-reasoning model resolves to `off`. `low` matches Codex Auto Review's reasoning effort and is the practical default when an explicit value is needed. Higher levels can consume the existing 512/1200-token stage limits before producing visible output, which causes the classifier to fail closed.
+
+The setting follows the normal scalar precedence: global, then project-local, then `PI_AUTOMODE_SETTINGS_JSON`. Shared project `.pi/automode.json` cannot set it. Omitting the key at a higher-precedence scope does not clear a lower-precedence value.
+
 Example:
 
 ```json
 {
   "autoMode": {
     "classifierModel": "provider/model-id",
+    "classifierReasoningLevel": "low",
     "maxUserTranscriptTokens": 4000,
     "maxToolTranscriptTokens": 4000,
     "environment": [

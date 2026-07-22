@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { complete } from "@earendil-works/pi-ai";
+import { clampThinkingLevel } from "@earendil-works/pi-ai";
+import {
+  complete,
+  completeSimple,
+} from "@earendil-works/pi-ai/compat";
 import type {
   AssistantMessage,
   Model,
@@ -17,7 +21,11 @@ import type {
   ClassificationDecision,
   ClassifyAction,
   ClassifierIoAttempt,
+  ClassifierReasoning,
+  ClassifierReasoningLevel,
+  ClassifierReasoningLog,
   ClassifyResult,
+  EffectiveClassifierReasoningLevel,
   EffectiveConfig,
 } from "./types.ts";
 
@@ -40,13 +48,28 @@ export function buildClassifierPrompt(config: EffectiveConfig): string {
     );
 }
 
+type ClassifierResolution = {
+  reasoning: ClassifierReasoningLog;
+  classifier?: {
+    model: Model<any>;
+    apiKey?: string;
+    headers?: Record<string, string>;
+  };
+  completionPlan?: ClassifierCompletionPlan;
+};
+
+export function classifierReasoningForConfig(
+  requestedLevel: ClassifierReasoningLevel | undefined,
+): ClassifierReasoningLog {
+  return requestedLevel === undefined
+    ? { mode: "server-default" }
+    : { mode: "explicit", requestedLevel };
+}
+
 async function resolveClassifier(
   ctx: ExtensionContext,
   config: EffectiveConfig,
-): Promise<
-  | { model: Model<any>; apiKey?: string; headers?: Record<string, string> }
-  | undefined
-> {
+): Promise<ClassifierResolution> {
   const configured = config.classifierModel;
   const model = configured
     ? (() => {
@@ -56,10 +79,27 @@ async function resolveClassifier(
         : undefined;
     })()
     : ctx.model;
-  if (!model) return undefined;
+  if (!model) {
+    return {
+      reasoning: classifierReasoningForConfig(config.classifierReasoningLevel),
+    };
+  }
+
+  const completionPlan = createClassifierCompletionPlan(
+    model,
+    config.classifierReasoningLevel,
+  );
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-  if (!auth.ok) return undefined;
-  return { model, apiKey: auth.apiKey, headers: auth.headers };
+  if (!auth.ok) return { reasoning: completionPlan.reasoning };
+  return {
+    reasoning: completionPlan.reasoning,
+    classifier: {
+      model,
+      apiKey: auth.apiKey,
+      headers: auth.headers,
+    },
+    completionPlan,
+  };
 }
 
 export type ClassifierCompletionFn = (
@@ -71,6 +111,7 @@ export type ClassifierCompletionFn = (
     signal?: AbortSignal;
     maxTokens: number;
     temperature?: number;
+    reasoning?: Exclude<EffectiveClassifierReasoningLevel, "off">;
     sessionId?: string;
     cacheRetention?: "none" | "short" | "long";
   },
@@ -80,6 +121,7 @@ export type RetryOptions = {
   maxAttempts?: number;
   maxTokens?: number;
   temperature?: number;
+  reasoningLevel?: Exclude<EffectiveClassifierReasoningLevel, "off">;
   sessionId?: string;
   cacheRetention?: "none" | "short" | "long";
   stage?: "fast" | "detailed";
@@ -91,8 +133,45 @@ const FAST_CLASSIFIER_MAX_TOKENS = 512;
 
 export type StagedClassifierOptions = {
   sessionId: string;
+  reasoningLevel?: Exclude<EffectiveClassifierReasoningLevel, "off">;
   onAttempt?: (attempt: ClassifierIoAttempt) => void;
 };
+
+export type ClassifierCompletionPlan = {
+  completeFn: ClassifierCompletionFn;
+  reasoning: ClassifierReasoning;
+  reasoningLevel?: Exclude<EffectiveClassifierReasoningLevel, "off">;
+};
+
+/** Select the raw or normalized Pi AI completion path and record the effective level. */
+export function createClassifierCompletionPlan(
+  model: Model<any>,
+  requestedLevel: ClassifierReasoningLevel | undefined,
+  rawComplete: ClassifierCompletionFn = complete,
+  simpleComplete: ClassifierCompletionFn = completeSimple,
+): ClassifierCompletionPlan {
+  if (requestedLevel === undefined) {
+    return {
+      completeFn: rawComplete,
+      reasoning: { mode: "server-default" },
+    };
+  }
+
+  const effectiveLevel = clampThinkingLevel(model, requestedLevel);
+  const reasoning: ClassifierReasoning = {
+    mode: "explicit",
+    requestedLevel,
+    effectiveLevel,
+  };
+  if (effectiveLevel === "off") {
+    return { completeFn: simpleComplete, reasoning };
+  }
+  return {
+    completeFn: simpleComplete,
+    reasoning,
+    reasoningLevel: effectiveLevel,
+  };
+}
 
 /** Concatenate all text blocks of an assistant message into a single string. */
 function extractAssistantText(message: AssistantMessage, trim = true): string {
@@ -250,6 +329,9 @@ export async function classifyWithRetry(
           signal,
           maxTokens,
           ...(temperature === undefined ? {} : { temperature }),
+          ...(options.reasoningLevel === undefined
+            ? {}
+            : { reasoning: options.reasoningLevel }),
           sessionId: options.sessionId,
           cacheRetention: options.cacheRetention,
         },
@@ -317,6 +399,9 @@ export async function classifyInStages(
         // Reasoning and OpenAI-compatible models may consume hidden reasoning,
         // control, and EOS tokens before emitting the required visible digit.
         maxTokens: FAST_CLASSIFIER_MAX_TOKENS,
+        ...(options.reasoningLevel === undefined
+          ? {}
+          : { reasoning: options.reasoningLevel }),
         sessionId: options.sessionId,
         cacheRetention: "short",
       },
@@ -380,6 +465,7 @@ export async function classifyInStages(
       stage: "detailed",
       sessionId: options.sessionId,
       cacheRetention: "short",
+      reasoningLevel: options.reasoningLevel,
       onAttempt: options.onAttempt,
     },
   );
@@ -398,14 +484,17 @@ export const defaultClassifyAction: ClassifyAction = async (
   action,
   loadedContext,
 ): Promise<ClassifyResult> => {
-  const classifier = await resolveClassifier(ctx, config);
-  if (!classifier) {
+  const resolution = await resolveClassifier(ctx, config);
+  if (!resolution.classifier || !resolution.completionPlan) {
     return {
       decision: "block",
       tier: "none",
       reason: "No classifier model/API key available; auto mode fails closed.",
+      reasoning: resolution.reasoning,
     };
   }
+  const classifier = resolution.classifier;
+  const completionPlan = resolution.completionPlan;
 
   const systemPrompt = buildClassifierPrompt(config);
   const transcript = buildClassifierTranscript(ctx, {
@@ -426,20 +515,23 @@ export const defaultClassifyAction: ClassifyAction = async (
   const attempts: ClassifierIoAttempt[] = [];
   const started = Date.now();
   const decision = await classifyInStages(
-    complete,
+    completionPlan.completeFn,
     classifier,
     { systemPrompt, contextMessage },
     ctx.signal,
     {
       sessionId: classifierCacheSessionId(ctx),
+      reasoningLevel: completionPlan.reasoningLevel,
       onAttempt: (attempt) => attempts.push(attempt),
     },
   );
 
   return {
     ...decision,
+    reasoning: completionPlan.reasoning,
     io: {
       model: formatModelSpec(classifier.model),
+      reasoning: completionPlan.reasoning,
       prompt: {
         system: systemPrompt,
         context: contextText,

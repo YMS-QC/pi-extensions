@@ -55,6 +55,21 @@ One per tool-call decision. Every allow and every block goes through exactly one
 | `outcome` | `allow` or `block` |
 | `reason` | the reason string (classifier reason, or the deterministic/permission reason) |
 | `classifierModel` | the configured classifier model, when relevant |
+| `reasoning` | classifier reasoning mode and requested/effective level; see below |
+
+The reasoning field records either server-default mode:
+
+```json
+{"mode":"server-default"}
+```
+
+or an explicit request after model-level clamping:
+
+```json
+{"mode":"explicit","requestedLevel":"max","effectiveLevel":"xhigh"}
+```
+
+Classifier-routed decisions contain the effective level once the configured model resolves, even when `classifierIo` is off or authentication then fails. If the configured model itself cannot be resolved, an explicit entry records `requestedLevel` without `effectiveLevel` because no model-supported level exists. A local permission, deterministic, or read-only decision does not run the classifier and likewise may omit `effectiveLevel`. In `server-default` mode, the concrete server-selected level is not observable and is not inferred.
 
 ### `message` (classifier usage)
 
@@ -78,6 +93,7 @@ Written only for classifier-routed actions, and only when `classifierIo: true`. 
 | `ts` | ISO timestamp |
 | `decisionId` | matches the `decision` entry for the same call |
 | `model` | classifier model used, e.g. `anthropic/claude-haiku-4` |
+| `reasoning` | `server-default`, or the explicit requested and effective model-supported level |
 | `prompt.system` | the full system policy with `environment`/`allow`/`soft_deny`/`hard_deny` rules interpolated |
 | `prompt.context` | the shared context message: loaded project instructions + classifier transcript + action |
 | `prompt.fastInstruction` | the exact one-token filter instruction |

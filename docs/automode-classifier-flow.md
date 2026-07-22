@@ -253,6 +253,10 @@ The classifier model is selected in this order:
 
 `/automode model provider/model-id` and the interactive model picker save `autoMode.classifierModel` to `~/.pi/agent/automode.json`. Project-local `.pi/automode.local.json` can still override that global choice.
 
+`autoMode.classifierReasoningLevel` can request `low`, `medium`, `high`, `xhigh`, or `max` reasoning for both classifier stages. When the key is absent, classifier calls use the raw completion path and omit a reasoning preference so the server can choose its default. When it is set, classifier calls use Pi AI's normalized completion path. Pi AI clamps the request to the nearest level supported by the model; non-reasoning models resolve to `off`, remain on the normalized path, and receive no reasoning preference.
+
+Reasoning does not raise the stage token limits. A high level can consume the fast stage's 512 tokens or the detailed stage's 1200 tokens before producing valid visible output. Truncation still fails closed. `low` is the practical explicit setting and matches Codex Auto Review.
+
 The extension asks Pi's model registry for API credentials. If the model cannot be found or credentials are unavailable, classification returns a blocking decision:
 
 ```text

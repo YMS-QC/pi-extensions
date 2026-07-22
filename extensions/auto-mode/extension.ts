@@ -3,7 +3,10 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { defaultClassifyAction } from "./classifier.ts";
+import {
+  classifierReasoningForConfig,
+  defaultClassifyAction,
+} from "./classifier.ts";
 import {
   AUTO_MODE_GUIDANCE,
   DEFAULT_ALLOW,
@@ -39,6 +42,7 @@ import {
 import { loadedContextFromSystemPromptOptions } from "./transcript.ts";
 import type {
   AutoModeState,
+  ClassifierReasoningLog,
   ClassifyAction,
   ClassifyResult,
   ConfigLoadResult,
@@ -61,10 +65,13 @@ type LogCtx = {
   logger: Logger;
   decisionId: string;
   classifierModel?: string;
+  reasoning: ClassifierReasoningLog;
 };
 
 /** Append ccusage-compatible usage and optional classifier I/O entries. */
 function logClassifierIo(decision: ClassifyResult, log: LogCtx): void {
+  if (decision.reasoning) log.reasoning = decision.reasoning;
+  if (decision.io) log.reasoning = decision.io.reasoning;
   if (!log.logger.enabled || !decision.io) return;
 
   for (const attempt of decision.io.attempts) {
@@ -87,6 +94,7 @@ function logClassifierIo(decision: ClassifyResult, log: LogCtx): void {
     ts: new Date().toISOString(),
     decisionId: log.decisionId,
     model: decision.io.model,
+    reasoning: decision.io.reasoning,
     prompt: decision.io.prompt,
     attempts: decision.io.attempts,
     durationMs: decision.io.durationMs,
@@ -170,6 +178,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           outcome: "block",
           reason: denial.reason,
           classifierModel: logCtx.classifierModel,
+          reasoning: logCtx.reasoning,
         });
       }
       if (ctx.hasUI) {
@@ -206,6 +215,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           outcome: "allow",
           reason,
           classifierModel: logCtx.classifierModel,
+          reasoning: logCtx.reasoning,
         });
       }
       return undefined;
@@ -251,6 +261,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }),
         decisionId: newDecisionId(),
         classifierModel: cfg.classifierModel,
+        reasoning: classifierReasoningForConfig(cfg.classifierReasoningLevel),
       };
 
       for (const pattern of cfg.permissionDeny) {

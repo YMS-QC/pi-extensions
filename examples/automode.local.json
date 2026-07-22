@@ -1,5 +1,6 @@
 {
   "autoMode": {
+    "classifierReasoningLevel": "low",
     "environment": [
       "$defaults",
       "Source control: github.example.com/acme-corp and all repos under it",

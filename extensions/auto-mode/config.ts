@@ -16,6 +16,7 @@ import {
 import { parseToolPattern } from "./permissions.ts";
 import type {
   AutoModeSettings,
+  ClassifierReasoningLevel,
   ConfigLoadResult,
   EffectiveConfig,
   LoadedSettingsFile,
@@ -97,6 +98,7 @@ export function validateSettingsFile(
       const knownAutoMode = new Set([
         "enabled",
         "classifierModel",
+        "classifierReasoningLevel",
         "maxUserTranscriptTokens",
         "maxToolTranscriptTokens",
         "environment",
@@ -124,6 +126,14 @@ export function validateSettingsFile(
       ) {
         diagnostics.push(
           `${source}: autoMode.classifierModel must be a provider/model string`,
+        );
+      }
+      if (
+        hasOwn(autoMode, "classifierReasoningLevel") &&
+        !isClassifierReasoningLevel(autoMode.classifierReasoningLevel)
+      ) {
+        diagnostics.push(
+          `${source}: autoMode.classifierReasoningLevel must be one of low, medium, high, xhigh, max`,
         );
       }
       for (
@@ -273,6 +283,21 @@ function mergeLog(
   };
 }
 
+const CLASSIFIER_REASONING_LEVELS = new Set<ClassifierReasoningLevel>([
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
+
+export function isClassifierReasoningLevel(
+  value: unknown,
+): value is ClassifierReasoningLevel {
+  return typeof value === "string" &&
+    CLASSIFIER_REASONING_LEVELS.has(value as ClassifierReasoningLevel);
+}
+
 function validTranscriptBudget(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 32;
 }
@@ -286,6 +311,11 @@ function applyAutoModeScalars(
     ...base,
     enabled: settings.enabled ?? base.enabled,
     classifierModel: settings.classifierModel ?? base.classifierModel,
+    classifierReasoningLevel: isClassifierReasoningLevel(
+        settings.classifierReasoningLevel,
+      )
+      ? settings.classifierReasoningLevel
+      : base.classifierReasoningLevel,
     maxUserTranscriptTokens: validTranscriptBudget(
         settings.maxUserTranscriptTokens,
       )

@@ -4,6 +4,7 @@ import { basename, dirname, extname, join } from "node:path";
 import type {
   ClassifierIo,
   ClassifierIoAttempt,
+  ClassifierReasoningLog,
   ClassificationDecision,
   DecisionKind,
 } from "./types.ts";
@@ -21,6 +22,7 @@ export type DecisionLogEntry = {
   outcome: "allow" | "block";
   reason: string;
   classifierModel?: string;
+  reasoning: ClassifierReasoningLog;
 };
 
 /** The classifier prompt, raw responses, and parsed decision for one action. */
@@ -29,6 +31,7 @@ export type ClassifierLogEntry = {
   ts: string;
   decisionId: string;
   model: string;
+  reasoning: ClassifierIo["reasoning"];
   prompt: ClassifierIo["prompt"];
   attempts: ClassifierIoAttempt[];
   durationMs: number;

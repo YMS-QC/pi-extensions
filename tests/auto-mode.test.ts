@@ -17,6 +17,7 @@ import {
 	classifierCacheSessionId,
 	classifyInStages,
 	classifyWithRetry,
+	createClassifierCompletionPlan,
 	createLogger,
 	createPiAutomode,
 	deterministicHardDeny,
@@ -210,6 +211,53 @@ test("project-local classifier model overrides global classifier model", () => {
 	});
 
 	assert.equal(config.classifierModel, "project/model");
+});
+
+test("classifier reasoning level defaults to server choice and follows configurable precedence", () => {
+	assert.equal(buildEffectiveConfigFromSources({}).classifierReasoningLevel, undefined);
+
+	const config = buildEffectiveConfigFromSources({
+		globalSettings: [{ autoMode: { classifierReasoningLevel: "low" } }],
+		projectLocalSettings: [{ autoMode: { classifierReasoningLevel: "medium" } }],
+		inlineSettings: [{ autoMode: { classifierReasoningLevel: "max" } }],
+	});
+	assert.equal(config.classifierReasoningLevel, "max");
+});
+
+test("classifier reasoning level accepts the supported values and ignores shared project settings", () => {
+	for (const level of ["low", "medium", "high", "xhigh", "max"] as const) {
+		const diagnostics = validateSettingsFile({
+			autoMode: { classifierReasoningLevel: level },
+		}, "test-config");
+		assert.deepEqual(diagnostics, []);
+		assert.equal(
+			buildEffectiveConfigFromSources({
+				projectLocalSettings: [{ autoMode: { classifierReasoningLevel: level } }],
+			}).classifierReasoningLevel,
+			level,
+		);
+	}
+
+	const shared = buildEffectiveConfigFromSources({
+		projectSharedSettings: [{ autoMode: { classifierReasoningLevel: "high" } }],
+	});
+	assert.equal(shared.classifierReasoningLevel, undefined);
+});
+
+test("invalid classifier reasoning levels produce diagnostics and do not override valid config", () => {
+	const diagnostics = validateSettingsFile({
+		autoMode: { classifierReasoningLevel: "extreme" },
+	} as any, "test-config");
+	assert.equal(
+		diagnostics.some((line) => line.includes("autoMode.classifierReasoningLevel must be one of")),
+		true,
+	);
+
+	const config = buildEffectiveConfigFromSources({
+		globalSettings: [{ autoMode: { classifierReasoningLevel: "low" } }],
+		projectLocalSettings: [{ autoMode: { classifierReasoningLevel: "extreme" } as any }],
+	});
+	assert.equal(config.classifierReasoningLevel, "low");
 });
 
 test("rule lists replace defaults only for their own section when $defaults is omitted", () => {
@@ -526,6 +574,7 @@ function fakeComplete(responses: AssistantMessage[]) {
 	const calls: Array<{
 		maxTokens: number;
 		temperature?: number;
+		reasoning?: string;
 		sessionId?: string;
 		cacheRetention?: string;
 		messages: unknown;
@@ -538,6 +587,7 @@ function fakeComplete(responses: AssistantMessage[]) {
 		callOptions: {
 			maxTokens: number;
 			temperature?: number;
+			reasoning?: string;
 			sessionId?: string;
 			cacheRetention?: string;
 		},
@@ -546,6 +596,9 @@ function fakeComplete(responses: AssistantMessage[]) {
 			maxTokens: callOptions.maxTokens,
 			...(Object.hasOwn(callOptions, "temperature")
 				? { temperature: callOptions.temperature }
+				: {}),
+			...(Object.hasOwn(callOptions, "reasoning")
+				? { reasoning: callOptions.reasoning }
 				: {}),
 			sessionId: callOptions.sessionId,
 			cacheRetention: callOptions.cacheRetention,
@@ -558,6 +611,42 @@ function fakeComplete(responses: AssistantMessage[]) {
 	};
 	return { fn: fn as never, calls };
 }
+
+test("classifier completion plan preserves server default and clamps explicit levels", () => {
+	const raw = async () => assistantWith("0");
+	const simple = async () => assistantWith("0");
+	const reasoner = {
+		provider: "test",
+		id: "reasoner",
+		reasoning: true,
+		thinkingLevelMap: { xhigh: null, max: null },
+	} as any;
+
+	const serverDefault = createClassifierCompletionPlan(reasoner, undefined, raw as never, simple as never);
+	assert.equal(serverDefault.completeFn, raw);
+	assert.deepEqual(serverDefault.reasoning, { mode: "server-default" });
+
+	const explicit = createClassifierCompletionPlan(reasoner, "max", raw as never, simple as never);
+	assert.equal(explicit.completeFn, simple);
+	assert.deepEqual(explicit.reasoning, {
+		mode: "explicit",
+		requestedLevel: "max",
+		effectiveLevel: "high",
+	});
+
+	const unsupported = createClassifierCompletionPlan(
+		{ provider: "test", id: "plain", reasoning: false } as any,
+		"low",
+		raw as never,
+		simple as never,
+	);
+	assert.equal(unsupported.completeFn, simple);
+	assert.deepEqual(unsupported.reasoning, {
+		mode: "explicit",
+		requestedLevel: "low",
+		effectiveLevel: "off",
+	});
+});
 
 test("classifier cache session ids are stable, classifier-specific, and scoped to the Pi session", () => {
 	const first = classifierCacheSessionId(createFakeCtx([], {
@@ -637,6 +726,23 @@ test("classifyInStages runs detailed review and retries with the same cached pre
 	assert.match(JSON.stringify(calls[1]?.messages), /never soft_deny/);
 	assert.deepEqual(attempts.map((attempt) => attempt.stage), ["fast", "detailed", "detailed"]);
 	assert.equal(attempts[0]?.response?.text, " 1\n");
+});
+
+test("classifyInStages forwards one reasoning level to fast and detailed calls", async () => {
+	const { fn, calls } = fakeComplete([
+		assistantWith("1"),
+		assistantWith(VALID_ALLOW),
+	]);
+	const decision = await classifyInStages(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "policy", contextMessage: { role: "user", content: [{ type: "text", text: "context" }], timestamp: 1 } },
+		undefined,
+		{ sessionId: "pi-automode:test-session", reasoningLevel: "high" },
+	);
+
+	assert.equal(decision.decision, "allow");
+	assert.deepEqual(calls.map((call) => call.reasoning), ["high", "high"]);
 });
 
 test("classifyInStages fails closed on malformed fast-stage output", async () => {
@@ -1413,7 +1519,7 @@ test("createLogger is a no-op when disabled", () => {
 	try {
 		const sessionFile = join(dir, "abc.jsonl");
 		const logger = createLogger({ enabled: false, classifierIo: true, sessionFile, sessionDir: dir, sessionId: "abc" });
-		logger.append({ type: "decision", ts: "t", decisionId: "d", cwd: "/tmp", tool: "bash", summary: "s", kind: "classifier", outcome: "block", reason: "r" });
+		logger.append({ type: "decision", ts: "t", decisionId: "d", cwd: "/tmp", tool: "bash", summary: "s", kind: "classifier", outcome: "block", reason: "r", reasoning: { mode: "server-default" } });
 		assert.equal(existsSync(join(dir, "abc-pi-automode.jsonl")), false);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
@@ -1425,12 +1531,12 @@ test("createLogger writes decision entries when enabled", () => {
 	try {
 		const sessionFile = join(dir, "abc.jsonl");
 		const logger = createLogger({ enabled: true, classifierIo: false, sessionFile, sessionDir: dir, sessionId: "abc" });
-		logger.append({ type: "decision", ts: "t", decisionId: "d1", cwd: "/tmp", tool: "bash", summary: "s", kind: "classifier", outcome: "block", reason: "r" });
+		logger.append({ type: "decision", ts: "t", decisionId: "d1", cwd: "/tmp", tool: "bash", summary: "s", kind: "classifier", outcome: "block", reason: "r", reasoning: { mode: "server-default" } });
 		const logPath = join(dir, "abc-pi-automode.jsonl");
 		assert.equal(existsSync(logPath), true);
 		const lines = readFileSync(logPath, "utf8").trim().split("\n");
 		assert.equal(lines.length, 1);
-		assert.deepEqual(JSON.parse(lines[0]), { type: "decision", ts: "t", decisionId: "d1", cwd: "/tmp", tool: "bash", summary: "s", kind: "classifier", outcome: "block", reason: "r" });
+		assert.deepEqual(JSON.parse(lines[0]), { type: "decision", ts: "t", decisionId: "d1", cwd: "/tmp", tool: "bash", summary: "s", kind: "classifier", outcome: "block", reason: "r", reasoning: { mode: "server-default" } });
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -1441,7 +1547,7 @@ test("createLogger skips classifier entries when classifierIo is false", () => {
 	try {
 		const sessionFile = join(dir, "abc.jsonl");
 		const logger = createLogger({ enabled: true, classifierIo: false, sessionFile, sessionDir: dir, sessionId: "abc" });
-		logger.append({ type: "classifier", ts: "t", decisionId: "d1", model: "m", prompt: { system: "s", context: "u", fastInstruction: "0/1", detailedInstruction: "json" }, attempts: [], durationMs: 5, parsed: { decision: "allow", tier: "none", reason: "r" } });
+		logger.append({ type: "classifier", ts: "t", decisionId: "d1", model: "m", reasoning: { mode: "server-default" }, prompt: { system: "s", context: "u", fastInstruction: "0/1", detailedInstruction: "json" }, attempts: [], durationMs: 5, parsed: { decision: "allow", tier: "none", reason: "r" } });
 		assert.equal(existsSync(join(dir, "abc-pi-automode.jsonl")), false);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
@@ -1453,7 +1559,7 @@ test("createLogger writes classifier entries when classifierIo is true", () => {
 	try {
 		const sessionFile = join(dir, "abc.jsonl");
 		const logger = createLogger({ enabled: true, classifierIo: true, sessionFile, sessionDir: dir, sessionId: "abc" });
-		logger.append({ type: "classifier", ts: "t", decisionId: "d1", model: "m", prompt: { system: "s", context: "u", fastInstruction: "0/1", detailedInstruction: "json" }, attempts: [], durationMs: 5, parsed: { decision: "allow", tier: "none", reason: "r" } });
+		logger.append({ type: "classifier", ts: "t", decisionId: "d1", model: "m", reasoning: { mode: "server-default" }, prompt: { system: "s", context: "u", fastInstruction: "0/1", detailedInstruction: "json" }, attempts: [], durationMs: 5, parsed: { decision: "allow", tier: "none", reason: "r" } });
 		const lines = readFileSync(join(dir, "abc-pi-automode.jsonl"), "utf8").trim().split("\n");
 		assert.equal(lines.length, 1);
 		assert.equal(JSON.parse(lines[0]).type, "classifier");
@@ -1559,8 +1665,57 @@ test("tool_call logs blocked classifier decisions to the session log file", asyn
 		assert.equal(entry.kind, "classifier");
 		assert.equal(entry.tool, "bash");
 		assert.equal(entry.sessionId, "test-session");
+		assert.deepEqual(entry.reasoning, { mode: "server-default" });
 	} finally {
 		rmSync(t.dir, { recursive: true, force: true });
+	}
+});
+
+test("tool_call logs effective explicit reasoning when classifier authentication is unavailable", async () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-log-"));
+	try {
+		const sessionFile = join(dir, "sess.jsonl");
+		const model = {
+			provider: "test",
+			id: "reasoner",
+			reasoning: true,
+			thinkingLevelMap: { xhigh: null, max: null },
+		};
+		const fake = createFakePi();
+		createPiAutomode({
+			loadConfig: () => baseConfig({
+				classifierReasoningLevel: "max",
+				log: { enabled: true, classifierIo: false },
+			}),
+		})(fake.pi);
+		const ctx = createFakeCtx(fake.entries, {
+			sessionFile,
+			model,
+			modelRegistry: {
+				find: () => model,
+				getApiKeyAndHeaders: async () => ({ ok: false, error: "missing credentials" }),
+			},
+		});
+		await fake.emit("session_start", { type: "session_start" }, ctx);
+
+		const result = await fake.emit("tool_call", {
+			toolName: "bash",
+			input: { command: "npm publish" },
+		}, ctx) as { block?: boolean };
+		assert.equal(result.block, true);
+
+		const entry = JSON.parse(
+			readFileSync(join(dir, "sess-pi-automode.jsonl"), "utf8").trim(),
+		);
+		assert.equal(entry.type, "decision");
+		assert.equal(entry.kind, "classifier");
+		assert.deepEqual(entry.reasoning, {
+			mode: "explicit",
+			requestedLevel: "max",
+			effectiveLevel: "high",
+		});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
@@ -1612,12 +1767,17 @@ test("tool_call logs deterministic hard-deny blocks", async () => {
 
 test("tool_call logs ccusage-compatible classifier usage without classifier I/O", async () => {
 	const t = await setupLogTest({
+		config: baseConfig({
+			classifierReasoningLevel: "max",
+			log: { enabled: true, classifierIo: false },
+		}),
 		classifier: async () => ({
 			decision: "allow",
 			tier: "allow",
 			reason: "ok",
 			io: {
 				model: "test/glm-5.2",
+				reasoning: { mode: "explicit", requestedLevel: "max", effectiveLevel: "high" },
 				prompt: { system: "s", context: "u", fastInstruction: "0/1", detailedInstruction: "json" },
 				attempts: [{
 					stage: "fast",
@@ -1650,6 +1810,11 @@ test("tool_call logs ccusage-compatible classifier usage without classifier I/O"
 		assert.equal(lines[1].type, "decision");
 		assert.equal(lines[1].outcome, "allow");
 		assert.equal(lines[1].kind, "classifier");
+		assert.deepEqual(lines[1].reasoning, {
+			mode: "explicit",
+			requestedLevel: "max",
+			effectiveLevel: "high",
+		});
 	} finally {
 		rmSync(t.dir, { recursive: true, force: true });
 	}
@@ -1664,6 +1829,7 @@ test("tool_call logs ccusage-compatible usage, classifier I/O, and decision", as
 			reason: "ok",
 			io: {
 				model: "test/classifier",
+				reasoning: { mode: "explicit", requestedLevel: "max", effectiveLevel: "high" },
 				prompt: { system: "sys", context: "usr", fastInstruction: "0/1", detailedInstruction: "json" },
 				attempts: [
 					{
@@ -1712,6 +1878,12 @@ test("tool_call logs ccusage-compatible usage, classifier I/O, and decision", as
 		assert.equal(decisionEntry.outcome, "allow");
 		assert.equal(decisionEntry.kind, "classifier");
 		assert.equal(classifierEntry.model, "test/classifier");
+		assert.deepEqual(classifierEntry.reasoning, {
+			mode: "explicit",
+			requestedLevel: "max",
+			effectiveLevel: "high",
+		});
+		assert.deepEqual(decisionEntry.reasoning, classifierEntry.reasoning);
 	} finally {
 		rmSync(t.dir, { recursive: true, force: true });
 	}
