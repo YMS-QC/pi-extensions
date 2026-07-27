@@ -125,6 +125,10 @@ Example:
 
 `maxUserTranscriptTokens` and `maxToolTranscriptTokens` are approximate per-category budgets; both default to 4000 and accept integers of at least 32. The former `maxTranscriptLines` setting is no longer supported because evidence selection is token-budgeted rather than line-based.
 
+### Ask-user tools and explicit authorization
+
+Classifier evidence includes normal user messages and assistant tool-call inputs, but excludes assistant prose and all tool results. This includes answers returned by ask-user tools such as `@vanillagreen/pi-questions`. Selecting "Yes" there helps the agent decide what to do next, but pi-automode does not treat that tool result as explicit authorization to override a soft deny. Send the authorization as a normal chat message instead; the agent can then retry the action. Tool results are excluded because they may contain untrusted or prompt-injected content.
+
 ### `$defaults`
 
 See [Defaults and rule-list behavior](docs/defaults.md) for built-in `environment`, `allow`, `protectedPaths`, `soft_deny`, and `hard_deny` entries, plus replacement behavior when `$defaults` is omitted.
