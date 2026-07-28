@@ -40,6 +40,10 @@ export type AutoModeSettings = {
   enabled?: boolean;
   classifierModel?: string;
   classifierReasoningLevel?: ClassifierReasoningLevel;
+  /** When true, read-only tools (read/grep/find/ls) are classified instead of auto-allowed. */
+  classifyReadOnlyTools?: boolean;
+  /** Override the fast-stage completion token budget (default 512). */
+  fastClassifierMaxTokens?: number;
   maxUserTranscriptTokens?: number;
   maxToolTranscriptTokens?: number;
   environment?: unknown;
@@ -76,6 +80,8 @@ export type EffectiveConfig = {
   enabled: boolean;
   classifierModel?: string;
   classifierReasoningLevel?: ClassifierReasoningLevel;
+  classifyReadOnlyTools: boolean;
+  fastClassifierMaxTokens: number;
   maxUserTranscriptTokens: number;
   maxToolTranscriptTokens: number;
   environment: string[];

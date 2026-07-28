@@ -133,6 +133,8 @@ const FAST_CLASSIFIER_MAX_TOKENS = 512;
 
 export type StagedClassifierOptions = {
   sessionId: string;
+  /** Override the fast-stage token budget; falls back to FAST_CLASSIFIER_MAX_TOKENS. */
+  fastClassifierMaxTokens?: number;
   reasoningLevel?: Exclude<EffectiveClassifierReasoningLevel, "off">;
   onAttempt?: (attempt: ClassifierIoAttempt) => void;
 };
@@ -398,7 +400,8 @@ export async function classifyInStages(
         signal,
         // Reasoning and OpenAI-compatible models may consume hidden reasoning,
         // control, and EOS tokens before emitting the required visible digit.
-        maxTokens: FAST_CLASSIFIER_MAX_TOKENS,
+        maxTokens: options.fastClassifierMaxTokens ??
+          FAST_CLASSIFIER_MAX_TOKENS,
         ...(options.reasoningLevel === undefined
           ? {}
           : { reasoning: options.reasoningLevel }),
@@ -521,6 +524,7 @@ export const defaultClassifyAction: ClassifyAction = async (
     ctx.signal,
     {
       sessionId: classifierCacheSessionId(ctx),
+      fastClassifierMaxTokens: config.fastClassifierMaxTokens,
       reasoningLevel: completionPlan.reasoningLevel,
       onAttempt: (attempt) => attempts.push(attempt),
     },

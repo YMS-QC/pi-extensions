@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   DEFAULT_ALLOW,
+  DEFAULT_CLASSIFY_READ_ONLY_TOOLS,
   DEFAULT_ENVIRONMENT,
+  DEFAULT_FAST_CLASSIFIER_MAX_TOKENS,
   DEFAULT_HARD_DENY,
   DEFAULT_LOG_CONFIG,
   DEFAULT_MAX_TOOL_TRANSCRIPT_TOKENS,
@@ -99,6 +101,8 @@ export function validateSettingsFile(
         "enabled",
         "classifierModel",
         "classifierReasoningLevel",
+        "classifyReadOnlyTools",
+        "fastClassifierMaxTokens",
         "maxUserTranscriptTokens",
         "maxToolTranscriptTokens",
         "environment",
@@ -134,6 +138,23 @@ export function validateSettingsFile(
       ) {
         diagnostics.push(
           `${source}: autoMode.classifierReasoningLevel must be one of low, medium, high, xhigh, max`,
+        );
+      }
+      if (
+        hasOwn(autoMode, "classifyReadOnlyTools") &&
+        typeof autoMode.classifyReadOnlyTools !== "boolean"
+      ) {
+        diagnostics.push(
+          `${source}: autoMode.classifyReadOnlyTools must be a boolean`,
+        );
+      }
+      if (
+        hasOwn(autoMode, "fastClassifierMaxTokens") &&
+        (!Number.isInteger(autoMode.fastClassifierMaxTokens) ||
+          (autoMode.fastClassifierMaxTokens as number) < 16)
+      ) {
+        diagnostics.push(
+          `${source}: autoMode.fastClassifierMaxTokens must be an integer of at least 16`,
         );
       }
       for (
@@ -302,6 +323,10 @@ function validTranscriptBudget(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 32;
 }
 
+function validFastClassifierBudget(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 16;
+}
+
 function applyAutoModeScalars(
   base: EffectiveConfig,
   settings: AutoModeSettings | undefined,
@@ -316,6 +341,13 @@ function applyAutoModeScalars(
       )
       ? settings.classifierReasoningLevel
       : base.classifierReasoningLevel,
+    classifyReadOnlyTools: settings.classifyReadOnlyTools ??
+      base.classifyReadOnlyTools,
+    fastClassifierMaxTokens: validFastClassifierBudget(
+        settings.fastClassifierMaxTokens,
+      )
+      ? settings.fastClassifierMaxTokens
+      : base.fastClassifierMaxTokens,
     maxUserTranscriptTokens: validTranscriptBudget(
         settings.maxUserTranscriptTokens,
       )
@@ -357,6 +389,8 @@ export function buildEffectiveConfigFromSources(
 ): EffectiveConfig {
   let config: EffectiveConfig = {
     enabled: true,
+    classifyReadOnlyTools: DEFAULT_CLASSIFY_READ_ONLY_TOOLS,
+    fastClassifierMaxTokens: DEFAULT_FAST_CLASSIFIER_MAX_TOKENS,
     maxUserTranscriptTokens: DEFAULT_MAX_USER_TRANSCRIPT_TOKENS,
     maxToolTranscriptTokens: DEFAULT_MAX_TOOL_TRANSCRIPT_TOKENS,
     environment: [...DEFAULT_ENVIRONMENT],

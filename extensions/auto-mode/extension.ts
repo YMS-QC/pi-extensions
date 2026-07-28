@@ -321,7 +321,9 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }, logCtx);
       }
 
-      if (READ_ONLY_TOOLS.has(event.toolName)) {
+      if (
+        !cfg.classifyReadOnlyTools && READ_ONLY_TOOLS.has(event.toolName)
+      ) {
         return allow(
           ctx,
           "read-only",
