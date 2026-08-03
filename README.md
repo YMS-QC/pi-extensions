@@ -96,12 +96,12 @@ Example:
 
 ```json
 {
-    "autoMode": {
-      "classifierModel": "provider/model-id",
-      "classifierReasoningLevel": "low",
-      "classifyReadOnlyTools": false,
-      "fastClassifierMaxTokens": 512,
-      "maxUserTranscriptTokens": 4000,
+  "autoMode": {
+    "classifierModel": "provider/model-id",
+    "classifierReasoningLevel": "low",
+    "classifyReadOnlyTools": false,
+    "fastClassifierMaxTokens": 512,
+    "maxUserTranscriptTokens": 4000,
     "maxToolTranscriptTokens": 4000,
     "environment": [
       "$defaults",
