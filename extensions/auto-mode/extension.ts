@@ -242,7 +242,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       // Enforcement order:
       // 1. permission deny/ask rules,
       // 2. deterministic hard-deny checks that never consult the model,
-      // 3. read-only built-in fast path,
+      // 3. read-only built-in fast path (skipped when classifyReadOnlyTools is set),
       // 4. classifier for every remaining action, fail-closed on setup/parse errors.
       const cfg = effectiveConfig();
       if (!cfg.enabled) return undefined;
