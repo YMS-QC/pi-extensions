@@ -88,7 +88,7 @@ This is project-local and should not be committed. Shared project `.pi/automode.
 
 Set a global default classifier model in `~/.pi/agent/automode.json`; override it per project in `.pi/automode.local.json`.
 
-`classifierReasoningLevel` optionally requests `low`, `medium`, `high`, `xhigh`, or `max` reasoning for both classifier stages. If the key is absent, pi-automode sends no reasoning preference and leaves the choice to the server. Pi AI clamps unsupported values to the nearest level supported by the selected model; a non-reasoning model resolves to `off`. `low` matches Codex Auto Review's reasoning effort and is the practical default when an explicit value is needed. Higher levels can consume the existing 512/1200-token stage limits before producing visible output, which causes the classifier to fail closed.
+`classifierReasoningLevel` optionally requests `low`, `medium`, `high`, `xhigh`, or `max` reasoning for both classifier stages. If the key is absent, pi-automode sends no reasoning preference and leaves the choice to the server. Pi AI clamps unsupported values to the nearest level supported by the selected model; a non-reasoning model resolves to `off`. `low` matches Codex Auto Review's reasoning effort and the practical default when an explicit value is needed. Higher levels can consume the existing 512/1200-token stage limits before producing visible output, which causes the classifier to fail closed. Raise `fastClassifierMaxTokens` (default 512, integer ≥ 16) if you run a reasoning model whose fast-stage budget is truncated before it emits the required `0`/`1` digit.
 
 The setting follows the normal scalar precedence: global, then project-local, then `PI_AUTOMODE_SETTINGS_JSON`. Shared project `.pi/automode.json` cannot set it. Omitting the key at a higher-precedence scope does not clear a lower-precedence value.
 
@@ -96,10 +96,12 @@ Example:
 
 ```json
 {
-  "autoMode": {
-    "classifierModel": "provider/model-id",
-    "classifierReasoningLevel": "low",
-    "maxUserTranscriptTokens": 4000,
+    "autoMode": {
+      "classifierModel": "provider/model-id",
+      "classifierReasoningLevel": "low",
+      "classifyReadOnlyTools": false,
+      "fastClassifierMaxTokens": 512,
+      "maxUserTranscriptTokens": 4000,
     "maxToolTranscriptTokens": 4000,
     "environment": [
       "$defaults",
@@ -169,7 +171,7 @@ The extension blocks these before any allow or classifier decision:
 - root, home, and system-path destructive deletes
 - edits to `.pi/automode*`, `.pi` auto-mode files, and this extension's safety-control files
 
-Read-only Pi tools (`read`, `grep`, `find`, `ls`) are allowed after those checks. Every side-effecting action goes to the classifier, including all `write` and `edit` calls, `bash`, MCP, subagent, network-capable tools, and unknown tools. This keeps classifier hard-deny rules unconditional; direct file writes cannot bypass them.
+Read-only Pi tools (`read`, `grep`, `find`, `ls`) are allowed after those checks. Every side-effecting action goes to the classifier, including all `write` and `edit` calls, `bash`, MCP, subagent, network-capable tools, and unknown tools. This keeps classifier hard-deny rules unconditional; direct file writes cannot bypass them. Set `classifyReadOnlyTools: true` to route read-only tools through the classifier as well, so reads outside the trusted working tree can be denied by policy.
 
 Classification starts with a one-token conservative filter and runs structured review only when that filter requests it. Both stages use a classifier-specific session key and short provider cache retention where the provider supports it. Missing models, provider failures, or malformed responses block the action.
 

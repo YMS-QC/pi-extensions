@@ -179,6 +179,17 @@ export const PROFILE_FILES = new Set([
 
 export const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 
+/**
+ * Default behavior: read-only tools bypass the classifier entirely (the
+ * original auto-mode fast path). When set to true via config, read-only tools
+ * are routed through the classifier like any other action, so e.g. reads
+ * outside the trusted working tree can be denied by policy.
+ */
+export const DEFAULT_CLASSIFY_READ_ONLY_TOOLS = false;
+
+/** Default upper bound on fast-stage completion tokens (see PR note). */
+export const DEFAULT_FAST_CLASSIFIER_MAX_TOKENS = 512;
+
 /** Default observability log config: off, classifier I/O off. */
 export const DEFAULT_LOG_CONFIG = {
   enabled: false,

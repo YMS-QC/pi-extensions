@@ -133,6 +133,8 @@ function createFakeCtx(entries: any[] = [], overrides: Record<string, unknown> =
 function baseConfig(overrides: Partial<EffectiveConfig> = {}): EffectiveConfig {
 	return {
 		enabled: true,
+		classifyReadOnlyTools: false,
+		fastClassifierMaxTokens: 512,
 		maxUserTranscriptTokens: 4000,
 		maxToolTranscriptTokens: 4000,
 		environment: [],
@@ -1044,6 +1046,75 @@ test("tool_call hook allows safe read-only tools without classifier", async () =
 
 	assert.equal(result, undefined);
 	assert.equal(harness.classifierCalls, 0);
+});
+
+test("tool_call routes read-only tools through classifier when classifyReadOnlyTools is true", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ classifyReadOnlyTools: true }),
+		classifier: async () => ({ decision: "allow", tier: "allow", reason: "mock allow" }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: "README.md" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 1);
+});
+
+test("tool_call blocks read-only tools via classifier when classifyReadOnlyTools is true and classifier denies", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ classifyReadOnlyTools: true }),
+		classifier: async () => ({ decision: "block", tier: "hard_deny", reason: "mock block" }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: "/etc/shadow" },
+	}, harness.ctx) as { block?: boolean; reason?: string };
+
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /mock block/);
+	assert.equal(harness.classifierCalls, 1);
+});
+
+test("classifyReadOnlyTools defaults to false", () => {
+	assert.equal(buildEffectiveConfigFromSources({}).classifyReadOnlyTools, false);
+});
+
+test("fastClassifierMaxTokens defaults to 512 and is configurable", () => {
+	assert.equal(buildEffectiveConfigFromSources({}).fastClassifierMaxTokens, 512);
+	const config = buildEffectiveConfigFromSources({
+		globalSettings: [{ autoMode: { fastClassifierMaxTokens: 2048 } }],
+	});
+	assert.equal(config.fastClassifierMaxTokens, 2048);
+});
+
+test("validateSettingsFile rejects non-boolean classifyReadOnlyTools", () => {
+	const diagnostics = validateSettingsFile(
+		{ autoMode: { classifyReadOnlyTools: "yes" } },
+		"inline",
+	);
+	assert.ok(diagnostics.some((d) => /classifyReadOnlyTools must be a boolean/.test(d)));
+});
+
+test("validateSettingsFile rejects fastClassifierMaxTokens below 16", () => {
+	const diagnostics = validateSettingsFile(
+		{ autoMode: { fastClassifierMaxTokens: 8 } },
+		"inline",
+	);
+	assert.ok(
+		diagnostics.some((d) => /fastClassifierMaxTokens must be an integer of at least 16/.test(d)),
+	);
+});
+
+test("validateSettingsFile accepts valid classifyReadOnlyTools and fastClassifierMaxTokens", () => {
+	const diagnostics = validateSettingsFile(
+		{ autoMode: { classifyReadOnlyTools: true, fastClassifierMaxTokens: 1024 } },
+		"inline",
+	);
+	assert.equal(diagnostics.length, 0);
 });
 
 test("tool_call hook uses classifier mock for non-read-only actions", async () => {
