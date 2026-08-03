@@ -156,7 +156,18 @@ function isRecursiveRmArg(arg: string): boolean {
   );
 }
 
-function isRootHomeOrSystemPath(path: string): boolean {
+/**
+ * True for `/`, the user's home root, or a top-level system root such as
+ * `/etc`, `/usr`, or `/var`. Excludes the home *subtree*.
+ *
+ * On some distros (e.g. Fedora Silverblue) HOME lives under `/var`, which is
+ * in `systemRoots`. Without the subtree exemption, `path.startsWith("/var/")`
+ * would treat every path under HOME as a system root and hard-deny routine
+ * `rm -rf ~/...`. HOME itself is still matched below, so `rm -rf ~` stays
+ * blocked. `home` is a parameter so this can be unit-tested with a synthetic
+ * `/var/home/...` value.
+ */
+export function isRootHomeOrSystemPath(path: string, home: string): boolean {
   const systemRoots = [
     "/bin",
     "/boot",
@@ -170,10 +181,10 @@ function isRootHomeOrSystemPath(path: string): boolean {
     "/usr",
     "/var",
   ];
-  if (path.startsWith(`${HOME}/`)) return false;
+  if (path.startsWith(`${home}/`)) return false;
   return (
     path === "/" ||
-    path === HOME ||
+    path === home ||
     systemRoots.some((root) => path === root || path.startsWith(`${root}/`))
   );
 }
@@ -262,7 +273,7 @@ function segmentHardDeny(
   if (name === "rm" && args.some(isRecursiveRmArg)) {
     for (const arg of args.filter((arg) => !arg.startsWith("-"))) {
       const path = shellPathTokenToPath(arg, cwd);
-      if (path && isRootHomeOrSystemPath(path)) {
+      if (path && isRootHomeOrSystemPath(path, HOME)) {
         return "irreversible deletion of home/root/system paths is hard-denied";
       }
     }
@@ -270,7 +281,7 @@ function segmentHardDeny(
 
   if (name === "find" && lowerArgs.includes("-delete")) {
     const root = shellPathTokenToPath(args[0] ?? "", cwd);
-    if (root && isRootHomeOrSystemPath(root) && root !== HOME) {
+    if (root && isRootHomeOrSystemPath(root, HOME) && root !== HOME) {
       return "system-wide delete is hard-denied";
     }
   }

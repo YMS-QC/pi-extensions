@@ -21,6 +21,7 @@ import {
 	createLogger,
 	createPiAutomode,
 	deterministicHardDeny,
+	isRootHomeOrSystemPath,
 	matchesProtectedPath,
 	matchesToolPattern,
 	newDecisionId,
@@ -340,6 +341,33 @@ test("shell parsing catches risky suffixes, redirects, and quoted HOME targets",
 		deterministicHardDeny("bash", { command: "echo nope | tee .pi/automode.local.json" }, "/tmp/project") ?? "",
 		/safety-control/,
 	);
+});
+
+test("isRootHomeOrSystemPath exempts home subtree but keeps home root and system paths", () => {
+	// Silverblue-style HOME under /var: the case PR #7 fixed. With a real
+	// os.homedir() this subtree used to match `path.startsWith("/var/")` and
+	// hard-deny routine `rm -rf ~/...`.
+	const home = "/var/home/jdoe";
+	const cases: Array<[string, boolean]> = [
+		[home, true], // rm -rf ~ stays blocked
+		[`${home}/projects/foo/build`, false], // the bug: was true before the fix
+		["/var", true], // /var itself stays protected
+		["/var/log", true], // sibling system path under /var stays protected
+		["/var/lib/pkg", true],
+		["/etc", true],
+		["/usr/share/x", true],
+		["/", true],
+		["/opt/app", false], // not a tracked system root
+	];
+	for (const [path, expected] of cases) {
+		assert.equal(isRootHomeOrSystemPath(path, home), expected, `path=${path}`);
+	}
+
+	// Standard HOME (/home/user): system roots still protected, subtree exempt.
+	const stdHome = "/home/jdoe";
+	assert.equal(isRootHomeOrSystemPath(stdHome, stdHome), true);
+	assert.equal(isRootHomeOrSystemPath(`${stdHome}/src/pkg`, stdHome), false);
+	assert.equal(isRootHomeOrSystemPath("/etc/hosts", stdHome), true);
 });
 
 test("writeGlobalClassifierModel preserves global automode settings", () => {
