@@ -14,6 +14,7 @@ import {
   CLASSIFIER_DETAILED_INSTRUCTION,
   CLASSIFIER_FAST_INSTRUCTION,
   CLASSIFIER_SYSTEM_PROMPT,
+  DEFAULT_FAST_CLASSIFIER_MAX_TOKENS,
 } from "./constants.ts";
 import { formatModelSpec, parseModelSpec } from "./model.ts";
 import { buildClassifierTranscript } from "./transcript.ts";
@@ -129,11 +130,9 @@ export type RetryOptions = {
   onAttempt?: (attempt: ClassifierIoAttempt) => void;
 };
 
-const FAST_CLASSIFIER_MAX_TOKENS = 512;
-
 export type StagedClassifierOptions = {
   sessionId: string;
-  /** Override the fast-stage token budget; falls back to FAST_CLASSIFIER_MAX_TOKENS. */
+  /** Override the fast-stage token budget; falls back to the default (512). */
   fastClassifierMaxTokens?: number;
   reasoningLevel?: Exclude<EffectiveClassifierReasoningLevel, "off">;
   onAttempt?: (attempt: ClassifierIoAttempt) => void;
@@ -401,7 +400,7 @@ export async function classifyInStages(
         // Reasoning and OpenAI-compatible models may consume hidden reasoning,
         // control, and EOS tokens before emitting the required visible digit.
         maxTokens: options.fastClassifierMaxTokens ??
-          FAST_CLASSIFIER_MAX_TOKENS,
+          DEFAULT_FAST_CLASSIFIER_MAX_TOKENS,
         ...(options.reasoningLevel === undefined
           ? {}
           : { reasoning: options.reasoningLevel }),
