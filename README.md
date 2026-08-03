@@ -171,7 +171,7 @@ The extension blocks these before any allow or classifier decision:
 - root, home, and system-path destructive deletes
 - edits to `.pi/automode*`, `.pi` auto-mode files, and this extension's safety-control files
 
-Read-only Pi tools (`read`, `grep`, `find`, `ls`) are allowed after those checks. Every side-effecting action goes to the classifier, including all `write` and `edit` calls, `bash`, MCP, subagent, network-capable tools, and unknown tools. This keeps classifier hard-deny rules unconditional; direct file writes cannot bypass them. Set `classifyReadOnlyTools: true` to route read-only tools through the classifier as well, so reads outside the trusted working tree can be denied by policy.
+Read-only Pi tools (`read`, `grep`, `find`, `ls`) are allowed after those checks. Every side-effecting action goes to the classifier, including all `write` and `edit` calls, `bash`, MCP, subagent, network-capable tools, and unknown tools. This keeps classifier hard-deny rules unconditional; direct file writes cannot bypass them. Set `classifyReadOnlyTools: true` to route read-only tools through the classifier as well, so reads outside the trusted working tree can be denied by policy. With it enabled, every `read`, `grep`, `find`, and `ls` call runs the two-stage classifier, which raises the number of model calls, the latency, and the cost per session.
 
 Classification starts with a one-token conservative filter and runs structured review only when that filter requests it. Both stages use a classifier-specific session key and short provider cache retention where the provider supports it. Missing models, provider failures, or malformed responses block the action.
 
