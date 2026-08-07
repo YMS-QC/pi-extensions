@@ -1270,6 +1270,25 @@ test("allowInsideWorkingDirectory with classifyReadOnlyTools classifies out-of-c
 	assert.equal(harness.classifierCalls, 1);
 });
 
+test("deniedPaths matches the symlink-resolved form of a path", async (t) => {
+	const base = mkdtempSync(join(os.tmpdir(), "pi-automode-denied-"));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	mkdirSync(join(base, "real-secrets"));
+	symlinkSync(join(base, "real-secrets"), join(base, "link-secrets"));
+	const harness = await setupHookTest({
+		config: baseConfig({ deniedPaths: ["**/real-secrets/*"] }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: join(base, "link-secrets", "token.txt") },
+	}, harness.ctx) as { block?: boolean; reason?: string };
+
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /Path denied by policy/);
+	assert.equal(harness.classifierCalls, 0);
+});
+
 test("deniedPaths hard-blocks a matching file-tool path before the classifier", async () => {
 	const harness = await setupHookTest({
 		config: baseConfig({ deniedPaths: ["*.env", "~/.ssh/*", "/etc/*"] }),
