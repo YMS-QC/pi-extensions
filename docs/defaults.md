@@ -46,13 +46,13 @@ These are exceptions to `soft_deny`, not to `hard_deny`.
 
 ### `protectedPaths`
 
-`$defaults` expands to safety-sensitive paths. Every `write` and `edit` call now goes to the classifier, so `protectedPaths` no longer changes whether a model call occurs; it remains part of the resolved configuration for compatibility and inspection. No path can be reached through a direct-write allow path, and `allow` rules cannot override a classifier hard-deny decision.
+`$defaults` expands to safety-sensitive paths. In the default configuration every `write` and `edit` call goes to the classifier, so `protectedPaths` does not change whether a model call occurs; it remains part of the resolved configuration for compatibility and inspection. With `allowInsideWorkingDirectory: true`, non-protected in-tree file access takes the deterministic allow tier, but writes and edits to these protected paths still reach the classifier; `allow` rules cannot override a classifier hard-deny decision.
 
 Protected directories: `.git`, `.config/git`, `.vscode`, `.idea`, `.husky`, `.cargo`, `.devcontainer`, `.yarn`, `.mvn`, `.pi`.
 
 Protected files: `.gitconfig`, `.gitmodules`, `.gitignore`, `.gitattributes`, shell profiles (`.bashrc`, `.zshrc`, `.profile`, etc.), `.envrc`, package manager configs (`.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.pnp.cjs`, `bunfig.toml`, etc.), Bazel configs (`.bazelrc`, `.bazelversion`, `.bazeliskrc`), hook configs (`.pre-commit-config.yaml`, `lefthook.yml`), Gradle/Maven wrappers, `.devcontainer.json`, `.ripgreprc`, `pyrightconfig.json`, `.mcp.json`.
 
-Read-only tools (`read`, `grep`, `find`, `ls`) remain locally allowed after permission and deterministic checks. Writes and edits always require classification, regardless of their target.
+Read-only tools (`read`, `grep`, `find`, `ls`) remain locally allowed after permission and deterministic checks. In the default configuration writes and edits always require classification, regardless of their target; with `allowInsideWorkingDirectory` enabled, only protected targets still require it.
 
 ### `deniedPaths`
 
