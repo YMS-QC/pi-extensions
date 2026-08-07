@@ -7,6 +7,7 @@ import {
 import type {
   AssistantMessage,
   Model,
+  ProviderHeaders,
   UserMessage,
 } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -54,7 +55,7 @@ type ClassifierResolution = {
   classifier?: {
     model: Model<any>;
     apiKey?: string;
-    headers?: Record<string, string>;
+    headers?: ProviderHeaders;
   };
   completionPlan?: ClassifierCompletionPlan;
 };
@@ -108,7 +109,7 @@ export type ClassifierCompletionFn = (
   options: { systemPrompt: string; messages: UserMessage[] },
   callOptions: {
     apiKey?: string;
-    headers?: Record<string, string>;
+    headers?: ProviderHeaders;
     signal?: AbortSignal;
     maxTokens: number;
     temperature?: number;
@@ -304,7 +305,7 @@ export async function classifyWithRetry(
   classifier: {
     model: Model<any>;
     apiKey?: string;
-    headers?: Record<string, string>;
+    headers?: ProviderHeaders;
   },
   prompt: { systemPrompt: string; messages: UserMessage[] },
   signal: AbortSignal | undefined,
@@ -375,7 +376,7 @@ export async function classifyInStages(
   classifier: {
     model: Model<any>;
     apiKey?: string;
-    headers?: Record<string, string>;
+    headers?: ProviderHeaders;
   },
   prompt: { systemPrompt: string; contextMessage: UserMessage },
   signal: AbortSignal | undefined,
