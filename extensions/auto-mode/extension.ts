@@ -339,9 +339,15 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       // directory, and routes outside-CWD file access to the classifier
       // (bypassing the read-only fast path so reads outside the tree are
       // reviewed too).
+      //
+      // The gate is skipped entirely when both features are off, so the
+      // default configuration costs no extra filesystem calls.
       let readOnlyFastPath =
         !cfg.classifyReadOnlyTools && READ_ONLY_TOOLS.has(event.toolName);
-      if (PATH_BEARING_TOOLS.has(event.toolName)) {
+      if (
+        (cfg.deniedPaths.length > 0 || cfg.allowInsideWorkingDirectory) &&
+        PATH_BEARING_TOOLS.has(event.toolName)
+      ) {
         const inputPath = extractInputPath(event.toolName, input);
         if (inputPath !== undefined) {
           const expanded = expandHomePattern(inputPath);
