@@ -1201,7 +1201,7 @@ test("deniedPaths hard-blocks a matching file-tool path before the classifier", 
 
 	const result = await harness.emit("tool_call", {
 		toolName: "read",
-		input: { path: "/home/alex/.ssh/id_rsa" },
+		input: { path: join(os.homedir(), ".ssh", "id_rsa") },
 	}, harness.ctx) as { block?: boolean; reason?: string };
 
 	assert.equal(result.block, true);
@@ -1280,6 +1280,64 @@ test("allowInsideWorkingDirectory routes outside-cwd file access to the classifi
 
 	assert.equal(result, undefined);
 	assert.equal(harness.classifierCalls, 1);
+});
+
+test("allowInsideWorkingDirectory sends protected in-cwd writes to the classifier", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ allowInsideWorkingDirectory: true }),
+		classifier: async () => ({ decision: "allow", tier: "allow", reason: "ok" }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "write",
+		input: { path: "/tmp/project/.git/hooks/pre-commit", content: "x" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 1);
+});
+
+test("allowInsideWorkingDirectory sends protected in-cwd edits to the classifier", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ allowInsideWorkingDirectory: true }),
+		classifier: async () => ({ decision: "allow", tier: "allow", reason: "ok" }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "edit",
+		input: { path: "/tmp/project/.husky/pre-commit", oldText: "a", newText: "b" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 1);
+});
+
+test("allowInsideWorkingDirectory still allows non-protected in-cwd writes without the classifier", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ allowInsideWorkingDirectory: true }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "write",
+		input: { path: "/tmp/project/src/app.ts", content: "x" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("allowInsideWorkingDirectory allows protected in-cwd reads without the classifier", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ allowInsideWorkingDirectory: true }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: "/tmp/project/.git/config" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 0);
 });
 
 test("tool_call hook uses classifier mock for non-read-only actions", async () => {

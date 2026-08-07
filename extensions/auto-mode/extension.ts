@@ -36,6 +36,7 @@ import {
   expandHomePattern,
   extractInputPath,
   isInside,
+  isProtectedPath,
   resolveInputPath,
   resolvePathForPolicy,
 } from "./paths.ts";
@@ -362,14 +363,25 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           if (cfg.allowInsideWorkingDirectory) {
             const policyCwd = resolvePathForPolicy(ctx.cwd) ?? ctx.cwd;
             if (isInside(policyPath, policyCwd)) {
-              return allow(
-                ctx,
-                "inside-working-directory",
-                `Path inside working directory: ${policyPath}`,
-                event.toolName,
-                summary,
-                logCtx,
-              );
+              // Protected in-tree writes must still reach the classifier;
+              // otherwise the allow tier bypasses the protected-path policy
+              // for sensitive repository content such as .git/hooks/*, .pi/*,
+              // .husky/*, or .gitignore.
+              if (
+                (event.toolName === "write" || event.toolName === "edit") &&
+                isProtectedPath(policyPath, policyCwd, cfg.protectedPaths)
+              ) {
+                readOnlyFastPath = false;
+              } else {
+                return allow(
+                  ctx,
+                  "inside-working-directory",
+                  `Path inside working directory: ${policyPath}`,
+                  event.toolName,
+                  summary,
+                  logCtx,
+                );
+              }
             }
             // Outside the working directory: the read-only fast path must not
             // apply; the classifier reviews this call.
