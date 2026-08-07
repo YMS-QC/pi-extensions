@@ -1235,6 +1235,41 @@ test("validateSettingsFile accepts $defaults in deniedPaths as a no-op", () => {
 	assert.deepEqual(config.deniedPaths, ["*.env"]);
 });
 
+test("allowInsideWorkingDirectory wins over classifyReadOnlyTools for in-cwd reads", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({
+			allowInsideWorkingDirectory: true,
+			classifyReadOnlyTools: true,
+		}),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: "/tmp/project/src/app.ts" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("allowInsideWorkingDirectory with classifyReadOnlyTools classifies out-of-cwd reads", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({
+			allowInsideWorkingDirectory: true,
+			classifyReadOnlyTools: true,
+		}),
+		classifier: async () => ({ decision: "allow", tier: "allow", reason: "ok" }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: "/etc/hosts" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 1);
+});
+
 test("deniedPaths hard-blocks a matching file-tool path before the classifier", async () => {
 	const harness = await setupHookTest({
 		config: baseConfig({ deniedPaths: ["*.env", "~/.ssh/*", "/etc/*"] }),
