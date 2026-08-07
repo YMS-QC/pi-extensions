@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   DEFAULT_ALLOW,
+  DEFAULT_ALLOW_INSIDE_WORKING_DIRECTORY,
   DEFAULT_CLASSIFY_READ_ONLY_TOOLS,
+  DEFAULT_DENIED_PATHS,
   DEFAULT_ENVIRONMENT,
   DEFAULT_FAST_CLASSIFIER_MAX_TOKENS,
   DEFAULT_HARD_DENY,
@@ -103,6 +105,8 @@ export function validateSettingsFile(
         "classifierReasoningLevel",
         "classifyReadOnlyTools",
         "fastClassifierMaxTokens",
+        "allowInsideWorkingDirectory",
+        "deniedPaths",
         "maxUserTranscriptTokens",
         "maxToolTranscriptTokens",
         "environment",
@@ -157,6 +161,19 @@ export function validateSettingsFile(
           `${source}: autoMode.fastClassifierMaxTokens must be an integer of at least 16`,
         );
       }
+      if (
+        hasOwn(autoMode, "allowInsideWorkingDirectory") &&
+        typeof autoMode.allowInsideWorkingDirectory !== "boolean"
+      ) {
+        diagnostics.push(
+          `${source}: autoMode.allowInsideWorkingDirectory must be a boolean`,
+        );
+      }
+      validateDeniedPathsSetting(
+        autoMode.deniedPaths,
+        source,
+        diagnostics,
+      );
       for (
         const key of [
           "maxUserTranscriptTokens",
@@ -304,6 +321,48 @@ function mergeLog(
   };
 }
 
+/**
+ * Validate `deniedPaths`: an array of non-empty path patterns. Unlike the
+ * `$defaults` rule lists there is no built-in default list, so `$defaults` is
+ * a no-op (accepted for consistency with the other rule lists) and omitting
+ * it is not a diagnostic.
+ */
+function validateDeniedPathsSetting(
+  value: unknown,
+  source: string,
+  diagnostics: string[],
+): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    diagnostics.push(`${source}: deniedPaths must be an array of strings`);
+    return;
+  }
+  for (const [index, entry] of value.entries()) {
+    if (entry === "$defaults") continue;
+    if (typeof entry !== "string" || entry.trim() === "") {
+      diagnostics.push(
+        `${source}: deniedPaths[${index}] must be a non-empty path pattern`,
+      );
+      continue;
+    }
+    if (!DENIED_PATH_PATTERN_PREFIX.test(entry)) {
+      diagnostics.push(
+        `${source}: deniedPaths[${index}] "${entry}" can never match a resolved absolute path; start it with *, ~, $HOME, \${HOME}, or / (e.g. "**/${entry}")`,
+      );
+    }
+  }
+}
+
+/**
+ * A pattern can only match a resolved absolute path when it starts with a
+ * form that anchors it: a leading `/`, a home expansion (`~`, `$HOME`,
+ * `${HOME}`), or a `*` wildcard that absorbs the leading slash. Anything else
+ * (e.g. `config.json` or `src/secret.txt`) matches only against the bare
+ * relative name, which the matcher never sees.
+ */
+const DENIED_PATH_PATTERN_PREFIX =
+  /^(?:\/|~(?:\/|$)|\$HOME(?:\/|$)|\$\{HOME\}(?:\/|$)|\*)/;
+
 const CLASSIFIER_REASONING_LEVELS = new Set<ClassifierReasoningLevel>([
   "low",
   "medium",
@@ -343,6 +402,8 @@ function applyAutoModeScalars(
       : base.classifierReasoningLevel,
     classifyReadOnlyTools: settings.classifyReadOnlyTools ??
       base.classifyReadOnlyTools,
+    allowInsideWorkingDirectory:
+      settings.allowInsideWorkingDirectory ?? base.allowInsideWorkingDirectory,
     fastClassifierMaxTokens: validFastClassifierBudget(
         settings.fastClassifierMaxTokens,
       )
@@ -390,6 +451,8 @@ export function buildEffectiveConfigFromSources(
   let config: EffectiveConfig = {
     enabled: true,
     classifyReadOnlyTools: DEFAULT_CLASSIFY_READ_ONLY_TOOLS,
+    allowInsideWorkingDirectory: DEFAULT_ALLOW_INSIDE_WORKING_DIRECTORY,
+    deniedPaths: [...DEFAULT_DENIED_PATHS],
     fastClassifierMaxTokens: DEFAULT_FAST_CLASSIFIER_MAX_TOKENS,
     maxUserTranscriptTokens: DEFAULT_MAX_USER_TRANSCRIPT_TOKENS,
     maxToolTranscriptTokens: DEFAULT_MAX_TOOL_TRANSCRIPT_TOKENS,
@@ -416,6 +479,7 @@ export function buildEffectiveConfigFromSources(
   const environment = createRuleAccumulator(DEFAULT_ENVIRONMENT);
   const allow = createRuleAccumulator(DEFAULT_ALLOW);
   const protectedPaths = createRuleAccumulator(DEFAULT_PROTECTED_PATHS);
+  const deniedPaths = createRuleAccumulator(DEFAULT_DENIED_PATHS);
   const softDeny = createRuleAccumulator(DEFAULT_SOFT_DENY);
   const hardDeny = createRuleAccumulator(DEFAULT_HARD_DENY);
 
@@ -424,6 +488,7 @@ export function buildEffectiveConfigFromSources(
     applyRuleSetting(environment, settings.autoMode?.environment);
     applyRuleSetting(allow, settings.autoMode?.allow);
     applyRuleSetting(protectedPaths, settings.autoMode?.protectedPaths);
+    applyRuleSetting(deniedPaths, settings.autoMode?.deniedPaths);
     applyRuleSetting(
       softDeny,
       settings.autoMode?.soft_deny ?? settings.autoMode?.softDeny,
@@ -439,6 +504,7 @@ export function buildEffectiveConfigFromSources(
     environment: finalizeRuleSetting(environment),
     allow: finalizeRuleSetting(allow),
     protectedPaths: finalizeRuleSetting(protectedPaths),
+    deniedPaths: finalizeRuleSetting(deniedPaths),
     softDeny: finalizeRuleSetting(softDeny),
     hardDeny: finalizeRuleSetting(hardDeny),
   };

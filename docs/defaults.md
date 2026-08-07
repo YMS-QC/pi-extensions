@@ -54,6 +54,10 @@ Protected files: `.gitconfig`, `.gitmodules`, `.gitignore`, `.gitattributes`, sh
 
 Read-only tools (`read`, `grep`, `find`, `ls`) remain locally allowed after permission and deterministic checks. Writes and edits always require classification, regardless of their target.
 
+### `deniedPaths`
+
+`deniedPaths` is a separate opt-in list (default `[]`, no built-in entries, so `$defaults` is a no-op; it is accepted for consistency with the other rule lists) of path glob patterns that are hard-denied for the file tools (`read`, `write`, `edit`, `grep`, `find`, `ls`) before any classifier or fast-path decision. Use it for secrets and system paths that must never reach the model through the file tools; `bash` access to such paths remains classifier-governed. Patterns support `~`/`$HOME`/`${HOME}` expansion and `*` (matches any characters, including `/`). Matching checks both the typed path and its symlink-resolved form. `deniedPaths` only restricts; it never grants access.
+
 ### `soft_deny`
 
 `$defaults` expands to soft blocks for:

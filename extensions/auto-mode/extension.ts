@@ -19,6 +19,7 @@ import {
   DEFAULT_HARD_DENY,
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_SOFT_DENY,
+  PATH_BEARING_TOOLS,
   READ_ONLY_TOOLS,
 } from "./constants.ts";
 import {
@@ -35,7 +36,15 @@ import {
 } from "./log.ts";
 import { formatModelSpec, parseModelSpec } from "./model.ts";
 import { promptForClassifierModel } from "./model-selector.ts";
-import { matchesToolPattern } from "./permissions.ts";
+import { matchesDeniedPath, matchesToolPattern } from "./permissions.ts";
+import {
+  expandHomePattern,
+  extractInputPath,
+  isInside,
+  isProtectedPath,
+  resolveInputPath,
+  resolvePathForPolicy,
+} from "./paths.ts";
 import {
   actionSummary,
   formatDenials,
@@ -437,9 +446,73 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
 
       if (isOwnedInspection) return undefined;
 
+      // Deterministic path gate for file tools.
+      //
+      // `deniedPaths` always applies: a matching path is hard-denied before any
+      // classifier or fast path, so secrets and system dirs never reach the
+      // model. `allowInsideWorkingDirectory` adds a deterministic silent-allow
+      // tier for file tools whose resolved path is inside the working
+      // directory, and routes outside-CWD file access to the classifier
+      // (bypassing the read-only fast path so reads outside the tree are
+      // reviewed too).
+      //
+      // The gate is skipped entirely when both features are off, so the
+      // default configuration costs no extra filesystem calls.
+      let readOnlyFastPath =
+        !cfg.classifyReadOnlyTools && READ_ONLY_TOOLS.has(event.toolName);
       if (
-        !cfg.classifyReadOnlyTools && READ_ONLY_TOOLS.has(event.toolName)
+        (cfg.deniedPaths.length > 0 || cfg.allowInsideWorkingDirectory) &&
+        PATH_BEARING_TOOLS.has(event.toolName)
       ) {
+        const inputPath = extractInputPath(event.toolName, input);
+        if (inputPath !== undefined) {
+          const expanded = expandHomePattern(inputPath);
+          const resolved = resolveInputPath(ctx.cwd, expanded) ?? expanded;
+          const policyPath = resolvePathForPolicy(resolved) ?? resolved;
+          const denied =
+            cfg.deniedPaths.length > 0 &&
+            (matchesDeniedPath(resolved, cfg.deniedPaths) ||
+              matchesDeniedPath(policyPath, cfg.deniedPaths));
+          if (denied) {
+            return block(ctx, {
+              timestamp: Date.now(),
+              toolName: event.toolName,
+              reason: `Path denied by policy: ${policyPath}`,
+              action: summary,
+              kind: "deterministic-path-deny",
+            }, logCtx);
+          }
+          if (cfg.allowInsideWorkingDirectory) {
+            const policyCwd = resolvePathForPolicy(ctx.cwd) ?? ctx.cwd;
+            if (isInside(policyPath, policyCwd)) {
+              // Protected in-tree writes must still reach the classifier;
+              // otherwise the allow tier bypasses the protected-path policy
+              // for sensitive repository content such as .git/hooks/*, .pi/*,
+              // .husky/*, or .gitignore.
+              if (
+                (event.toolName === "write" || event.toolName === "edit") &&
+                isProtectedPath(policyPath, policyCwd, cfg.protectedPaths)
+              ) {
+                readOnlyFastPath = false;
+              } else {
+                return allow(
+                  ctx,
+                  "inside-working-directory",
+                  `Path inside working directory: ${policyPath}`,
+                  event.toolName,
+                  summary,
+                  logCtx,
+                );
+              }
+            }
+            // Outside the working directory: the read-only fast path must not
+            // apply; the classifier reviews this call.
+            readOnlyFastPath = false;
+          }
+        }
+      }
+
+      if (readOnlyFastPath) {
         return allow(
           ctx,
           "read-only",

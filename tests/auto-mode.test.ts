@@ -171,6 +171,8 @@ function baseConfig(overrides: Partial<EffectiveConfig> = {}): EffectiveConfig {
 	return {
 		enabled: true,
 		classifyReadOnlyTools: false,
+		allowInsideWorkingDirectory: false,
+		deniedPaths: [],
 		fastClassifierMaxTokens: 512,
 		maxUserTranscriptTokens: 4000,
 		maxToolTranscriptTokens: 4000,
@@ -1347,6 +1349,294 @@ test("validateSettingsFile accepts valid classifyReadOnlyTools and fastClassifie
 		"inline",
 	);
 	assert.equal(diagnostics.length, 0);
+});
+
+test("allowInsideWorkingDirectory defaults to false and deniedPaths defaults to empty", () => {
+	const config = buildEffectiveConfigFromSources({});
+	assert.equal(config.allowInsideWorkingDirectory, false);
+	assert.deepEqual(config.deniedPaths, []);
+});
+
+test("allowInsideWorkingDirectory and deniedPaths merge from settings", () => {
+	const config = buildEffectiveConfigFromSources({
+		globalSettings: [{
+			autoMode: {
+				allowInsideWorkingDirectory: true,
+				deniedPaths: ["*.env", "~/.ssh/*"],
+			},
+		}],
+	});
+	assert.equal(config.allowInsideWorkingDirectory, true);
+	assert.deepEqual(config.deniedPaths, ["*.env", "~/.ssh/*"]);
+});
+
+test("validateSettingsFile rejects non-boolean allowInsideWorkingDirectory and bad deniedPaths", () => {
+	const d1 = validateSettingsFile(
+		{ autoMode: { allowInsideWorkingDirectory: "yes" } },
+		"inline",
+	);
+	assert.ok(d1.some((x) => /allowInsideWorkingDirectory must be a boolean/.test(x)));
+	const d2 = validateSettingsFile(
+		{ autoMode: { deniedPaths: "*.env" } },
+		"inline",
+	);
+	assert.ok(d2.some((x) => /deniedPaths must be an array of strings/.test(x)));
+	const d3 = validateSettingsFile(
+		{ autoMode: { deniedPaths: ["", "~/.ssh/*"] } },
+		"inline",
+	);
+	assert.ok(
+		d3.some((x) => /deniedPaths\[0\] must be a non-empty path pattern/.test(x)),
+	);
+});
+
+test("validateSettingsFile accepts valid allowInsideWorkingDirectory and deniedPaths", () => {
+	const diagnostics = validateSettingsFile(
+		{ autoMode: { allowInsideWorkingDirectory: true, deniedPaths: ["*.env"] } },
+		"inline",
+	);
+	assert.equal(diagnostics.length, 0);
+});
+
+test("validateSettingsFile flags deniedPaths patterns that can never match an absolute path", () => {
+	const diagnostics = validateSettingsFile(
+		{ autoMode: { deniedPaths: ["config.json", "src/secret.txt", "~foo"] } },
+		"inline",
+	);
+	assert.equal(diagnostics.length, 3);
+	assert.ok(
+		diagnostics.every((x) =>
+			/can never match a resolved absolute path/.test(x)
+		),
+	);
+	const valid = validateSettingsFile(
+		{
+			autoMode: {
+				deniedPaths: [
+					"*.env",
+					"**/id_rsa",
+					"~/.ssh/*",
+					"$HOME/secrets/*",
+					"${HOME}/secrets/*",
+					"/etc/*",
+				],
+			},
+		},
+		"inline",
+	);
+	assert.equal(valid.length, 0);
+});
+
+test("validateSettingsFile accepts $defaults in deniedPaths as a no-op", () => {
+	const diagnostics = validateSettingsFile(
+		{ autoMode: { deniedPaths: ["$defaults", "*.env"] } },
+		"inline",
+	);
+	assert.equal(diagnostics.length, 0);
+	const config = buildEffectiveConfigFromSources({
+		globalSettings: [{ autoMode: { deniedPaths: ["$defaults", "*.env"] } }],
+	});
+	assert.deepEqual(config.deniedPaths, ["*.env"]);
+});
+
+test("allowInsideWorkingDirectory wins over classifyReadOnlyTools for in-cwd reads", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({
+			allowInsideWorkingDirectory: true,
+			classifyReadOnlyTools: true,
+		}),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: "/tmp/project/src/app.ts" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("allowInsideWorkingDirectory with classifyReadOnlyTools classifies out-of-cwd reads", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({
+			allowInsideWorkingDirectory: true,
+			classifyReadOnlyTools: true,
+		}),
+		classifier: async () => ({ decision: "allow", tier: "allow", reason: "ok" }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: "/etc/hosts" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 1);
+});
+
+test("deniedPaths matches the symlink-resolved form of a path", async (t) => {
+	const base = mkdtempSync(join(os.tmpdir(), "pi-automode-denied-"));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	mkdirSync(join(base, "real-secrets"));
+	symlinkSync(join(base, "real-secrets"), join(base, "link-secrets"));
+	const harness = await setupHookTest({
+		config: baseConfig({ deniedPaths: ["**/real-secrets/*"] }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: join(base, "link-secrets", "token.txt") },
+	}, harness.ctx) as { block?: boolean; reason?: string };
+
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /Path denied by policy/);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("deniedPaths hard-blocks a matching file-tool path before the classifier", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ deniedPaths: ["*.env", "~/.ssh/*", "/etc/*"] }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: join(os.homedir(), ".ssh", "id_rsa") },
+	}, harness.ctx) as { block?: boolean; reason?: string };
+
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /Path denied by policy/);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("deniedPaths wins over allowInsideWorkingDirectory for in-cwd secret paths", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ allowInsideWorkingDirectory: true, deniedPaths: ["*.env"] }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: "/tmp/project/.env" },
+	}, harness.ctx) as { block?: boolean; reason?: string };
+
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /Path denied by policy/);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("deniedPaths does not block non-matching read-only paths", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ deniedPaths: ["*.env"] }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: "/tmp/project/README.md" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("deniedPaths lets a non-matching write go to the classifier", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ deniedPaths: ["*.env"] }),
+		classifier: async () => ({ decision: "allow", tier: "allow", reason: "ok" }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "write",
+		input: { path: "/tmp/project/src/app.ts", content: "x" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 1);
+});
+
+test("allowInsideWorkingDirectory allows in-cwd file tools without the classifier", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ allowInsideWorkingDirectory: true }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "write",
+		input: { path: "/tmp/project/src/app.ts", content: "x" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("allowInsideWorkingDirectory routes outside-cwd file access to the classifier (no read-only bypass)", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ allowInsideWorkingDirectory: true }),
+		classifier: async () => ({ decision: "allow", tier: "allow", reason: "ok" }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: "/etc/hosts" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 1);
+});
+
+test("allowInsideWorkingDirectory sends protected in-cwd writes to the classifier", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ allowInsideWorkingDirectory: true }),
+		classifier: async () => ({ decision: "allow", tier: "allow", reason: "ok" }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "write",
+		input: { path: "/tmp/project/.git/hooks/pre-commit", content: "x" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 1);
+});
+
+test("allowInsideWorkingDirectory sends protected in-cwd edits to the classifier", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ allowInsideWorkingDirectory: true }),
+		classifier: async () => ({ decision: "allow", tier: "allow", reason: "ok" }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "edit",
+		input: { path: "/tmp/project/.husky/pre-commit", oldText: "a", newText: "b" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 1);
+});
+
+test("allowInsideWorkingDirectory still allows non-protected in-cwd writes without the classifier", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ allowInsideWorkingDirectory: true }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "write",
+		input: { path: "/tmp/project/src/app.ts", content: "x" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("allowInsideWorkingDirectory allows protected in-cwd reads without the classifier", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ allowInsideWorkingDirectory: true }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: "/tmp/project/.git/config" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 0);
 });
 
 test("tool_call hook uses classifier mock for non-read-only actions", async () => {

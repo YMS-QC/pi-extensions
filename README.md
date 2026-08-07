@@ -107,6 +107,10 @@ Set a global default classifier model in `~/.pi/agent/automode.json`; override i
 
 `classifierReasoningLevel` optionally requests `low`, `medium`, `high`, `xhigh`, or `max` reasoning for both classifier stages. If the key is absent, pi-automode sends no reasoning preference and leaves the choice to the server. Pi AI clamps unsupported values to the nearest level supported by the selected model; a non-reasoning model resolves to `off`. `low` matches Codex Auto Review's reasoning effort and the practical default when an explicit value is needed. Higher levels can consume the existing 512/1200-token stage limits before producing visible output, which causes the classifier to fail closed. Raise `fastClassifierMaxTokens` (default 512, integer ≥ 16) if you run a reasoning model whose fast-stage budget is truncated before it emits the required `0`/`1` digit.
 
+`allowInsideWorkingDirectory` (default `false`) adds a deterministic silent-allow tier for the file tools (`read`, `write`, `edit`, `grep`, `find`, `ls`): when `true`, a call whose resolved path is inside the working directory is allowed without any classifier call, and file access outside the working directory is routed to the classifier (including reads, which would otherwise take the read-only fast path). This matches the Codex/Claude Code "inside the sandbox = silent, outside = review" model. The tier takes precedence over `classifyReadOnlyTools`: with both enabled, in-tree file access is still allowed without a classifier call, and out-of-tree file access is classified. `classifyReadOnlyTools: true` only routes in-tree reads to the classifier when `allowInsideWorkingDirectory` is `false`.
+
+`deniedPaths` (default `[]`) is a list of path glob patterns that are hard-denied before the classifier and before the inside-working-directory tier — the file-tool equivalent of a secret/system deny list. Patterns support `~`, `$HOME`, and `${HOME}` expansion and `*` (which matches any characters, including `/`, so `**/id_rsa` matches a private key at any depth). Matching checks both the path as typed and its symlink-resolved form, so a `~/.ssh/*` rule still matches when `~/.ssh` is a symlink. A matching path blocks the call unconditionally (no classifier, no override). The deny list applies to file tools only; `bash` path access is governed by the classifier. Both keys follow the normal scalar/array precedence.
+
 The setting follows the normal scalar precedence: global, then project-local, then `PI_AUTOMODE_SETTINGS_JSON`. Shared project `.pi/automode.json` cannot set it. Omitting the key at a higher-precedence scope does not clear a lower-precedence value.
 
 Example:
@@ -118,6 +122,8 @@ Example:
     "classifierReasoningLevel": "low",
     "classifyReadOnlyTools": false,
     "fastClassifierMaxTokens": 512,
+    "allowInsideWorkingDirectory": false,
+    "deniedPaths": [],
     "maxUserTranscriptTokens": 4000,
     "maxToolTranscriptTokens": 4000,
     "environment": [
@@ -189,6 +195,8 @@ The extension blocks these before any allow or classifier decision:
 - edits to `.pi/automode*`, `.pi` auto-mode files, and this extension's safety-control files
 
 Read-only Pi tools (`read`, `grep`, `find`, `ls`) are allowed after those checks. Every side-effecting action goes to the classifier, including all `write` and `edit` calls, `bash`, MCP, subagent, network-capable tools, and unknown tools. This keeps classifier hard-deny rules unconditional; direct file writes cannot bypass them. Set `classifyReadOnlyTools: true` to route read-only tools through the classifier as well, so reads outside the trusted working tree can be denied by policy. With it enabled, every `read`, `grep`, `find`, and `ls` call runs the two-stage classifier, which raises the number of model calls, the latency, and the cost per session.
+
+Path matches in `deniedPaths` are blocked before every classifier and fast-path decision, so secret and system paths never reach the model through the file tools. The deny list does not govern `bash`; shell access to those paths is handled by the classifier and the deterministic hard-deny checks. With `allowInsideWorkingDirectory: true`, file tools inside the working directory are allowed without a classifier call, and outside-working-directory file access (reads included) goes to the classifier.
 
 Classification starts with a one-token conservative filter and runs structured review only when that filter requests it. Both stages use a classifier-specific session key and short provider cache retention where the provider supports it. Missing models, provider failures, or malformed responses block the action.
 

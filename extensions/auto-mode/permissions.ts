@@ -1,5 +1,9 @@
 import type { ToolPattern } from "./types.ts";
-import { normalizePathForMatch, resolveInputPath } from "./paths.ts";
+import {
+  expandHomePattern,
+  normalizePathForMatch,
+  resolveInputPath,
+} from "./paths.ts";
 
 function normalizeToolName(name: string): string {
   const lower = name.trim().replace(/^@/, "").toLowerCase();
@@ -73,6 +77,23 @@ function getPrimaryArgument(
     );
   }
   return JSON.stringify(input);
+}
+
+/**
+ * Whether a resolved absolute path matches a configured path-denial pattern.
+ * Patterns support `~`/`$HOME` expansion and `*` globs, where `*` matches any
+ * characters, including `/`. Matching is case-insensitive and
+ * conservative-safe: over-matching only blocks more.
+ */
+export function matchesDeniedPath(
+  resolvedPath: string,
+  deniedPaths: string[],
+): boolean {
+  const normalized = resolvedPath.replace(/\\/g, "/");
+  return deniedPaths.some((pattern) => {
+    const expanded = expandHomePattern(pattern).replace(/\\/g, "/");
+    return wildcardToRegExp(expanded).test(normalized);
+  });
 }
 
 /** Match a scoped permission rule against a concrete tool call. */
