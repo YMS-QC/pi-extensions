@@ -12,10 +12,11 @@ For each Pi `tool_call` event, the extension does this:
 4. Check `permissions.deny` rules.
 5. Check `permissions.ask` rules and ask the user when needed.
 6. Run deterministic hard-deny checks.
-7. Allow read-only built-in tools without a classifier call.
-8. Send every remaining action, including all writes and edits, through a one-token conservative filter.
-9. Run structured classifier review only when the filter requests it, then allow or block.
-10. Persist state and update the UI status/denial history.
+7. Run the path gate: `deniedPaths` matches block locally; with `allowInsideWorkingDirectory`, in-tree non-protected file access is allowed without a classifier call.
+8. Allow read-only built-in tools without a classifier call, unless `classifyReadOnlyTools` routes them through the classifier.
+9. Send every remaining action, including all writes and edits, through a one-token conservative filter.
+10. Run structured classifier review only when the filter requests it, then allow or block.
+11. Persist state and update the UI status/denial history.
 
 The default posture is fail-closed. If the classifier cannot be resolved, has no API key, errors, or returns an invalid stage response, the action is blocked.
 
@@ -43,7 +44,11 @@ flowchart TD
 
   J --> K{Deterministic hard-deny?}
   K -- yes --> K1[Block locally]
-  K -- no --> L{Read-only built-in tool?}
+  K -- no --> K2{Path gate: deniedPaths match or in-tree allow tier?}
+
+  K2 -- denied --> K1[Block locally]
+  K2 -- in-tree, non-protected --> L1[Allow locally]
+  K2 -- no match or tier off --> L{Read-only built-in tool?}
 
   L -- yes --> L1[Allow locally]
   L -- no --> N[Run one-token filter]
@@ -145,9 +150,11 @@ Current deterministic blocks include:
 
 The `bash` checks use a small shell lexer. It handles quotes, redirects, pipes, `&&`, `||`, and `;` well enough to catch common "safe prefix, risky suffix" patterns.
 
-### Read-only bypass
+Recursive-delete checks treat `/`, the user's home root, and top-level system roots as hard-denied, but exempt the home *subtree*: subpaths of the user's home are user data, not system paths. On distros where `HOME` lives under `/var` (e.g. Fedora Silverblue with `/var/home/<user>`), `rm -rf` on home subpaths is therefore not hard-denied as a system-path delete, while `rm -rf ~` stays blocked.
 
-Read-only built-in tools are allowed without classifier review after the checks above pass.
+### Read-only bypass and the path gate
+
+Read-only built-in tools are allowed without classifier review after the checks above pass, unless `classifyReadOnlyTools: true` routes them through the classifier instead.
 
 The read-only tool set is:
 
@@ -155,11 +162,13 @@ The read-only tool set is:
 read, grep, find, ls
 ```
 
-Reads to protected paths are still allowed. Every write and edit is classifier-reviewed, whether or not its target is protected.
+Reads to protected paths are still allowed.
+
+Two opt-in settings change the deterministic tier. `deniedPaths` blocks matching file-tool paths locally, before the classifier and any fast path. `allowInsideWorkingDirectory: true` allows file access inside the working directory without a classifier call — writes and edits included — while out-of-tree file access is routed to the classifier (reads included). Writes and edits to protected in-tree paths are exempt from the silent-allow tier and still reach the classifier. In the default configuration (both settings off), every write and edit is classifier-reviewed, whether or not its target is protected.
 
 ## Protected paths
 
-The protected-path configuration identifies safety-sensitive targets such as `.git`, `.pi`, editor config directories, shell profiles, package-manager config files, hook configs, and similar files. All writes and edits now go to the classifier, so there is no direct-write allow path that can bypass classifier policy for these or any other target.
+The protected-path configuration identifies safety-sensitive targets such as `.git`, `.pi`, editor config directories, shell profiles, package-manager config files, hook configs, and similar files. In the default configuration every write and edit goes to the classifier, so there is no direct-write allow path that can bypass classifier policy. With `allowInsideWorkingDirectory: true`, non-protected in-tree writes take the deterministic allow tier, but protected targets still route to the classifier. `deniedPaths` can hard-deny any of these targets before the classifier.
 
 Deterministic safety-control checks still resolve paths canonically before classification. This catches writes through symlinks to auto-mode controls, shell profiles, and SSH authorization files without relying on the model.
 
