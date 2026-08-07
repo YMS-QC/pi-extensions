@@ -1194,6 +1194,47 @@ test("validateSettingsFile accepts valid allowInsideWorkingDirectory and deniedP
 	assert.equal(diagnostics.length, 0);
 });
 
+test("validateSettingsFile flags deniedPaths patterns that can never match an absolute path", () => {
+	const diagnostics = validateSettingsFile(
+		{ autoMode: { deniedPaths: ["config.json", "src/secret.txt", "~foo"] } },
+		"inline",
+	);
+	assert.equal(diagnostics.length, 3);
+	assert.ok(
+		diagnostics.every((x) =>
+			/can never match a resolved absolute path/.test(x)
+		),
+	);
+	const valid = validateSettingsFile(
+		{
+			autoMode: {
+				deniedPaths: [
+					"*.env",
+					"**/id_rsa",
+					"~/.ssh/*",
+					"$HOME/secrets/*",
+					"${HOME}/secrets/*",
+					"/etc/*",
+				],
+			},
+		},
+		"inline",
+	);
+	assert.equal(valid.length, 0);
+});
+
+test("validateSettingsFile accepts $defaults in deniedPaths as a no-op", () => {
+	const diagnostics = validateSettingsFile(
+		{ autoMode: { deniedPaths: ["$defaults", "*.env"] } },
+		"inline",
+	);
+	assert.equal(diagnostics.length, 0);
+	const config = buildEffectiveConfigFromSources({
+		globalSettings: [{ autoMode: { deniedPaths: ["$defaults", "*.env"] } }],
+	});
+	assert.deepEqual(config.deniedPaths, ["*.env"]);
+});
+
 test("deniedPaths hard-blocks a matching file-tool path before the classifier", async () => {
 	const harness = await setupHookTest({
 		config: baseConfig({ deniedPaths: ["*.env", "~/.ssh/*", "/etc/*"] }),
