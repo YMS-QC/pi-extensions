@@ -44,6 +44,10 @@ export type AutoModeSettings = {
   classifyReadOnlyTools?: boolean;
   /** Override the fast-stage completion token budget (default 512). */
   fastClassifierMaxTokens?: number;
+  /** When true, file tools whose resolved path is inside the working directory are allowed deterministically (no classifier), and outside-CWD file access is classified. */
+  allowInsideWorkingDirectory?: boolean;
+  /** Path glob patterns (file tools) that are always denied before the classifier. Supports `~` and `*` (matches any characters, including `/`). */
+  deniedPaths?: unknown;
   maxUserTranscriptTokens?: number;
   maxToolTranscriptTokens?: number;
   environment?: unknown;
@@ -82,6 +86,8 @@ export type EffectiveConfig = {
   classifierReasoningLevel?: ClassifierReasoningLevel;
   classifyReadOnlyTools: boolean;
   fastClassifierMaxTokens: number;
+  allowInsideWorkingDirectory: boolean;
+  deniedPaths: string[];
   maxUserTranscriptTokens: number;
   maxToolTranscriptTokens: number;
   environment: string[];
@@ -114,12 +120,16 @@ export type DenialRecord = {
     | "permissions.deny"
     | "permissions.ask"
     | "deterministic-hard-deny"
+    | "deterministic-path-deny"
     | "classifier"
     | "setup";
 };
 
-/** Denial kind plus the read-only fast path, used for decision log entries. */
-export type DecisionKind = DenialRecord["kind"] | "read-only";
+/** Denial kind plus the deterministic allow fast paths, used for decision log entries. */
+export type DecisionKind =
+  | DenialRecord["kind"]
+  | "read-only"
+  | "inside-working-directory";
 
 export type ClassificationDecision = {
   decision: "allow" | "block";

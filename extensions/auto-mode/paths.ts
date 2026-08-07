@@ -7,7 +7,7 @@ import {
   relative,
   resolve,
 } from "node:path";
-import { HOME, PROFILE_FILES } from "./constants.ts";
+import { HOME, PATH_BEARING_TOOLS, PROFILE_FILES } from "./constants.ts";
 
 function stripLeadingAt(value: string): string {
   return value.startsWith("@") ? value.slice(1) : value;
@@ -20,6 +20,28 @@ export function resolveInputPath(
   if (typeof value !== "string" || value.trim() === "") return undefined;
   const raw = stripLeadingAt(value.trim());
   return isAbsolute(raw) ? resolve(raw) : resolve(cwd, raw);
+}
+
+/** The target path a file tool operates on, from `input.path` (or undefined). */
+export function extractInputPath(
+  toolName: string,
+  input: Record<string, unknown>,
+): string | undefined {
+  if (!PATH_BEARING_TOOLS.has(toolName)) return undefined;
+  const value = input.path;
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+/** Expand a leading `~`, `$HOME`, or `${HOME}` in a path-denial pattern. */
+export function expandHomePattern(pattern: string): string {
+  const home = HOME.replace(/\\/g, "/");
+  if (pattern === "~" || pattern === "$HOME" || pattern === "${HOME}") {
+    return home;
+  }
+  if (pattern.startsWith("~/")) return `${home}/${pattern.slice(2)}`;
+  if (pattern.startsWith("$HOME/")) return `${home}/${pattern.slice(6)}`;
+  if (pattern.startsWith("${HOME}/")) return `${home}/${pattern.slice(8)}`;
+  return pattern;
 }
 
 export function normalizePathForMatch(path: string, cwd: string): string {

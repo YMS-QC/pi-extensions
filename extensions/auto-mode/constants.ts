@@ -179,6 +179,16 @@ export const PROFILE_FILES = new Set([
 
 export const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 
+/** File tools that expose a target path via `input.path` (for path gating). */
+export const PATH_BEARING_TOOLS = new Set([
+  "read",
+  "write",
+  "edit",
+  "grep",
+  "find",
+  "ls",
+]);
+
 /**
  * Default behavior: read-only tools bypass the classifier entirely (the
  * original auto-mode fast path). When set to true via config, read-only tools
@@ -189,6 +199,17 @@ export const DEFAULT_CLASSIFY_READ_ONLY_TOOLS = false;
 
 /** Default upper bound on fast-stage completion tokens (see PR note). */
 export const DEFAULT_FAST_CLASSIFIER_MAX_TOKENS = 512;
+
+/**
+ * Default behavior: no deterministic inside-working-directory tier; every
+ * non-read-only action is classified. When enabled, file tools whose resolved
+ * path is inside the working directory are allowed deterministically, and
+ * outside-CWD file access is routed to the classifier.
+ */
+export const DEFAULT_ALLOW_INSIDE_WORKING_DIRECTORY = false;
+
+/** Default path deny list: empty (no built-in secrets list). */
+export const DEFAULT_DENIED_PATHS: string[] = [];
 
 /** Default observability log config: off, classifier I/O off. */
 export const DEFAULT_LOG_CONFIG = {
