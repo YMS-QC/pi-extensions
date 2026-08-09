@@ -138,6 +138,7 @@ function baseConfig(overrides: Partial<EffectiveConfig> = {}): EffectiveConfig {
 		allowInsideWorkingDirectory: false,
 		deniedPaths: [],
 		fastClassifierMaxTokens: 512,
+		classifierTimeoutMs: 20_000,
 		maxUserTranscriptTokens: 4000,
 		maxToolTranscriptTokens: 4000,
 		environment: [],
@@ -608,6 +609,7 @@ function fakeComplete(responses: AssistantMessage[]) {
 		maxTokens: number;
 		temperature?: number;
 		reasoning?: string;
+		timeoutMs?: number;
 		sessionId?: string;
 		cacheRetention?: string;
 		messages: unknown;
@@ -621,6 +623,7 @@ function fakeComplete(responses: AssistantMessage[]) {
 			maxTokens: number;
 			temperature?: number;
 			reasoning?: string;
+			timeoutMs?: number;
 			sessionId?: string;
 			cacheRetention?: string;
 		},
@@ -632,6 +635,9 @@ function fakeComplete(responses: AssistantMessage[]) {
 				: {}),
 			...(Object.hasOwn(callOptions, "reasoning")
 				? { reasoning: callOptions.reasoning }
+				: {}),
+			...(Object.hasOwn(callOptions, "timeoutMs")
+				? { timeoutMs: callOptions.timeoutMs }
 				: {}),
 			sessionId: callOptions.sessionId,
 			cacheRetention: callOptions.cacheRetention,
@@ -776,6 +782,62 @@ test("classifyInStages forwards one reasoning level to fast and detailed calls",
 
 	assert.equal(decision.decision, "allow");
 	assert.deepEqual(calls.map((call) => call.reasoning), ["high", "high"]);
+});
+
+test("classifyInStages forwards the timeout to fast and detailed calls", async () => {
+	const { fn, calls } = fakeComplete([
+		assistantWith("1"),
+		assistantWith(VALID_ALLOW),
+	]);
+	const decision = await classifyInStages(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "policy", contextMessage: { role: "user", content: [{ type: "text", text: "context" }], timestamp: 1 } },
+		undefined,
+		{ sessionId: "pi-automode:test-session", timeoutMs: 5000 },
+	);
+
+	assert.equal(decision.decision, "allow");
+	assert.deepEqual(calls.map((call) => call.timeoutMs), [5000, 5000]);
+});
+
+test("classifyWithRetry forwards the timeout to every detailed attempt", async () => {
+	const { fn, calls } = fakeComplete([
+		assistantWith(GARBAGE),
+		assistantWith(VALID_ALLOW),
+	]);
+	const attempts: ClassifierIoAttempt[] = [];
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "policy", messages: [{ role: "user", content: [{ type: "text", text: "context" }], timestamp: 1 }] },
+		undefined,
+		{
+			stage: "detailed",
+			sessionId: "pi-automode:test-session",
+			timeoutMs: 7000,
+			onAttempt: (attempt) => attempts.push(attempt),
+		},
+	);
+
+	assert.equal(decision.decision, "allow");
+	assert.deepEqual(calls.map((call) => call.timeoutMs), [7000, 7000]);
+	assert.deepEqual(attempts.map((attempt) => attempt.stage), ["detailed", "detailed"]);
+});
+
+test("classifyWithRetry omits the timeout when not configured", async () => {
+	const { fn, calls } = fakeComplete([assistantWith(VALID_ALLOW)]);
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "policy", messages: [{ role: "user", content: [{ type: "text", text: "context" }], timestamp: 1 }] },
+		undefined,
+		{ stage: "detailed", sessionId: "pi-automode:test-session" },
+	);
+
+	assert.equal(decision.decision, "allow");
+	assert.equal(calls.length, 1);
+	assert.equal(Object.hasOwn(calls[0] ?? {}, "timeoutMs"), false);
 });
 
 test("classifyInStages fails closed on malformed fast-stage output", async () => {
@@ -1121,6 +1183,14 @@ test("fastClassifierMaxTokens defaults to 512 and is configurable", () => {
 	assert.equal(config.fastClassifierMaxTokens, 2048);
 });
 
+test("classifierTimeoutMs defaults to 20000 and is configurable", () => {
+	assert.equal(buildEffectiveConfigFromSources({}).classifierTimeoutMs, 20_000);
+	const config = buildEffectiveConfigFromSources({
+		globalSettings: [{ autoMode: { classifierTimeoutMs: 5000 } }],
+	});
+	assert.equal(config.classifierTimeoutMs, 5000);
+});
+
 test("validateSettingsFile rejects non-boolean classifyReadOnlyTools", () => {
 	const diagnostics = validateSettingsFile(
 		{ autoMode: { classifyReadOnlyTools: "yes" } },
@@ -1139,9 +1209,37 @@ test("validateSettingsFile rejects fastClassifierMaxTokens below 16", () => {
 	);
 });
 
+test("validateSettingsFile rejects classifierTimeoutMs below 1000", () => {
+	const diagnostics = validateSettingsFile(
+		{ autoMode: { classifierTimeoutMs: 500 } },
+		"inline",
+	);
+	assert.ok(
+		diagnostics.some((d) => /classifierTimeoutMs must be an integer of at least 1000/.test(d)),
+	);
+});
+
+test("validateSettingsFile rejects unknown autoMode keys including classifierTimeoutMs misspellings", () => {
+	const diagnostics = validateSettingsFile(
+		{ autoMode: { classifierTimeout: 5000 } },
+		"inline",
+	);
+	assert.ok(
+		diagnostics.some((d) => /unknown autoMode key classifierTimeout/.test(d)),
+	);
+});
+
 test("validateSettingsFile accepts valid classifyReadOnlyTools and fastClassifierMaxTokens", () => {
 	const diagnostics = validateSettingsFile(
 		{ autoMode: { classifyReadOnlyTools: true, fastClassifierMaxTokens: 1024 } },
+		"inline",
+	);
+	assert.equal(diagnostics.length, 0);
+});
+
+test("validateSettingsFile accepts a valid classifierTimeoutMs", () => {
+	const diagnostics = validateSettingsFile(
+		{ autoMode: { classifierTimeoutMs: 10_000 } },
 		"inline",
 	);
 	assert.equal(diagnostics.length, 0);

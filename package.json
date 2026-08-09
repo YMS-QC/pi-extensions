@@ -25,6 +25,7 @@
     "test": "node --import tsx --test tests/*.test.ts"
   },
   "files": [
+    "CHANGELOG.md",
     "docs",
     "extensions",
     "examples",
