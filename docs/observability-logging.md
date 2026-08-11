@@ -61,7 +61,7 @@ One per tool-call decision. Every allow and every block goes through exactly one
 | `cwd` | working directory |
 | `tool` | tool name, e.g. `bash`, `write` |
 | `summary` | `actionSummary` — tool name + input JSON (truncated) |
-| `kind` | enforcement path: `permissions.deny`, `permissions.ask`, `deterministic-hard-deny`, `classifier`, or `read-only` |
+| `kind` | enforcement path: `permissions.deny`, `permissions.ask`, `deterministic-hard-deny`, `permissions.allow`, `classifier`, or `read-only` |
 | `outcome` | `allow` or `block` |
 | `reason` | the reason string (classifier reason, or the deterministic/permission reason) |
 | `classifierModel` | the configured classifier model, when relevant |
@@ -79,7 +79,7 @@ or an explicit request after model-level clamping:
 {"mode":"explicit","requestedLevel":"max","effectiveLevel":"xhigh"}
 ```
 
-Classifier-routed decisions contain the effective level once the configured model resolves, even when `classifierIo` is off or authentication then fails. If the configured model itself cannot be resolved, an explicit entry records `requestedLevel` without `effectiveLevel` because no model-supported level exists. A local permission, deterministic, or read-only decision does not run the classifier and likewise may omit `effectiveLevel`. In `server-default` mode, the concrete server-selected level is not observable and is not inferred.
+Classifier-routed decisions contain the effective level once the configured model resolves, even when `classifierIo` is off or authentication then fails. If the configured model itself cannot be resolved, an explicit entry records `requestedLevel` without `effectiveLevel` because no model-supported level exists. A local permission, deterministic, `permissions.allow`, or read-only decision does not run the classifier and likewise may omit `effectiveLevel`. In `server-default` mode, the concrete server-selected level is not observable and is not inferred.
 
 ### `message` (classifier usage)
 

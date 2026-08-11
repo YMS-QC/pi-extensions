@@ -14,10 +14,11 @@ For each Pi `tool_call` event, the extension does this:
 6. Run deterministic hard-deny checks.
 7. Let the extension-owned `automode_inspect` tool run without classification, counters, state persistence, or logging.
 8. Run the path gate: `deniedPaths` matches block locally; with `allowInsideWorkingDirectory`, in-tree non-protected file access is allowed without a classifier call.
-9. Allow read-only built-in tools without a classifier call, unless `classifyReadOnlyTools` routes them through the classifier.
-10. Send every remaining action, including all writes and edits, through a one-token conservative filter.
-11. Run structured classifier review only when the filter requests it, then allow or block.
-12. Persist state and update the UI status/denial history.
+9. Allow `permissions.allow` matches without a classifier call, except `write`/`edit` on a protected path.
+10. Allow read-only built-in tools without a classifier call, unless `classifyReadOnlyTools` routes them through the classifier.
+11. Send every action no earlier tier allowed or blocked through a one-token conservative filter. With the default empty `permissions.allow`, that includes every write and edit that reaches this step.
+12. Run structured classifier review only when the filter requests it, then allow or block.
+13. Persist state and update the UI status/denial history.
 
 The default posture is fail-closed. If the classifier cannot be resolved, has no API key, errors, or returns an invalid stage response, the action is blocked.
 
@@ -49,7 +50,10 @@ flowchart TD
 
   K2 -- denied --> K1[Block locally]
   K2 -- in-tree, non-protected --> L1[Allow locally]
-  K2 -- no match or tier off --> L{Read-only built-in tool?}
+  K2 -- no match or tier off --> K3{Matches permissions.allow?}
+
+  K3 -- yes, not a protected write/edit --> L1[Allow locally]
+  K3 -- no match, or protected write/edit --> L{Read-only built-in tool?}
 
   L -- yes --> L1[Allow locally]
   L -- no --> N[Run one-token filter]
@@ -82,9 +86,13 @@ The effective config combines these sources:
 - `~/.pi/agent/automode.json`
 - `.pi/automode.local.json`
 - `PI_AUTOMODE_SETTINGS_JSON`
-- shared `.pi/automode.json`, but only for `permissions.deny` and `permissions.ask`
+- shared `.pi/automode.json`, but only for `permissions.deny`, `permissions.ask`, and `permissions.allow`
 
-Shared project `.pi/automode.json` cannot change `autoMode` rules. That is deliberate: a checked-in repo must not be able to weaken auto-mode. It may still add Pi permission rules.
+Shared project `.pi/automode.json` cannot change `autoMode` rules. That is deliberate: a checked-in repo must not be able to rewrite the classifier policy, the rule lists, or the classifier model. It may still add Pi permission rules.
+
+All three permission lists (`deny`, `ask`, `allow`) come from all four scopes, with no special casing for `permissions.allow`. Permission patterns are appended in the order global, shared project, project-local, inline; the order only affects which rule is reported when several match, since `deny` and `ask` are evaluated before `allow` regardless of scope.
+
+`permissions.allow` is the one way a shared config can narrow classifier coverage: a checked-in list can declare that certain tool calls skip classifier review. The deterministic tiers — hard-deny checks, `deniedPaths`, and protected-path writes and edits — still apply to those calls, so read a repo's `.pi/automode.json` before trusting it.
 
 To disable pi-automode for the current project, set `autoMode.enabled` to `false` in `.pi/automode.local.json`:
 
@@ -135,6 +143,22 @@ If a rule matches and no UI is available, the action is blocked. If UI is availa
 
 Approving that dialog does not run the tool directly. It only lets the action continue to the normal auto-mode checks, including deterministic hard-deny checks and classifier review.
 
+### `permissions.allow`
+
+`permissions.allow` is a deterministic allow tier. It uses the same patterns as `deny`/`ask`, so it covers built-in, MCP, and extension tools:
+
+```json
+"permissions": { "allow": ["bash(git status*)", "example-extension-tool"] }
+```
+
+Argument scoping works for the tools whose primary argument the matcher understands (`bash`, the file tools, `grep`). MCP and extension tools have no known primary argument, so match them by bare tool name; an argument pattern would be compared against their serialized input object.
+
+A match skips the classifier call and nothing else. The tier runs after `permissions.deny`, `permissions.ask`, the deterministic hard-deny checks, and the path gate, so it cannot turn a deterministic block into an allow. One further limit: `write` and `edit` calls whose resolved target is a protected path are excluded and still reach the classifier, mirroring the `allowInsideWorkingDirectory` carve-out.
+
+Entries come from every permission scope, shared project `.pi/automode.json` included (see [Config loading](#config-loading)).
+
+The default is an empty list, so nothing changes without an explicit opt-in. Decision log entries for this tier use `kind: permissions.allow`; `/automode status` reports the rule count and `/automode config` shows the resolved patterns.
+
 ### Deterministic hard-deny checks
 
 Some actions are too risky to leave to the classifier. These are blocked locally, before any classifier call.
@@ -155,7 +179,7 @@ Recursive-delete checks treat `/`, the user's home root, and top-level system ro
 
 ### Read-only bypass and the path gate
 
-Read-only built-in tools are allowed without classifier review after the checks above pass, unless `classifyReadOnlyTools: true` routes them through the classifier instead.
+Read-only built-in tools are allowed without classifier review after the checks above and the `permissions.allow` tier pass, unless `classifyReadOnlyTools: true` routes them through the classifier instead.
 
 The read-only tool set is:
 
@@ -165,11 +189,11 @@ read, grep, find, ls
 
 Reads to protected paths are still allowed.
 
-Two opt-in settings change the deterministic tier. `deniedPaths` blocks matching file-tool paths locally, before the classifier and any fast path. `allowInsideWorkingDirectory: true` allows file access inside the working directory without a classifier call — writes and edits included — while out-of-tree file access is routed to the classifier (reads included). Writes and edits to protected in-tree paths are exempt from the silent-allow tier and still reach the classifier. In the default configuration (both settings off), every write and edit is classifier-reviewed, whether or not its target is protected.
+Two opt-in settings change the deterministic tier. `deniedPaths` blocks matching file-tool paths locally, before the classifier and any fast path. `allowInsideWorkingDirectory: true` allows file access inside the working directory without a classifier call — writes and edits included — while out-of-tree file access is routed to the classifier (reads included). Writes and edits to protected in-tree paths are exempt from the silent-allow tier and still reach the classifier. In the default configuration (both settings off and `permissions.allow` empty), every write and edit is classifier-reviewed, whether or not its target is protected.
 
 ## Protected paths
 
-The protected-path configuration identifies safety-sensitive targets such as `.git`, `.pi`, editor config directories, shell profiles, package-manager config files, hook configs, and similar files. In the default configuration every write and edit goes to the classifier, so there is no direct-write allow path that can bypass classifier policy. With `allowInsideWorkingDirectory: true`, non-protected in-tree writes take the deterministic allow tier, but protected targets still route to the classifier. `deniedPaths` can hard-deny any of these targets before the classifier.
+The protected-path configuration identifies safety-sensitive targets such as `.git`, `.pi`, editor config directories, shell profiles, package-manager config files, hook configs, and similar files. In the default configuration every write and edit goes to the classifier, so there is no direct-write allow path that can bypass classifier policy. Two opt-ins add such a path for non-protected targets, and both keep protected targets on the classifier route: with `allowInsideWorkingDirectory: true`, non-protected in-tree writes take the deterministic allow tier, and a matching `permissions.allow` pattern behaves the same way. `deniedPaths` can hard-deny any of these targets before the classifier.
 
 Deterministic safety-control checks still resolve paths canonically before classification. This catches writes through symlinks to auto-mode controls, shell profiles, and SSH authorization files without relying on the model.
 

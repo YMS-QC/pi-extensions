@@ -367,8 +367,12 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       // Enforcement order:
       // 1. permission deny/ask rules,
       // 2. deterministic hard-deny checks that never consult the model,
-      // 3. read-only built-in fast path (skipped when classifyReadOnlyTools is set),
-      // 4. classifier for every remaining action, fail-closed on setup/parse errors.
+      // 3. extension-owned read-only inspection tool,
+      // 4. deterministic path gate (deniedPaths, then the inside-CWD tier),
+      // 5. permissions.allow tier: skips the classifier only, never a
+      //    deterministic barrier, and never a protected-path write/edit,
+      // 6. read-only built-in fast path (skipped when classifyReadOnlyTools is set),
+      // 7. classifier for every remaining action, fail-closed on setup/parse errors.
       const cfg = effectiveConfig();
       if (!cfg.enabled) return undefined;
       if (ctx.signal?.aborted) return { block: true, reason: "Cancelled" };
@@ -521,6 +525,40 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
             readOnlyFastPath = false;
           }
         }
+      }
+
+      // Deterministic allow tier. It runs after every deterministic denial
+      // (permissions.deny, permissions.ask, hard-deny checks, deniedPaths), so
+      // an allow pattern can only skip the classifier call, never a barrier.
+      for (const pattern of cfg.permissionAllow) {
+        if (!matchesToolPattern(pattern, event.toolName, input, ctx.cwd)) {
+          continue;
+        }
+        // A protected-path write/edit is never covered by permissions.allow; it
+        // stays on the classifier path (same rule as the inside-CWD tier).
+        if (event.toolName === "write" || event.toolName === "edit") {
+          const inputPath = extractInputPath(event.toolName, input);
+          const expanded = inputPath === undefined
+            ? undefined
+            : expandHomePattern(inputPath);
+          const resolved = expanded === undefined
+            ? undefined
+            : resolveInputPath(ctx.cwd, expanded) ?? expanded;
+          if (
+            resolved !== undefined &&
+            isProtectedPath(resolved, ctx.cwd, cfg.protectedPaths)
+          ) {
+            break;
+          }
+        }
+        return allow(
+          ctx,
+          "permissions.allow",
+          `Allowed by permissions.allow: ${pattern.raw}`,
+          event.toolName,
+          summary,
+          logCtx,
+        );
       }
 
       if (readOnlyFastPath) {

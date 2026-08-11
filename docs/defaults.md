@@ -136,5 +136,7 @@ If you omit `$defaults`, you replace the built-ins for that section:
 
 That means: use only that one `allow` entry. The built-in `allow` entries are not used. Replacing `allow` does not replace `soft_deny`, `hard_deny`, `protectedPaths`, or `environment`.
 
-`$defaults` is not used in `permissions.deny` or `permissions.ask`. Those lists contain only explicit Pi tool patterns.
+`$defaults` is not used in `permissions.deny`, `permissions.ask`, or `permissions.allow`. Those lists contain only explicit Pi tool patterns, and all three default to empty.
+
+Note that `autoMode.allow` and `permissions.allow` are different things: `autoMode.allow` holds prose allow exceptions that the classifier weighs against soft-deny rules, while `permissions.allow` holds tool patterns that skip the classifier call entirely.
 

@@ -23,6 +23,7 @@ import {
 	createPiAutomode,
 	deterministicHardDeny,
 	isRootHomeOrSystemPath,
+	loadEffectiveConfigWithDiagnostics,
 	matchesProtectedPath,
 	matchesToolPattern,
 	modelVisibleConfigDiagnostics,
@@ -188,6 +189,7 @@ function baseConfig(overrides: Partial<EffectiveConfig> = {}): EffectiveConfig {
 		hardDeny: [],
 		permissionDeny: [],
 		permissionAsk: [],
+		permissionAllow: [],
 		log: { ...DEFAULT_LOG_CONFIG },
 		...overrides,
 	};
@@ -471,6 +473,7 @@ test("project shared Pi settings can add permissions but cannot weaken autoMode"
 				},
 				permissions: {
 					deny: ["bash(git push --force*)"],
+					allow: ["bash(*)"],
 				},
 			},
 		],
@@ -481,6 +484,73 @@ test("project shared Pi settings can add permissions but cannot weaken autoMode"
 	assert.equal(config.hardDeny.includes("checked-in repo tries to replace hard denies"), false);
 	assert.equal(config.permissionDeny.length, 1);
 	assert.equal(config.permissionDeny[0]?.raw, "bash(git push --force*)");
+	assert.deepEqual(config.permissionAllow.map((pattern) => pattern.raw), ["bash(*)"]);
+});
+
+test("permissions.allow is read from every permission scope, like deny and ask", () => {
+	assert.deepEqual(buildEffectiveConfigFromSources({}).permissionAllow, []);
+
+	const config = buildEffectiveConfigFromSources({
+		globalSettings: [{ permissions: { allow: ["noop"] } }],
+		projectSharedSettings: [{ permissions: { allow: ["bash(*)"], deny: ["bash(rm -rf *)"] } }],
+		projectLocalSettings: [{ permissions: { allow: ["bash(git status*)"] } }],
+		inlineSettings: [{ permissions: { allow: ["example-extension-tool"] } }],
+	});
+
+	assert.deepEqual(config.permissionAllow.map((pattern) => pattern.raw), [
+		"noop",
+		"bash(*)",
+		"bash(git status*)",
+		"example-extension-tool",
+	]);
+	assert.deepEqual(config.permissionDeny.map((pattern) => pattern.raw), ["bash(rm -rf *)"]);
+});
+
+test("shared project permissions.allow is loaded from disk without diagnostics", () => {
+	const project = mkdtempSync(join(os.tmpdir(), "pi-automode-shared-allow-"));
+	try {
+		mkdirSync(join(project, ".pi"), { recursive: true });
+		writeFileSync(
+			join(project, ".pi/automode.json"),
+			JSON.stringify({ permissions: { allow: ["bash(git status*)"], deny: ["bash(rm -rf *)"] } }),
+		);
+
+		const { config, diagnostics } = loadEffectiveConfigWithDiagnostics(project);
+
+		assert.equal(
+			config.permissionAllow.some((pattern) => pattern.raw === "bash(git status*)"),
+			true,
+		);
+		assert.equal(config.permissionDeny.some((pattern) => pattern.raw === "bash(rm -rf *)"), true);
+		assert.equal(diagnostics.some((line) => line.includes(join(project, ".pi/automode.json"))), false);
+	} finally {
+		rmSync(project, { recursive: true, force: true });
+	}
+});
+
+test("validateSettingsFile accepts permissions.allow and validates its entries", () => {
+	assert.deepEqual(
+		validateSettingsFile({ permissions: { allow: ["noop", "bash(git status*)"] } }, "inline"),
+		[],
+	);
+
+	const notAnArray = validateSettingsFile(
+		{ permissions: { allow: "noop" } },
+		"inline",
+	);
+	assert.deepEqual(notAnArray, ["inline: permissions.allow must be an array of tool patterns"]);
+
+	const badEntry = validateSettingsFile(
+		{ permissions: { allow: ["noop", 42] } },
+		"inline",
+	);
+	assert.deepEqual(badEntry, ["inline: permissions.allow[1] must be a tool pattern string"]);
+
+	assert.equal(
+		validateSettingsFile({ permissions: { allow: ["noop"] } }, "inline")
+			.some((line) => line.includes("unknown permissions key")),
+		false,
+	);
 });
 
 test("project-local classifier model overrides global classifier model", () => {
@@ -1441,6 +1511,183 @@ test("tool_call blocks read-only tools via classifier when classifyReadOnlyTools
 	assert.equal(result.block, true);
 	assert.match(result.reason ?? "", /mock block/);
 	assert.equal(harness.classifierCalls, 1);
+});
+
+test("tool patterns for MCP and extension tools match by bare tool name only", () => {
+	const bare = parseToolPattern("example-extension-tool");
+	assert.ok(bare);
+	assert.equal(
+		matchesToolPattern(bare, "example-extension-tool", { query: "docs" }, process.cwd()),
+		true,
+	);
+
+	// Tools with no known primary argument fall back to the serialized input, so
+	// an argument-scoped pattern such as `mcp(example-server*)` never matches.
+	// Documentation must therefore recommend bare tool names for those tools.
+	const scoped = parseToolPattern("mcp(example-server*)");
+	assert.ok(scoped);
+	assert.equal(
+		matchesToolPattern(scoped, "mcp", { tool: "example-server_search" }, process.cwd()),
+		false,
+	);
+});
+
+test("permissions.allow skips the classifier for a non-built-in tool", async () => {
+	const pattern = parseToolPattern("noop");
+	assert.ok(pattern);
+	const harness = await setupHookTest({
+		config: baseConfig({ permissionAllow: [pattern] }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "noop",
+		input: {},
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("permissions.allow keeps argument scope and lets non-matching calls reach the classifier", async () => {
+	const pattern = parseToolPattern("bash(git status*)");
+	assert.ok(pattern);
+	const harness = await setupHookTest({
+		config: baseConfig({ permissionAllow: [pattern] }),
+	});
+
+	const allowed = await harness.emit("tool_call", {
+		toolName: "bash",
+		input: { command: "git status --short" },
+	}, harness.ctx);
+	assert.equal(allowed, undefined);
+	assert.equal(harness.classifierCalls, 0);
+
+	const classified = await harness.emit("tool_call", {
+		toolName: "bash",
+		input: { command: "git push" },
+	}, harness.ctx);
+	assert.equal(classified, undefined);
+	assert.equal(harness.classifierCalls, 1);
+});
+
+test("permissions.deny wins over permissions.allow", async () => {
+	const deny = parseToolPattern("bash(git push --force*)");
+	const allow = parseToolPattern("bash(*)");
+	assert.ok(deny);
+	assert.ok(allow);
+	const harness = await setupHookTest({
+		config: baseConfig({ permissionDeny: [deny], permissionAllow: [allow] }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "bash",
+		input: { command: "git push --force origin main" },
+	}, harness.ctx) as { block?: boolean; reason?: string };
+
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /permissions\.deny/);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("deterministic hard-deny wins over permissions.allow", async () => {
+	const pattern = parseToolPattern("write(*)");
+	assert.ok(pattern);
+	const harness = await setupHookTest({
+		config: baseConfig({ permissionAllow: [pattern] }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "write",
+		input: { path: ".pi/automode.local.json", content: "{}" },
+	}, harness.ctx) as { block?: boolean; reason?: string };
+
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /safety-control/);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("deniedPaths wins over permissions.allow", async () => {
+	const pattern = parseToolPattern("read(*)");
+	assert.ok(pattern);
+	const harness = await setupHookTest({
+		config: baseConfig({
+			deniedPaths: ["*/secrets.env"],
+			permissionAllow: [pattern],
+		}),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: "secrets.env" },
+	}, harness.ctx) as { block?: boolean; reason?: string };
+
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /Path denied by policy/);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("permissions.allow does not cover protected in-tree writes", async () => {
+	const pattern = parseToolPattern("write(*)");
+	assert.ok(pattern);
+	const project = mkdtempSync(join(os.tmpdir(), "pi-automode-allow-protected-"));
+	try {
+		const harness = await setupHookTest({
+			config: baseConfig({ permissionAllow: [pattern] }),
+			ctx: createFakeCtx([], { cwd: project }),
+			classifier: async () => ({ decision: "block", tier: "soft_deny", reason: "protected hook write" }),
+		});
+
+		const blocked = await harness.emit("tool_call", {
+			toolName: "write",
+			input: { path: ".git/hooks/pre-commit", content: "#!/bin/sh\n" },
+		}, harness.ctx) as { block?: boolean; reason?: string };
+		assert.equal(blocked.block, true);
+		assert.match(blocked.reason ?? "", /protected hook write/);
+		assert.equal(harness.classifierCalls, 1);
+
+		const allowed = await harness.emit("tool_call", {
+			toolName: "write",
+			input: { path: "src/app.ts", content: "export const x = 1;\n" },
+		}, harness.ctx);
+		assert.equal(allowed, undefined);
+		assert.equal(harness.classifierCalls, 1);
+	} finally {
+		rmSync(project, { recursive: true, force: true });
+	}
+});
+
+test("permissions.allow does not cover protected out-of-tree edits", async () => {
+	const pattern = parseToolPattern("edit(*)");
+	assert.ok(pattern);
+	const base = mkdtempSync(join(os.tmpdir(), "pi-automode-allow-outside-"));
+	try {
+		const project = join(base, "project");
+		mkdirSync(join(base, "other/.git"), { recursive: true });
+		mkdirSync(project, { recursive: true });
+		const harness = await setupHookTest({
+			config: baseConfig({ permissionAllow: [pattern] }),
+			ctx: createFakeCtx([], { cwd: project }),
+			classifier: async () => ({ decision: "block", tier: "soft_deny", reason: "foreign git config" }),
+		});
+
+		const blocked = await harness.emit("tool_call", {
+			toolName: "edit",
+			input: { path: "../other/.git/config", oldText: "a", newText: "b" },
+		}, harness.ctx) as { block?: boolean; reason?: string };
+
+		assert.equal(blocked.block, true);
+		assert.match(blocked.reason ?? "", /foreign git config/);
+		assert.equal(harness.classifierCalls, 1);
+	} finally {
+		rmSync(base, { recursive: true, force: true });
+	}
+});
+
+test("statusText reports the permissions.allow rule count", () => {
+	const pattern = parseToolPattern("noop");
+	assert.ok(pattern);
+	const text = statusText(baseConfig({ permissionAllow: [pattern] }), baseState());
+	assert.match(text, /permissions\.allow rules: 1/);
 });
 
 test("classifyReadOnlyTools defaults to false", () => {
@@ -2794,6 +3041,27 @@ test("tool_call logs ccusage-compatible usage, classifier I/O, and decision", as
 			effectiveLevel: "high",
 		});
 		assert.deepEqual(decisionEntry.reasoning, classifierEntry.reasoning);
+	} finally {
+		rmSync(t.dir, { recursive: true, force: true });
+	}
+});
+
+test("/automode config reports the resolved permissions.allow rules", async () => {
+	const patterns = ["bash(git status*)", "example-extension-tool"].map((raw) =>
+		parseToolPattern(raw)!
+	);
+	const t = await setupLogTest({
+		config: baseConfig({ permissionAllow: patterns }),
+	});
+	try {
+		await t.fake.commands.get("automode")?.handler("config", t.ctx);
+		const notify = t.ctx.notifications.at(-1);
+		assert.ok(notify);
+		const parsed = JSON.parse(notify.message);
+		assert.deepEqual(
+			parsed.config.permissionAllow.map((pattern: { raw: string }) => pattern.raw),
+			patterns.map((pattern) => pattern.raw),
+		);
 	} finally {
 		rmSync(t.dir, { recursive: true, force: true });
 	}

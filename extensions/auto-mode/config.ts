@@ -246,11 +246,11 @@ export function validateSettingsFile(
     } else {
       const permissions = settings.permissions as Record<string, unknown>;
       for (const key of Object.keys(permissions)) {
-        if (key !== "deny" && key !== "ask") {
+        if (key !== "deny" && key !== "ask" && key !== "allow") {
           diagnostics.push(`${source}: unknown permissions key ${key}`);
         }
       }
-      for (const key of ["deny", "ask"] as const) {
+      for (const key of ["deny", "ask", "allow"] as const) {
         const value = permissions[key];
         if (value === undefined) continue;
         if (!Array.isArray(value)) {
@@ -444,7 +444,7 @@ function applyAutoModeScalars(
 function appendPermissionPatterns(
   target: ToolPattern[],
   settings: SettingsFile | undefined,
-  key: "deny" | "ask",
+  key: "deny" | "ask" | "allow",
 ): void {
   const values = stringArray(settings?.permissions?.[key]);
   if (!values) return;
@@ -459,7 +459,10 @@ function appendPermissionPatterns(
  *
  * Important details:
  * - shared project `.pi/automode.json` contributes `permissions.*` but not `autoMode`,
- *   so a checked-in repo cannot weaken classifier rules;
+ *   so a checked-in repo cannot rewrite the classifier policy or rule lists; note
+ *   that its `permissions.allow` entries can still narrow classifier coverage,
+ *   because a matching pattern skips the classifier call (the deterministic tiers
+ *   still apply);
  * - global, project-local, and inline `autoMode` settings combine additively across scopes;
  * - omitting `$defaults` in any scope for a rule list means "replace built-ins" for that list.
  */
@@ -482,6 +485,7 @@ export function buildEffectiveConfigFromSources(
     hardDeny: [...DEFAULT_HARD_DENY],
     permissionDeny: [],
     permissionAsk: [],
+    permissionAllow: [],
     log: { ...DEFAULT_LOG_CONFIG },
   };
 
@@ -538,6 +542,7 @@ export function buildEffectiveConfigFromSources(
   ) {
     appendPermissionPatterns(config.permissionDeny, settings, "deny");
     appendPermissionPatterns(config.permissionAsk, settings, "ask");
+    appendPermissionPatterns(config.permissionAllow, settings, "allow");
   }
 
   return config;

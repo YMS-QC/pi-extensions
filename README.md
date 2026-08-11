@@ -89,7 +89,7 @@ It reads `autoMode` from Pi-owned config only:
 - `.pi/automode.local.json`
 - `PI_AUTOMODE_SETTINGS_JSON`
 
-It deliberately does not read `autoMode` from shared project `.pi/automode.json`, because a checked-in repo should not be able to weaken auto-mode rules. Shared project config may still contribute `permissions.deny` and `permissions.ask`.
+It deliberately does not read `autoMode` from shared project `.pi/automode.json`, because a checked-in repo should not be able to rewrite the classifier policy, the rule lists, or the classifier model. Shared project config may still contribute `permissions.deny`, `permissions.ask`, and `permissions.allow`, all three treated alike. Note what that means for `permissions.allow`: a checked-in file can declare that certain tool calls skip classifier review, so review a repo's `.pi/automode.json` before trusting it. Deterministic hard-deny checks, `deniedPaths`, and protected-path writes still apply to those calls.
 
 To disable pi-automode for the current project, create or edit `.pi/automode.local.json`:
 
@@ -146,7 +146,8 @@ Example:
   },
   "permissions": {
     "deny": ["bash(rm -rf *)"],
-    "ask": ["bash(git push *)"]
+    "ask": ["bash(git push *)"],
+    "allow": ["bash(git status*)", "example-extension-tool"]
   }
 }
 ```
@@ -184,6 +185,12 @@ See [Observability logging](docs/observability-logging.md) for the log file loca
 
 Permission patterns use Pi tool names, for example `bash(...)`, `write(...)`, `edit(...)`, `read(...)`. The parser accepts capitalized names like `Bash(...)` for convenience, but the documented form is lowercase because Pi tool names are lowercase.
 
+`permissions.allow` (default `[]`) uses the same patterns as a deterministic allow tier, so tools that need no model review — a narrowly scoped command such as `bash(git status*)`, or a side-effect-free tool supplied by another extension or an MCP server — do not cost a classifier call.
+
+Argument scoping is only meaningful for the tools whose primary argument the matcher understands: `bash` (`input.command`), the file tools (the resolved `input.path`), and `grep` (`input.pattern`). For any other tool, including MCP and extension tools, the argument pattern is matched against the serialized input object, so scope those by bare tool name instead — `example-extension-tool` matches every call to that tool. Pi tool names are the ones the providing extension or MCP server exposes; pi-automode does not need to know them in advance.
+
+A match skips the classifier call only. It never skips a deterministic barrier: `permissions.deny`, a declined `permissions.ask`, the deterministic hard-deny checks, and `deniedPaths` are all evaluated first and still block. All three permission lists are read from every permission scope, shared project `.pi/automode.json` included. `write` and `edit` calls whose resolved target is a protected path (`.git/hooks`, `.pi` controls, shell profiles, config files) are never covered by `permissions.allow` and still go to the classifier, the same carve-out the inside-working-directory tier uses.
+
 ## What is enforced before the classifier
 
 The extension blocks these before any allow or classifier decision:
@@ -197,7 +204,7 @@ The extension blocks these before any allow or classifier decision:
 - root, home, and system-path destructive deletes
 - edits to `.pi/automode*`, `.pi` auto-mode files, and this extension's safety-control files
 
-Read-only Pi tools (`read`, `grep`, `find`, `ls`) are allowed after those checks. Every side-effecting action goes to the classifier, including all `write` and `edit` calls, `bash`, MCP, subagent, network-capable tools, and unknown tools. This keeps classifier hard-deny rules unconditional; direct file writes cannot bypass them. Set `classifyReadOnlyTools: true` (default `false`) to route read-only tools through the classifier as well, so reads outside the trusted working tree can be denied by policy. With it enabled, every `read`, `grep`, `find`, and `ls` call runs the two-stage classifier, which raises the number of model calls, the latency, and the cost per session.
+After those checks, `permissions.allow` matches are allowed deterministically — except `write`/`edit` on a protected path, which continues to the classifier. Read-only Pi tools (`read`, `grep`, `find`, `ls`) are allowed next. Every remaining side-effecting action goes to the classifier: `write` and `edit` calls, `bash`, MCP, subagent, network-capable tools, and unknown tools. With the default empty `permissions.allow`, that covers every write and edit the deterministic checks above did not already block. This keeps classifier hard-deny rules unconditional; direct file writes cannot bypass them unless you opt in with a `permissions.allow` pattern, which still cannot cover protected-path writes and edits. Set `classifyReadOnlyTools: true` (default `false`) to route read-only tools through the classifier as well, so reads outside the trusted working tree can be denied by policy. With it enabled, every `read`, `grep`, `find`, and `ls` call runs the two-stage classifier, which raises the number of model calls, the latency, and the cost per session.
 
 Path matches in `deniedPaths` are blocked before every classifier and fast-path decision, so secret and system paths never reach the model through the file tools. The deny list does not govern `bash`; shell access to those paths is handled by the classifier and the deterministic hard-deny checks. With `allowInsideWorkingDirectory: true`, file tools inside the working directory are allowed without a classifier call, and outside-working-directory file access (reads included) goes to the classifier.
 
@@ -219,7 +226,7 @@ npm test
 npm pack --dry-run
 ```
 
-The tests cover the risky parts: scoped permission matching, config-source precedence, `$defaults` behavior, config diagnostics, deterministic hard-deny checks, shell parsing, write/edit classifier routing, symlink-aware safety-control checks, token-budgeted transcript selection, staged classifier parsing and caching options, and hook-level blocking/allowing.
+The tests cover the risky parts: scoped permission matching, the deterministic `permissions.allow` tier and its ordering guarantees, config-source precedence, `$defaults` behavior, config diagnostics, deterministic hard-deny checks, shell parsing, write/edit classifier routing, symlink-aware safety-control checks, token-budgeted transcript selection, staged classifier parsing and caching options, and hook-level blocking/allowing.
 
 ## Publishing
 
