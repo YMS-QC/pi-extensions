@@ -143,7 +143,7 @@ See [Defaults and rule-list behavior](docs/defaults.md) for built-in `environmen
 
 ### Observability logging
 
-Auto mode can write a JSONL observability log next to the current Pi session file, so you can inspect decisions and classifier usage. It is off by default.
+Auto mode can write a JSONL observability log so you can inspect decisions and classifier usage. Persisted sessions use a sidecar next to the Pi session file; in-memory sessions use an application-owned global directory. It is off by default.
 
 ```json
 {
@@ -156,7 +156,7 @@ Auto mode can write a JSONL observability log next to the current Pi session fil
 }
 ```
 
-With logging enabled, the sidecar also writes ccusage-compatible entries for every classifier response. `ccusage pi` reports this usage as a separate `-pi-automode` session even when `classifierIo` is off.
+With logging enabled, persisted-session sidecars also write ccusage-compatible entries for every classifier response. `ccusage pi` reports this usage as a separate `-pi-automode` session even when `classifierIo` is off. In-memory logs use the same entry shape but live outside Pi's normal session tree.
 
 See [Observability logging](docs/observability-logging.md) for the log file location, entry schema, and the `classifierIo` privacy tradeoff. Run `/automode config` to see the resolved log file path.
 

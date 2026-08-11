@@ -68,6 +68,10 @@ export type PiAutomodeOptions = {
   classifyAction?: ClassifyAction;
   /** Override classifier-model persistence in tests. Runtime code writes ~/.pi/agent/automode.json. */
   saveClassifierModel?: (classifierModel: string) => void;
+  /** Override the application-owned observability log root in tests. */
+  logRoot?: string;
+  /** Override the observability log clock in tests. */
+  now?: () => Date;
 };
 
 type LogCtx = {
@@ -126,6 +130,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
   const classify = options.classifyAction ?? defaultClassifyAction;
   const saveClassifierModel = options.saveClassifierModel ??
     writeGlobalClassifierModel;
+  const now = options.now ?? (() => new Date());
 
   return function piAutomode(pi: ExtensionAPI) {
     let loadResult = loadConfigWithDiagnostics(process.cwd());
@@ -265,8 +270,11 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           enabled: cfg.log.enabled,
           classifierIo: cfg.log.classifierIo,
           sessionFile: ctx.sessionManager.getSessionFile?.(),
-          sessionDir: ctx.sessionManager.getSessionDir?.() ?? ctx.cwd,
+          sessionDir: ctx.sessionManager.getSessionDir?.() ?? "",
+          sessionCwd: ctx.cwd,
           sessionId: ctx.sessionManager.getSessionId?.() ?? "unknown",
+          logRoot: options.logRoot,
+          now: now(),
         }),
         decisionId: newDecisionId(),
         classifierModel: cfg.classifierModel,
@@ -504,8 +512,11 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       if (command === "config") {
         const logFile = resolveLogPath(
           ctx.sessionManager.getSessionFile?.(),
-          ctx.sessionManager.getSessionDir?.() ?? ctx.cwd,
+          ctx.sessionManager.getSessionDir?.() ?? "",
           ctx.sessionManager.getSessionId?.() ?? "unknown",
+          ctx.cwd,
+          options.logRoot,
+          now(),
         );
         ctx.ui.notify(
           safeJson(

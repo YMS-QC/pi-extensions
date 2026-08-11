@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -74,7 +74,7 @@ function createFakePi() {
 }
 
 function createFakeCtx(entries: any[] = [], overrides: Record<string, unknown> = {}) {
-	const { sessionFile, ...rest } = overrides;
+	const { sessionFile, sessionDir, sessionId, ...rest } = overrides;
 	const notifications: Array<{ message: string; type?: string }> = [];
 	const statuses: Array<{ key: string; text: string | undefined }> = [];
 	const widgets: Array<{ key: string; content: string[] | undefined }> = [];
@@ -98,8 +98,12 @@ function createFakeCtx(entries: any[] = [], overrides: Record<string, unknown> =
 			getBranch: () => entries,
 			buildContextEntries: () => entries,
 			getSessionFile: () => sessionFile as string | undefined,
-			getSessionDir: () => sessionFile ? dirname(sessionFile) : "/tmp",
-			getSessionId: () => "test-session",
+			getSessionDir: () => typeof sessionDir === "string"
+				? sessionDir
+				: sessionFile
+					? dirname(sessionFile as string)
+					: "/tmp",
+			getSessionId: () => typeof sessionId === "string" ? sessionId : "test-session",
 		},
 		ui: {
 			notify(message: string, type?: string) {
@@ -1913,6 +1917,62 @@ test("resolveLogPath falls back to sessionDir/sessionId when no session file", (
 	);
 });
 
+test("resolveLogPath uses the encoded session cwd for in-memory sessions", () => {
+	const logRoot = join(os.tmpdir(), "pi-automode-global-log-root");
+	const sessionCwd = join(os.tmpdir(), "pi-automode-project-marker");
+	const resolvedCwd = resolve(sessionCwd);
+	const projectDir = `--${
+		resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")
+	}--`;
+	for (const sessionDir of ["", "relative-session-dir"]) {
+		assert.equal(
+			resolveLogPath(
+				undefined,
+				sessionDir,
+				"abc123",
+				sessionCwd,
+				logRoot,
+				new Date("2026-08-11T12:00:00.000Z"),
+			),
+			join(logRoot, projectDir, "2026-08-11", "abc123-pi-automode.jsonl"),
+		);
+	}
+});
+
+test("resolveLogPath partitions in-memory logs by UTC date", () => {
+	const args = [undefined, "", "abc123", "/tmp/project", "/tmp/logs"] as const;
+	const beforeMidnight = resolveLogPath(
+		...args,
+		new Date("2026-08-11T23:59:59.999Z"),
+	);
+	const afterMidnight = resolveLogPath(
+		...args,
+		new Date("2026-08-12T00:00:00.000Z"),
+	);
+	assert.equal(basename(dirname(beforeMidnight)), "2026-08-11");
+	assert.equal(basename(dirname(afterMidnight)), "2026-08-12");
+	assert.notEqual(beforeMidnight, afterMidnight);
+});
+
+test("resolveLogPath confines invalid custom session ids", () => {
+	const logRoot = resolve(os.tmpdir(), "pi-automode-confined-logs");
+	for (const sessionId of ["../../escape", "..\\..\\escape", ".."]) {
+		const logPath = resolveLogPath(
+			undefined,
+			"",
+			sessionId,
+			"/tmp/project",
+			logRoot,
+			new Date("2026-08-11T12:00:00.000Z"),
+		);
+		assert.equal(relative(logRoot, logPath).startsWith(".."), false);
+		assert.match(
+			basename(logPath),
+			/^invalid-[a-f0-9]{16}-pi-automode\.jsonl$/,
+		);
+	}
+});
+
 test("newDecisionId returns distinct ids", () => {
 	assert.notEqual(newDecisionId(), newDecisionId());
 });
@@ -1924,6 +1984,31 @@ test("createLogger is a no-op when disabled", () => {
 		const logger = createLogger({ enabled: false, classifierIo: true, sessionFile, sessionDir: dir, sessionId: "abc" });
 		logger.append({ type: "decision", ts: "t", decisionId: "d", cwd: "/tmp", tool: "bash", summary: "s", kind: "classifier", outcome: "block", reason: "r", reasoning: { mode: "server-default" } });
 		assert.equal(existsSync(join(dir, "abc-pi-automode.jsonl")), false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("createLogger writes in-memory logs under the application-owned root", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-log-"));
+	try {
+		const sessionCwd = join(dir, "project");
+		const logRoot = join(dir, "global-logs");
+		const now = new Date("2026-08-11T12:00:00.000Z");
+		mkdirSync(sessionCwd);
+		const logger = createLogger({
+			enabled: true,
+			classifierIo: false,
+			sessionDir: "",
+			sessionCwd,
+			sessionId: "abc",
+			logRoot,
+			now,
+		});
+		logger.append({ type: "decision", ts: "t", decisionId: "d1", cwd: sessionCwd, tool: "read", summary: "s", kind: "read-only", outcome: "allow", reason: "r", reasoning: { mode: "server-default" } });
+		const logPath = resolveLogPath(undefined, "", "abc", sessionCwd, logRoot, now);
+		assert.equal(existsSync(logPath), true);
+		assert.equal(existsSync(join(sessionCwd, "abc-pi-automode.jsonl")), false);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -2049,6 +2134,62 @@ test("tool_call writes no log file when logging is disabled", async () => {
 		await fake.emit("tool_call", { toolName: "bash", input: { command: "npm publish" } }, ctx);
 		assert.equal(existsSync(join(dir, "sess-pi-automode.jsonl")), false);
 	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("tool_call and config use the in-memory session cwd log path", async () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-hook-log-"));
+	try {
+		const sessionCwd = join(dir, "effective-worktree");
+		const logRoot = join(dir, "automode-logs");
+		const sessionId = `in-memory-${basename(dir)}`;
+		const now = new Date("2026-08-11T12:00:00.000Z");
+		const legacyLaunchPath = join(process.cwd(), `${sessionId}-pi-automode.jsonl`);
+		mkdirSync(sessionCwd);
+		assert.equal(existsSync(legacyLaunchPath), false);
+
+		const fake = createFakePi();
+		createPiAutomode({
+			loadConfig: () => baseConfig({
+				log: { enabled: true, classifierIo: false },
+			}),
+			classifyAction: async () => ({
+				decision: "block",
+				tier: "soft_deny",
+				reason: "unused",
+			}),
+			logRoot,
+			now: () => now,
+		})(fake.pi);
+		const ctx = createFakeCtx(fake.entries, {
+			cwd: sessionCwd,
+			sessionDir: "",
+			sessionId,
+		});
+		await fake.emit("session_start", { type: "session_start" }, ctx);
+		await fake.emit("tool_call", {
+			toolName: "read",
+			input: { path: "README.md" },
+		}, ctx);
+
+		const logPath = resolveLogPath(
+			undefined, "", sessionId, sessionCwd, logRoot, now,
+		);
+		const launchCwdPath = resolveLogPath(
+			undefined, "", sessionId, process.cwd(), logRoot, now,
+		);
+		assert.notEqual(logPath, launchCwdPath);
+		assert.equal(existsSync(logPath), true);
+		assert.equal(existsSync(launchCwdPath), false);
+		assert.equal(existsSync(legacyLaunchPath), false);
+		assert.equal(existsSync(join(sessionCwd, `${sessionId}-pi-automode.jsonl`)), false);
+
+		await fake.commands.get("automode")?.handler("config", ctx);
+		const parsed = JSON.parse(ctx.notifications.at(-1)?.message ?? "{}");
+		assert.equal(parsed.logFile, logPath);
+	} finally {
+		rmSync(join(process.cwd(), `in-memory-${basename(dir)}-pi-automode.jsonl`), { force: true });
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
