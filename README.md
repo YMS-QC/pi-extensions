@@ -1,5 +1,11 @@
 # pi-automode
 
+> **Fork notice**: private fork of [czottmann/pi-automode](https://github.com/czottmann/pi-automode) (MIT) with three additions on top of v1.11.0. `upstream` remote is configured; rebase-friendly small diffs.
+>
+> - `notifications`: `"all"` (default) / `"statusOnly"` / `"none"` — silence the on/off/reload state notifications that noise up mode-switcher integrations while keeping block alerts and errors
+> - `bashFastPath`: deterministic allow tier for read-only bash patterns (`bash(git status*)` etc., ~30 built-ins) — zero classifier round-trips for routine commands, after all deterministic safety checks
+> - `decisionCache`: optional per-session LRU cache (`{ enabled, ttlMs, maxEntries }`) for identical repeated classifier calls
+
 Claude Code-style auto mode for Pi.
 
 This is a guardrail extension. It intercepts agent tool calls before execution and blocks actions that match permission deny rules, deterministic hard-deny checks, or the auto-mode classifier's block decision.
