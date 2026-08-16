@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "default": { "main": "zai/glm-5.3", "thinking": "high", "aux": "zai/glm-4.7" },
+    "cheap":   { "main": "zai/glm-4.7", "thinking": "off",  "aux": "zai/glm-4.7" },
+    "deep":    { "main": "zai/glm-5.3", "thinking": "max",  "aux": "zai/glm-4.7" }
+  },
+  "active": "default",
+  "overrides": {}
+}
