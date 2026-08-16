@@ -132,6 +132,32 @@ export interface TelegramSessionContextStore<TContext> {
   clear: (ctx?: TContext) => boolean;
 }
 
+const STALE_EXTENSION_CONTEXT_MESSAGE_PREFIX =
+  "This extension ctx is stale";
+
+function isStaleExtensionContextError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.startsWith(STALE_EXTENSION_CONTEXT_MESSAGE_PREFIX)
+  );
+}
+
+/**
+ * Probes a captured ctx for staleness by touching isIdle(). Never throws:
+ * unrelated probe failures are treated as "not stale" so callers keep their
+ * original behavior.
+ */
+function isCapturedContextStale(ctx: unknown): boolean {
+  const probe = (ctx as { isIdle?: unknown } | undefined)?.isIdle;
+  if (typeof probe !== "function") return false;
+  try {
+    void (probe as () => boolean).call(ctx);
+    return false;
+  } catch (error) {
+    return isStaleExtensionContextError(error);
+  }
+}
+
 export function createTelegramSessionContextStore<TContext>(
   options: {
     getIdentity?: (ctx: TContext) => unknown;
@@ -144,6 +170,22 @@ export function createTelegramSessionContextStore<TContext>(
   const primitiveIdentityGenerations = new Map<unknown, number>();
   const resolveIdentity = (ctx: TContext): unknown =>
     options.getIdentity?.(ctx) ?? ctx;
+  /** Resolves identity without throwing when ctx was invalidated by session replacement. */
+  const tryResolveIdentity = (
+    ctx: TContext,
+  ): { ok: true; identity: unknown } | { ok: false } => {
+    try {
+      return { ok: true, identity: resolveIdentity(ctx) };
+    } catch (error) {
+      if (isStaleExtensionContextError(error)) return { ok: false };
+      throw error;
+    }
+  };
+  const dropCurrent = (): void => {
+    currentContext = undefined;
+    currentIdentity = undefined;
+    generation += 1;
+  };
   const getIdentityGeneration = (identity: unknown): number | undefined =>
     (typeof identity === "object" && identity !== null) ||
     typeof identity === "function"
@@ -160,11 +202,24 @@ export function createTelegramSessionContextStore<TContext>(
     }
   };
   return {
-    get: () => currentContext,
+    get: () => {
+      // Self-heal: session replacement (newSession/fork/switchSession/reload)
+      // invalidates the captured ctx; hand consumers the well-handled
+      // "no context" state instead of a ctx whose every member access throws.
+      if (
+        currentContext !== undefined &&
+        isCapturedContextStale(currentContext)
+      ) {
+        dropCurrent();
+      }
+      return currentContext;
+    },
     getGeneration: () => generation,
     isCurrent: (ctx, expectedGeneration) => {
       if (currentContext === undefined) return false;
-      const identity = resolveIdentity(ctx);
+      const resolved = tryResolveIdentity(ctx);
+      if (!resolved.ok) return false;
+      const identity = resolved.identity;
       return (
         identity === currentIdentity &&
         getIdentityGeneration(identity) === generation &&
@@ -180,18 +235,22 @@ export function createTelegramSessionContextStore<TContext>(
     },
     clear: (ctx) => {
       if (ctx !== undefined) {
-        const identity = resolveIdentity(ctx);
-        if (
-          identity !== currentIdentity ||
-          getIdentityGeneration(identity) !== generation
-        ) {
+        const resolved = tryResolveIdentity(ctx);
+        if (resolved.ok) {
+          if (
+            resolved.identity !== currentIdentity ||
+            getIdentityGeneration(resolved.identity) !== generation
+          ) {
+            return false;
+          }
+        } else if (ctx !== currentContext) {
+          // Stale ctx cannot report its identity; only clear when it is the
+          // exact object currently stored so late clears never drop a newer ctx.
           return false;
         }
       }
       if (currentContext === undefined) return false;
-      currentContext = undefined;
-      currentIdentity = undefined;
-      generation += 1;
+      dropCurrent();
       return true;
     },
   };

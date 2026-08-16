@@ -560,3 +560,50 @@ test("Lifecycle helpers register pi hooks and delegate to handlers", async () =>
     "agent-end",
   ]);
 });
+
+const STALE_EXTENSION_CONTEXT_MESSAGE =
+  "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().";
+
+function createStaleLifecycleContext(): ExtensionContext {
+  return {
+    get cwd(): string {
+      throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
+    },
+    get sessionManager(): unknown {
+      throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
+    },
+    isIdle: (): boolean => {
+      throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
+    },
+  } as unknown as ExtensionContext;
+}
+
+test("Session context store drops a stored ctx after pi invalidates it", () => {
+  const store = createTelegramSessionContextStore<ExtensionContext>();
+  const stale = createStaleLifecycleContext();
+  store.set(stale);
+  assert.equal(store.get(), undefined);
+  assert.equal(store.getGeneration(), 2);
+});
+
+test("Session context store tolerates stale identity probes", () => {
+  const store = createTelegramSessionContextStore<ExtensionContext>({
+    getIdentity: (ctx) => ctx.cwd,
+  });
+  const fresh = { cwd: "/project" } as ExtensionContext;
+  const generation = store.set(fresh);
+  const stale = createStaleLifecycleContext();
+  assert.equal(store.isCurrent(stale), false);
+  assert.equal(store.get(), fresh);
+  assert.equal(store.isCurrent(fresh, generation), true);
+  assert.equal(store.clear(stale), false);
+  assert.equal(store.get(), fresh);
+});
+
+test("Session context store clears the stored ctx even after it goes stale", () => {
+  const store = createTelegramSessionContextStore<ExtensionContext>();
+  const stale = createStaleLifecycleContext();
+  store.set(stale);
+  assert.equal(store.clear(stale), true);
+  assert.equal(store.get(), undefined);
+});

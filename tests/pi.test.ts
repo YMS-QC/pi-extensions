@@ -168,3 +168,45 @@ test("Pi context helpers expose model, idle, pending-message, and compact adapte
   assert.equal(hasExtensionContextPendingMessages(ctx), false);
   assert.deepEqual(events, ["compact", "complete"]);
 });
+
+const STALE_EXTENSION_CONTEXT_MESSAGE =
+  "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload().";
+
+function createStaleExtensionContext(): ExtensionContext {
+  return {
+    get cwd(): string {
+      throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
+    },
+    get mode(): string {
+      throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
+    },
+    get model(): unknown {
+      throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
+    },
+    isIdle: (): boolean => {
+      throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
+    },
+    hasPendingMessages: (): boolean => {
+      throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
+    },
+  } as unknown as ExtensionContext;
+}
+
+test("Pi context helpers degrade safely when the extension ctx is stale", () => {
+  const stale = createStaleExtensionContext();
+  assert.equal(getExtensionContextMode(stale), undefined);
+  assert.equal(isExtensionContextPassiveRunMode(stale), false);
+  assert.equal(getExtensionContextModel(stale), undefined);
+  assert.equal(getExtensionContextCwd(stale), "");
+  assert.equal(isExtensionContextIdle(stale), false);
+  assert.equal(hasExtensionContextPendingMessages(stale), false);
+});
+
+test("Pi context helpers rethrow unrelated ctx failures", () => {
+  const ctx = {
+    isIdle: () => {
+      throw new Error("boom");
+    },
+  } as unknown as ExtensionContext;
+  assert.throws(() => isExtensionContextIdle(ctx), /boom/);
+});

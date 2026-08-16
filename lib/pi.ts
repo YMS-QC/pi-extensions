@@ -78,11 +78,53 @@ function isPiRunMode(value: unknown): value is PiRunMode {
   );
 }
 
+const STALE_EXTENSION_CONTEXT_MESSAGE_PREFIX =
+  "This extension ctx is stale";
+
+export function isExtensionContextStaleError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.startsWith(STALE_EXTENSION_CONTEXT_MESSAGE_PREFIX)
+  );
+}
+
+/**
+ * True when the captured ctx was invalidated by session replacement or reload.
+ * Re-throws unrelated errors so genuine failures stay visible.
+ */
+export function isExtensionContextStale(ctx: unknown): boolean {
+  const probe = (ctx as { isIdle?: unknown } | undefined)?.isIdle;
+  if (typeof probe !== "function") return false;
+  try {
+    void (probe as () => boolean).call(ctx);
+    return false;
+  } catch (error) {
+    return isExtensionContextStaleError(error);
+  }
+}
+
+/**
+ * Pi invalidates captured extension contexts after newSession/fork/switchSession/
+ * reload; any member access then throws. Reads through these helpers degrade to
+ * the given fallback instead of throwing from timers/event handlers.
+ */
+function readExtensionContext<T>(read: () => T, fallback: T): T {
+  try {
+    return read();
+  } catch (error) {
+    if (isExtensionContextStaleError(error)) return fallback;
+    throw error;
+  }
+}
+
 export function getExtensionContextMode(ctx: unknown): PiRunMode | undefined {
-  const mode =
-    typeof ctx === "object" && ctx !== null
-      ? (ctx as { mode?: unknown }).mode
-      : undefined;
+  const mode = readExtensionContext(
+    () =>
+      typeof ctx === "object" && ctx !== null
+        ? (ctx as { mode?: unknown }).mode
+        : undefined,
+    undefined,
+  );
   return isPiRunMode(mode) ? mode : undefined;
 }
 
@@ -172,21 +214,21 @@ export function createScopedModelPatternPersister(deps: {
 export function getExtensionContextModel(
   ctx: ExtensionContext,
 ): ExtensionContext["model"] {
-  return ctx.model;
+  return readExtensionContext(() => ctx.model, undefined);
 }
 
 export function getExtensionContextCwd(ctx: ExtensionContext): string {
-  return ctx.cwd;
+  return readExtensionContext(() => ctx.cwd, "");
 }
 
 export function isExtensionContextIdle(ctx: ExtensionContext): boolean {
-  return ctx.isIdle();
+  return readExtensionContext(() => ctx.isIdle(), false);
 }
 
 export function hasExtensionContextPendingMessages(
   ctx: ExtensionContext,
 ): boolean {
-  return ctx.hasPendingMessages();
+  return readExtensionContext(() => ctx.hasPendingMessages(), false);
 }
 
 export function compactExtensionContext(
