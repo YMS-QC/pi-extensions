@@ -425,6 +425,29 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         );
       }
 
+      // Deterministic bash fast path: a curated pattern list of read-only
+      // commands skips the classifier entirely. Deterministic hard-deny and
+      // permission rules already ran above, so a command like
+      // `git status && rm -rf /` is still blocked before reaching this tier
+      // (hard-deny parses every shell segment).
+      if (event.toolName === "bash" && cfg.bashFastPath.length > 0) {
+        const matched = cfg.bashFastPath.some((pattern) =>
+          matchesToolPattern(pattern, event.toolName, input, ctx.cwd),
+        );
+        if (matched) {
+          return allow(
+            ctx,
+            "bash-fast-path",
+            `Bash fast-path pattern matched: ${
+              typeof input.command === "string" ? input.command : summary
+            }`,
+            event.toolName,
+            summary,
+            logCtx,
+          );
+        }
+      }
+
       const decision = await classify(ctx, cfg, summary, loadedContext);
       logClassifierIo(decision, logCtx);
       if (decision.decision === "allow") {

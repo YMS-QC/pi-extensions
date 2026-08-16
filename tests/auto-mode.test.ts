@@ -137,6 +137,8 @@ function baseConfig(overrides: Partial<EffectiveConfig> = {}): EffectiveConfig {
 		classifyReadOnlyTools: false,
 		allowInsideWorkingDirectory: false,
 		deniedPaths: [],
+		notifications: "all",
+		bashFastPath: [],
 		fastClassifierMaxTokens: 512,
 		maxUserTranscriptTokens: 4000,
 		maxToolTranscriptTokens: 4000,
@@ -182,6 +184,11 @@ async function setupHookTest(options: {
 	await fake.emit("session_start", { type: "session_start" }, ctx);
 	return { ...fake, ctx, get classifierCalls() { return classifierCalls; } };
 }
+
+const parseToolPatternList = (...entries: string[]) =>
+	entries
+		.map((entry) => parseToolPattern(entry))
+		.filter((pattern): pattern is NonNullable<ReturnType<typeof parseToolPattern>> => pattern !== undefined);
 
 test("global config path uses Pi agent config directory", () => {
 	assert.match(PI_GLOBAL_SETTINGS[0] ?? "", /\.pi\/agent\/automode\.json$/);
@@ -1448,6 +1455,67 @@ test("tool_call hook uses classifier mock for non-read-only actions", async () =
 	assert.equal(result.block, true);
 	assert.match(result.reason ?? "", /mock block/);
 	assert.equal(harness.classifierCalls, 1);
+});
+
+test("bash fast-path allows matching read-only commands without classifier", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({
+			bashFastPath: parseToolPatternList(
+				"bash(git status*)",
+				"bash(git diff*)",
+				"bash(ls)",
+			),
+		}),
+		classifier: async () => ({ decision: "block", tier: "soft_deny", reason: "mock block" }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "bash",
+		input: { command: "git status" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("bash fast-path patterns are configurable and replaceable", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({
+			bashFastPath: parseToolPatternList("bash(git status)"),
+		}),
+		classifier: async () => ({ decision: "block", tier: "soft_deny", reason: "mock block" }),
+	});
+
+	const allowed = await harness.emit("tool_call", {
+		toolName: "bash",
+		input: { command: "git status" },
+	}, harness.ctx);
+	assert.equal(allowed, undefined);
+	assert.equal(harness.classifierCalls, 0);
+
+	const classified = await harness.emit("tool_call", {
+		toolName: "bash",
+		input: { command: "git diff" },
+	}, harness.ctx);
+	assert.notEqual(classified, undefined);
+	assert.equal(harness.classifierCalls, 1);
+});
+
+test("bash fast-path never bypasses deterministic hard-deny", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({
+			bashFastPath: parseToolPatternList("bash(git status && rm -rf /)", "bash(rm -rf /*)"),
+		}),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "bash",
+		input: { command: "git status && rm -rf /" },
+	}, harness.ctx) as { block?: boolean; reason?: string };
+
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /hard-denied/);
+	assert.equal(harness.classifierCalls, 0);
 });
 
 test("tool_call hook allows classifier-approved non-read-only actions", async () => {

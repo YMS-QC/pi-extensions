@@ -59,6 +59,12 @@ export type AutoModeSettings = {
   hardDeny?: unknown;
   /** Notification level: "all" (default), "statusOnly", or "none". */
   notifications?: NotificationLevel;
+  /**
+   * Bash fast-path patterns (`bash(git status*)`). Matching commands are
+   * allowed without a classifier call after deterministic checks. `"$defaults"`
+   * keeps the built-in list; an array replaces it.
+   */
+  bashFastPath?: unknown;
   log?: Partial<LogConfig>;
 };
 
@@ -91,6 +97,7 @@ export type EffectiveConfig = {
   allowInsideWorkingDirectory: boolean;
   deniedPaths: string[];
   notifications: NotificationLevel;
+  bashFastPath: ToolPattern[];
   maxUserTranscriptTokens: number;
   maxToolTranscriptTokens: number;
   environment: string[];
@@ -135,7 +142,8 @@ export type DenialRecord = {
 export type DecisionKind =
   | DenialRecord["kind"]
   | "read-only"
-  | "inside-working-directory";
+  | "inside-working-directory"
+  | "bash-fast-path";
 
 export type ClassificationDecision = {
   decision: "allow" | "block";

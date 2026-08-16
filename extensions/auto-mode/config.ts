@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import {
   DEFAULT_ALLOW,
   DEFAULT_ALLOW_INSIDE_WORKING_DIRECTORY,
+  DEFAULT_BASH_FAST_PATH_PATTERNS,
   DEFAULT_CLASSIFY_READ_ONLY_TOOLS,
   DEFAULT_DENIED_PATHS,
   DEFAULT_ENVIRONMENT,
@@ -119,6 +120,7 @@ export function validateSettingsFile(
         "hard_deny",
         "hardDeny",
         "notifications",
+        "bashFastPath",
         "log",
       ]);
       for (const key of Object.keys(autoMode)) {
@@ -456,6 +458,24 @@ function appendPermissionPatterns(
 }
 
 /**
+ * Apply a `bashFastPath` setting onto the accumulated pattern list. `"$defaults"`
+ * is a no-op (the defaults are already seeded); a string array replaces the
+ * accumulated list; anything else is ignored (unknown-key diagnostics cover
+ * shape errors upstream).
+ */
+function appendBashFastPathPatterns(
+  config: EffectiveConfig,
+  value: unknown,
+): void {
+  if (value === undefined || value === "$defaults") return;
+  const values = stringArray(value);
+  if (!values) return;
+  config.bashFastPath = values
+    .map((entry) => parseToolPattern(entry))
+    .filter((pattern): pattern is ToolPattern => pattern !== undefined);
+}
+
+/**
  * Merge settings with Claude Code-style precedence using Pi-owned config files.
  *
  * Important details:
@@ -482,6 +502,9 @@ export function buildEffectiveConfigFromSources(
     hardDeny: [...DEFAULT_HARD_DENY],
     permissionDeny: [],
     permissionAsk: [],
+    bashFastPath: DEFAULT_BASH_FAST_PATH_PATTERNS.map((entry) =>
+      parseToolPattern(entry)
+    ).filter((pattern): pattern is ToolPattern => pattern !== undefined),
     log: { ...DEFAULT_LOG_CONFIG },
     notifications: DEFAULT_NOTIFICATION_LEVEL,
   };
@@ -517,6 +540,7 @@ export function buildEffectiveConfigFromSources(
       hardDeny,
       settings.autoMode?.hard_deny ?? settings.autoMode?.hardDeny,
     );
+    appendBashFastPathPatterns(config, settings.autoMode?.bashFastPath);
   }
 
   config = {

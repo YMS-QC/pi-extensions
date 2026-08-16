@@ -219,3 +219,41 @@ export const DEFAULT_LOG_CONFIG = {
 
 /** Default notification level: upstream behavior (all notifications). */
 export const DEFAULT_NOTIFICATION_LEVEL = "all";
+
+/**
+ * Default bash fast-path patterns. A matching command is allowed without a
+ * classifier call (deterministic checks still run first). Keep this list
+ * strictly read-only/zero-side-effect; `*` matches any characters.
+ */
+export const DEFAULT_BASH_FAST_PATH_PATTERNS = [
+  "bash(git status*)",
+  "bash(git diff*)",
+  "bash(git log*)",
+  "bash(git show*)",
+  "bash(git branch*)",
+  "bash(git remote -v)",
+  "bash(git rev-parse *)",
+  "bash(ls *)",
+  "bash(ls)",
+  "bash(pwd)",
+  "bash(echo *)",
+  "bash(cat *)",
+  "bash(head *)",
+  "bash(tail *)",
+  "bash(wc *)",
+  "bash(which *)",
+  "bash(node --version)",
+  "bash(node -v)",
+  "bash(npm --version)",
+  "bash(npm ls*)",
+  "bash(npm run --list*)",
+  "bash(mvn -v)",
+  "bash(mvn --version)",
+  "bash(java -version)",
+  "bash(python3 --version)",
+  "bash(pip list*)",
+  "bash(uname *)",
+  "bash(df -h)",
+  "bash(env | grep *)",
+  "bash(printenv *)",
+];
