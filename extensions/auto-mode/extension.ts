@@ -16,12 +16,14 @@ import {
   DEFAULT_SOFT_DENY,
   PATH_BEARING_TOOLS,
   READ_ONLY_TOOLS,
-} from "./constants.ts";import {
+} from "./constants.ts";
+import {
   loadEffectiveConfig,
   loadEffectiveConfigWithDiagnostics,
   writeGlobalClassifierModel,
 } from "./config.ts";
 import { deterministicHardDeny } from "./hard-deny.ts";
+import { DecisionCache } from "./decision-cache.ts";
 import {
   createLogger,
   newDecisionId,
@@ -130,6 +132,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
     let loadResult = loadConfigWithDiagnostics(process.cwd());
     let config: EffectiveConfig = loadResult.config;
     let configDiagnostics: string[] = loadResult.diagnostics;
+    const decisionCache = new DecisionCache(config.decisionCache);
     let state: AutoModeState = {
       checkedActions: 0,
       blockedActions: 0,
@@ -252,6 +255,8 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       loadResult = loadConfigWithDiagnostics(ctx.cwd);
       config = loadResult.config;
       configDiagnostics = loadResult.diagnostics;
+      decisionCache.updateConfig(config.decisionCache);
+      decisionCache.clear();
       state = restoreState(ctx);
       updateUi(ctx);
     });
@@ -448,8 +453,54 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }
       }
 
+      // Classifier decision cache: reuse an identical recent decision for
+      // repeated identical calls. Deterministic tiers above always re-run, so
+      // a cached decision never bypasses permissions, hard-deny, or the
+      // fast-path tiers.
+      if (cfg.decisionCache.enabled) {
+        const cacheKey = DecisionCache.key(
+          event.toolName,
+          input,
+          ctx.cwd,
+        );
+        const cached = decisionCache.get(cacheKey);
+        if (cached) {
+          const reason = `cached (${Math.round(
+            (Date.now() - cached.cachedAt) / 1000,
+          )}s ago): ${cached.reason}`;
+          if (cached.decision === "allow") {
+            return allow(
+              ctx,
+              "classifier",
+              reason,
+              event.toolName,
+              summary,
+              logCtx,
+            );
+          }
+          return block(
+            ctx,
+            {
+              timestamp: Date.now(),
+              toolName: event.toolName,
+              reason,
+              action: summary,
+              kind: "classifier",
+            },
+            logCtx,
+          );
+        }
+      }
+
       const decision = await classify(ctx, cfg, summary, loadedContext);
       logClassifierIo(decision, logCtx);
+      if (cfg.decisionCache.enabled) {
+        decisionCache.set(
+          DecisionCache.key(event.toolName, input, ctx.cwd),
+          decision.decision,
+          decision.reason,
+        );
+      }
       if (decision.decision === "allow") {
         state.classifierAllowed += 1;
         return allow(

@@ -220,6 +220,13 @@ export const DEFAULT_LOG_CONFIG = {
 /** Default notification level: upstream behavior (all notifications). */
 export const DEFAULT_NOTIFICATION_LEVEL = "all";
 
+/** Default decision-cache config: off, 5-minute TTL, 256-entry LRU. */
+export const DEFAULT_DECISION_CACHE_CONFIG = {
+  enabled: false,
+  ttlMs: 300_000,
+  maxEntries: 256,
+};
+
 /**
  * Default bash fast-path patterns. A matching command is allowed without a
  * classifier call (deterministic checks still run first). Keep this list

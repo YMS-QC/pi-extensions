@@ -36,6 +36,15 @@ export type LogConfig = {
   classifierIo: boolean;
 };
 
+/** Classifier decision cache configuration. Off by default. */
+export type DecisionCacheConfig = {
+  enabled: boolean;
+  /** Cache entry lifetime in milliseconds (default 300_000, min 1_000). */
+  ttlMs: number;
+  /** Max entries before LRU eviction (default 256, min 8). */
+  maxEntries: number;
+};
+
 export type AutoModeSettings = {
   enabled?: boolean;
   classifierModel?: string;
@@ -65,6 +74,8 @@ export type AutoModeSettings = {
    * keeps the built-in list; an array replaces it.
    */
   bashFastPath?: unknown;
+  /** Classifier decision cache: reuse an identical recent decision. */
+  decisionCache?: Partial<DecisionCacheConfig>;
   log?: Partial<LogConfig>;
 };
 
@@ -98,6 +109,7 @@ export type EffectiveConfig = {
   deniedPaths: string[];
   notifications: NotificationLevel;
   bashFastPath: ToolPattern[];
+  decisionCache: DecisionCacheConfig;
   maxUserTranscriptTokens: number;
   maxToolTranscriptTokens: number;
   environment: string[];

@@ -5,6 +5,7 @@ import {
   DEFAULT_ALLOW_INSIDE_WORKING_DIRECTORY,
   DEFAULT_BASH_FAST_PATH_PATTERNS,
   DEFAULT_CLASSIFY_READ_ONLY_TOOLS,
+  DEFAULT_DECISION_CACHE_CONFIG,
   DEFAULT_DENIED_PATHS,
   DEFAULT_ENVIRONMENT,
   DEFAULT_FAST_CLASSIFIER_MAX_TOKENS,
@@ -24,6 +25,7 @@ import type {
   AutoModeSettings,
   ClassifierReasoningLevel,
   ConfigLoadResult,
+  DecisionCacheConfig,
   EffectiveConfig,
   LoadedSettingsFile,
   LogConfig,
@@ -121,6 +123,7 @@ export function validateSettingsFile(
         "hardDeny",
         "notifications",
         "bashFastPath",
+        "decisionCache",
         "log",
       ]);
       for (const key of Object.keys(autoMode)) {
@@ -326,6 +329,30 @@ function mergeLog(
   };
 }
 
+function mergeDecisionCache(
+  base: DecisionCacheConfig,
+  patch: Partial<DecisionCacheConfig> | undefined,
+): DecisionCacheConfig {
+  if (!patch) return base;
+  const merged: DecisionCacheConfig = {
+    enabled: patch.enabled ?? base.enabled,
+    ttlMs: validCacheTtl(patch.ttlMs) ? patch.ttlMs : base.ttlMs,
+    maxEntries: validCacheMaxEntries(patch.maxEntries)
+      ? patch.maxEntries
+      : base.maxEntries,
+  };
+  return merged;
+}
+
+function validCacheTtl(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) &&
+    value >= 1_000;
+}
+
+function validCacheMaxEntries(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 8;
+}
+
 /**
  * Validate `deniedPaths`: an array of non-empty path patterns. Unlike the
  * `$defaults` rule lists there is no built-in default list, so `$defaults` is
@@ -441,6 +468,10 @@ function applyAutoModeScalars(
     notifications: isNotificationLevel(settings.notifications)
       ? settings.notifications
       : base.notifications,
+    decisionCache: mergeDecisionCache(
+      base.decisionCache,
+      settings.decisionCache,
+    ),
   };
 }
 
@@ -507,6 +538,7 @@ export function buildEffectiveConfigFromSources(
     ).filter((pattern): pattern is ToolPattern => pattern !== undefined),
     log: { ...DEFAULT_LOG_CONFIG },
     notifications: DEFAULT_NOTIFICATION_LEVEL,
+    decisionCache: { ...DEFAULT_DECISION_CACHE_CONFIG },
   };
 
   const globalSettings = sources.globalSettings ?? [];
