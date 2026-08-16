@@ -37,6 +37,7 @@ import { registerSkillTool } from "./tools/skill-tool.js";
 import { registerSessionSearchTool } from "./tools/session-search-tool.js";
 import { registerMemorySearchTool } from "./tools/memory-search-tool.js";
 import { setupBackgroundReview } from "./handlers/background-review.js";
+import { registerReloadCommand } from "./handlers/reload-config.js";
 import { setupSessionFlush } from "./handlers/session-flush.js";
 import { registerInsightsCommand } from "./handlers/insights.js";
 import { triggerConsolidation, registerConsolidateCommand } from "./handlers/auto-consolidate.js";
@@ -286,6 +287,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── 9. Register commands ──
   registerInsightsCommand(pi, store, projectStoreRef, projectNameRef);
+  registerReloadCommand(pi, config); // fork: hot-reload LLM override via /memory-reload
   registerSkillsCommand(pi, skillStore);
   registerInterviewCommand(pi, store);
   registerSwitchProjectCommand(pi, config);

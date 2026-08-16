@@ -74,12 +74,12 @@ export const DEFAULT_CONFIG_PATH = path.join(
 );
 
 export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
+  let config: MemoryConfig = { ...DEFAULT_CONFIG };
   try {
     if (fs.existsSync(configPath)) {
       const raw = fs.readFileSync(configPath, "utf-8");
       const parsed = JSON.parse(raw);
       // Merge: override defaults with user config
-      const config: MemoryConfig = { ...DEFAULT_CONFIG };
       const isNonNegativeNumber = (value: unknown): value is number => (
         typeof value === "number" && Number.isFinite(value) && value >= 0
       );
@@ -173,6 +173,14 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
     }
   } catch {
     // Fall back to defaults on parse error or access issues
+    config = { ...DEFAULT_CONFIG };
   }
-  return { ...DEFAULT_CONFIG };
+  // Fork addition: environment overrides take precedence over JSON so a
+  // single exported variable can steer the background LLM without editing
+  // hermes-memory-config.json (e.g. PI_HERMES_LLM_MODEL=provider/id).
+  const envModel = process.env.PI_HERMES_LLM_MODEL?.trim();
+  if (envModel) config.llmModelOverride = envModel;
+  const envThinking = process.env.PI_HERMES_LLM_THINKING?.trim().toLowerCase();
+  if (envThinking && isThinkingLevel(envThinking)) config.llmThinkingOverride = envThinking;
+  return config;
 }
