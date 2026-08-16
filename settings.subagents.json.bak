@@ -1,0 +1,40 @@
+{
+  "lastChangelogVersion": "0.84.2",
+  "theme": "catppuccin-tui-macchiato/catppuccin-tui-mocha",
+  "defaultProvider": "zai",
+  "defaultModel": "glm-5.3",
+  "packages": [
+    "npm:pi-subagents",
+    "npm:pi-mcp-adapter",
+    "npm:pi-web-access",
+    "npm:pi-catppuccin-tui",
+    "npm:pi-agent-pi-markitdown",
+    "npm:@narumitw/pi-goal",
+    "git:github.com/YMS-QC/pi-automode",
+    "git:github.com/YMS-QC/pi-hermes-memory"
+  ],
+  "images": {
+    "blockImages": false
+  },
+  "terminal": {
+    "showTerminalProgress": false
+  },
+  "defaultThinkingLevel": "high",
+  "hideThinkingBlock": true,
+  "tuiMode": "fullscreen",
+  "outputPad": 1,
+  "quietStartup": true,
+  "enableInstallTelemetry": false,
+  "subagents": {
+    "defaultModel": "zai/glm-4.7",
+    "defaultThinking": "medium",
+    "agentOverrides": {
+      "scout": { "model": "zai/glm-4.7", "thinking": "low" },
+      "worker": { "model": "zai/glm-5.3", "thinking": "medium" },
+      "reviewer": { "model": "zai/glm-5.3", "thinking": "high" },
+      "oracle": { "model": "zai/glm-5.3", "thinking": "high" },
+      "researcher": { "model": "zai/glm-4.7", "thinking": "low" },
+      "delegate": { "model": "zai/glm-4.7", "thinking": "low" }
+    }
+  }
+}
