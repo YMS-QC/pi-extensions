@@ -139,6 +139,42 @@ const TARGETS: Record<string, Target> = {
 			return changed ? "hermes 配置已更新, 跑 /memory-reload" : "hermes 配置无变化";
 		},
 	},
+	// subagents 全局默认模型: 写 settings.json 的 subagents.defaultModel
+	// (agent 级覆盖/frontmatter 优先级更高, 这里只动兑底层)
+	subagents: {
+		label: "子代理默认模型 (重启 pi 生效)",
+		resolve: (p) => p.aux,
+		apply: async (modelId) => {
+			const changed = patchJson(join(AGENT, "settings.json"), (o) => {
+				const sa = (o.subagents ?? {}) as Record<string, unknown>;
+				sa.defaultModel = modelId;
+				o.subagents = sa;
+			});
+			return changed
+				? `settings.json subagents.defaultModel → ${modelId} (重启生效; agent 级覆盖不变)`
+				: "subagents.defaultModel 无变化";
+		},
+	},
+	// subagents 重型 agent 组: 方案字段 heavy 控制, 缺省回落 main
+	// 只改 agentOverrides 的 model 字段, 不碰 thinking/budget 等其他覆盖
+	heavy: {
+		label: "子代理重型档 reviewer/oracle (重启生效)",
+		resolve: (p) => (typeof p.heavy === "string" ? (p.heavy as string) : p.main),
+		apply: async (modelId) => {
+			const changed = patchJson(join(AGENT, "settings.json"), (o) => {
+				const sa = (o.subagents ?? {}) as Record<string, unknown>;
+				const ov = (sa.agentOverrides ?? {}) as Record<string, Record<string, unknown>>;
+				for (const agent of ["reviewer", "oracle"]) {
+					ov[agent] = { ...ov[agent], model: modelId };
+				}
+				sa.agentOverrides = ov;
+				o.subagents = sa;
+			});
+			return changed
+				? `reviewer/oracle → ${modelId} (重启生效)`
+				: "重型档无变化";
+		},
+	},
 };
 
 // ─── 应用逻辑 ───
