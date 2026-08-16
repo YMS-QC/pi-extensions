@@ -1,7 +1,7 @@
 {
 	"name": "@narumitw/pi-image-drop",
 	"version": "0.49.4",
-	"description": "Deprecated Pi extension for staging browser images and attaching them to the next message.",
+	"description": "Pi extension for staging browser images and attaching them to the next message.",
 	"type": "module",
 	"license": "MIT",
 	"private": false,
@@ -22,6 +22,9 @@
 		"extensions": [
 			"./src/index.ts"
 		]
+	},
+	"piExtension": {
+		"lifecycle": "stable"
 	},
 	"scripts": {
 		"build:web": "node scripts/build-web.mjs",
@@ -60,6 +63,6 @@
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/narumiruna/pi-extensions",
-		"directory": "deprecated/pi-image-drop"
+		"directory": "packages/pi-image-drop"
 	}
 }

@@ -114,6 +114,7 @@ dev:
         -e ./packages/pi-firecrawl \
         -e ./packages/pi-fleet \
         -e ./packages/pi-github-pr \
+        -e ./packages/pi-image-drop \
         -e ./packages/pi-langfuse \
         -e ./packages/pi-lsp \
         -e ./packages/pi-recall \

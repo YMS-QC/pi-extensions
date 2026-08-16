@@ -81,6 +81,12 @@ pi -e npm:@narumitw/pi-goal \
 
 Choose either `pi-starship` or `pi-statusline`; do not enable both footer extensions together.
 
+### Browser companions
+
+| Package | Use it for | Install |
+| --- | --- | --- |
+| [`pi-image-drop`](./packages/pi-image-drop) | Stage an ordered, memory-only image batch in a private loopback page for the next Pi message. | `pi install npm:@narumitw/pi-image-drop` |
+
 ## 🧱 Extension libraries
 
 | Package | Use it for | Install |
@@ -233,7 +239,6 @@ The following packages remain available as source references but are excluded fr
 - `pi-codex-usage` — replaced by [`pi-usage`](./packages/pi-usage)
 - `pi-retry` — replaced by Pi's built-in provider retry and timeout behavior
 - `pi-google-genai` — replaced by the `grounding-with-google-genai` agent skill
-- `pi-image-drop` — deprecated without a replacement
 - `pi-jupyter` — deprecated without a replacement
 - `pi-webui` — deprecated without a replacement
 - `pi-auto-thinking`

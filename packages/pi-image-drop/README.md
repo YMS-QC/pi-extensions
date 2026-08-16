@@ -1,16 +1,8 @@
-# 🖼️ pi-image-drop — Deprecated Browser Image Staging for Pi
+# 🖼️ pi-image-drop — Browser Image Staging for Pi
 
 [![npm](https://img.shields.io/npm/v/@narumitw/pi-image-drop)](https://www.npmjs.com/package/@narumitw/pi-image-drop) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-> [!WARNING]
-> `@narumitw/pi-image-drop` is deprecated with no replacement, kept under `deprecated/` for reference, and no longer part of the active workspace package set.
-> To remove it from Pi:
->
-> ```bash
-> pi uninstall npm:@narumitw/pi-image-drop
-> ```
-
-`@narumitw/pi-image-drop` added one menu-first `/image-drop` command to the latest [Pi Coding Agent](https://pi.dev). Its **Open staging page** action served a private loopback page where you could paste, drop, choose, preview, reorder, retry, and remove local images. The ordered batch was attached to your next non-empty interactive Pi message.
+`@narumitw/pi-image-drop` adds one menu-first `/image-drop` command to the latest [Pi Coding Agent](https://pi.dev). Its **Open staging page** action serves a private loopback page where you can paste, drop, choose, preview, reorder, retry, and remove local images. The ordered batch is attached to your next non-empty interactive Pi message.
 
 The page never contains a prompt or Attach button: Pi remains the only place where messages are written and sent. Its React and TypeScript frontend uses Radix Themes, Primitives, Colors, and Icons, and ships as local bundled assets with no CDN or runtime build step.
 
@@ -26,15 +18,21 @@ The page never contains a prompt or Attach button: Pi remains the only place whe
 - Opens a side-effect-free standard TUI menu with current draft state, Status, Settings, and Help.
 - Reports batch state above Pi's editor and can start automatically with each session.
 
-## 📦 Archived reference
-
-To inspect the deprecated package from this repository without installing it:
+## 📦 Install
 
 ```bash
-pi -e ./deprecated/pi-image-drop
+pi install npm:@narumitw/pi-image-drop
 ```
 
-The package last targeted the Pi release current at archival time and uses its `agent_settled` lifecycle event.
+Try the working tree without installing:
+
+```bash
+pi -e ./packages/pi-image-drop
+# or
+just try image-drop
+```
+
+This package targets the latest Pi release and uses its `agent_settled` lifecycle event. Older Pi releases are not supported.
 
 ## 🚀 Workflow
 
@@ -165,36 +163,47 @@ Then open the unchanged `http://127.0.0.1:45678/...` link locally. Image Drop do
 ## 🗂️ Package layout
 
 ```text
-deprecated/pi-image-drop/src/index.ts            Pi package entrypoint
-deprecated/pi-image-drop/src/image-drop.ts       extension registration and command orchestration
-deprecated/pi-image-drop/src/runtime.ts          Pi lifecycle, lazy capabilities, and message orchestration
-deprecated/pi-image-drop/src/interactive-ui.ts   lazy menu and standalone-confirmation Pi TUI Kit boundary
-deprecated/pi-image-drop/src/menu.ts             limit input/review projections, menu-state helpers, and loader
-deprecated/pi-image-drop/src/format.ts           lightweight byte formatting shared by runtime and menus
-deprecated/pi-image-drop/src/batch.ts            in-memory draft and sent-history state machine
-deprecated/pi-image-drop/src/images.ts           bounded queue with codecs loaded on first image processing
-deprecated/pi-image-drop/src/server.ts           lazily loaded authenticated loopback HTTP/SSE server
-deprecated/pi-image-drop/src/settings.ts         extension settings
-deprecated/pi-image-drop/src/pi-settings.ts      effective Pi image settings adapter
-deprecated/pi-image-drop/src/web/ui/             authored React and TypeScript browser source
-deprecated/pi-image-drop/src/web/app.js           generated bundled React application
-deprecated/pi-image-drop/src/web/state.js         generated compatibility helper module
-deprecated/pi-image-drop/src/web/styles.css       generated Radix Themes, Colors, and local styles
-deprecated/pi-image-drop/src/web/index.html       minimal authenticated React shell
+src/index.ts            Pi package entrypoint
+src/image-drop.ts       extension registration and command orchestration
+src/runtime.ts          Pi lifecycle, lazy capabilities, and message orchestration
+src/interactive-ui.ts   lazy menu and standalone-confirmation Pi TUI Kit boundary
+src/menu.ts             limit input/review projections, menu-state helpers, and loader
+src/format.ts           lightweight byte formatting shared by runtime and menus
+src/batch.ts            in-memory draft and sent-history state machine
+src/images.ts           bounded queue with codecs loaded on first image processing
+src/server.ts           lazily loaded authenticated loopback HTTP/SSE server
+src/settings.ts         extension settings
+src/pi-settings.ts      effective Pi image settings adapter
+src/web/ui/             authored React and TypeScript browser source
+src/web/app.js           generated bundled React application
+src/web/state.js         generated compatibility helper module
+src/web/styles.css       generated Radix Themes, Colors, and local styles
+src/web/index.html       minimal authenticated React shell
 ```
 
 ## 🧪 Development
 
-From this archived package directory:
+From the repository root:
 
 ```bash
-npm install
-npm run build:web
-npm run check
-npm pack --dry-run
+npm --workspace @narumitw/pi-image-drop run build:web
+npm --workspace @narumitw/pi-image-drop run check
+npm test
+just try image-drop
+just pack image-drop
 ```
 
 Edit browser code under `src/web/ui/`, then run `build:web`. The package typecheck runs `check:web`, which rebuilds in a temporary directory and rejects stale generated assets. The dry-run package must contain the manifest, license, README, TypeScript/TSX sources, and bundled static web assets, but no tests, fixtures, image bytes, build scripts, or `node_modules`.
+
+## 🚀 Publishing
+
+The first publication is intentionally a maintainer action:
+
+```bash
+npm publish --workspace @narumitw/pi-image-drop --access public
+```
+
+`just npm-public` only changes visibility after a scoped package already exists. Do not publish from an implementation or verification run.
 
 ## 🔎 Keywords
 
