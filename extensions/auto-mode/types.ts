@@ -57,6 +57,8 @@ export type AutoModeSettings = {
   softDeny?: unknown;
   hard_deny?: unknown;
   hardDeny?: unknown;
+  /** Notification level: "all" (default), "statusOnly", or "none". */
+  notifications?: NotificationLevel;
   log?: Partial<LogConfig>;
 };
 
@@ -88,6 +90,7 @@ export type EffectiveConfig = {
   fastClassifierMaxTokens: number;
   allowInsideWorkingDirectory: boolean;
   deniedPaths: string[];
+  notifications: NotificationLevel;
   maxUserTranscriptTokens: number;
   maxToolTranscriptTokens: number;
   environment: string[];
@@ -99,6 +102,9 @@ export type EffectiveConfig = {
   permissionAsk: ToolPattern[];
   log: LogConfig;
 };
+
+/** Notification verbosity for extension UI notifications. */
+export type NotificationLevel = "all" | "statusOnly" | "none";
 
 export type AutoModeState = {
   enabledOverride?: boolean;

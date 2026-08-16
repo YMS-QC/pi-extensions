@@ -16,8 +16,7 @@ import {
   DEFAULT_SOFT_DENY,
   PATH_BEARING_TOOLS,
   READ_ONLY_TOOLS,
-} from "./constants.ts";
-import {
+} from "./constants.ts";import {
   loadEffectiveConfig,
   loadEffectiveConfigWithDiagnostics,
   writeGlobalClassifierModel,
@@ -151,6 +150,24 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       pi.appendEntry("pi-automode-state", state);
     }
 
+    /**
+     * Notify according to the configured notification level.
+     * "all" shows everything; "statusOnly" keeps only security-critical
+     * notifications (blocks and errors); "none" silences everything. The
+     * status line keeps rendering regardless of the notification level.
+     */
+    function notify(
+      ctx: ExtensionContext | ExtensionCommandContext,
+      message: string,
+      kind: "status" | "safety" = "status",
+    ): void {
+      if (!ctx.hasUI) return;
+      const level = effectiveConfig().notifications;
+      if (level === "none") return;
+      if (level === "statusOnly" && kind !== "safety") return;
+      ctx.ui.notify(message, kind === "safety" ? "warning" : "info");
+    }
+
     function updateUi(ctx: ExtensionContext): void {
       if (!ctx.hasUI) return;
       const cfg = effectiveConfig();
@@ -191,9 +208,10 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         });
       }
       if (ctx.hasUI) {
-        ctx.ui.notify(
+        notify(
+          ctx,
           `Auto mode blocked ${denial.toolName}: ${denial.reason}`,
-          "warning",
+          "safety",
         );
       }
       return { block: true, reason: `[pi-automode] ${denial.reason}` };
@@ -442,21 +460,21 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       const remainder = rest.join(" ").trim();
 
       if (command === "status") {
-        ctx.ui.notify(statusText(effectiveConfig(), state), "info");
+        notify(ctx, statusText(effectiveConfig(), state), "safety");
         return;
       }
       if (command === "on") {
         state.enabledOverride = true;
         persist();
         updateUi(ctx);
-        ctx.ui.notify("pi-automode enabled for this session", "info");
+        notify(ctx, "pi-automode enabled for this session");
         return;
       }
       if (command === "off") {
         state.enabledOverride = false;
         persist();
         updateUi(ctx);
-        ctx.ui.notify("pi-automode disabled for this session", "warning");
+        notify(ctx, "pi-automode disabled for this session");
         return;
       }
       if (command === "reload") {
@@ -465,10 +483,14 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         configDiagnostics = loadResult.diagnostics;
         persist();
         updateUi(ctx);
-        ctx.ui.notify(
-          "pi-automode config reloaded",
-          configDiagnostics.length > 0 ? "warning" : "info",
+        notify(
+          ctx,
+          "pi-automode config reloaded" +
+            (configDiagnostics.length > 0 ? " (with diagnostics)" : ""),
         );
+        if (configDiagnostics.length > 0) {
+          notify(ctx, configDiagnostics.join("\n"), "safety");
+        }
         return;
       }
       if (command === "reset") {
@@ -482,11 +504,12 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         };
         persist();
         updateUi(ctx);
-        ctx.ui.notify("pi-automode counters reset", "info");
+        notify(ctx, "pi-automode counters reset");
         return;
       }
       if (command === "defaults") {
-        ctx.ui.notify(
+        notify(
+          ctx,
           safeJson(
             {
               environment: DEFAULT_ENVIRONMENT,
@@ -497,7 +520,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
             },
             12000,
           ),
-          "info",
+          "safety",
         );
         return;
       }
@@ -507,7 +530,8 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           ctx.sessionManager.getSessionDir?.() ?? ctx.cwd,
           ctx.sessionManager.getSessionId?.() ?? "unknown",
         );
-        ctx.ui.notify(
+        notify(
+          ctx,
           safeJson(
             {
               config: effectiveConfig(),
@@ -516,15 +540,12 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
             },
             16000,
           ),
-          configDiagnostics.length > 0 ? "warning" : "info",
+          "safety",
         );
         return;
       }
       if (command === "denials") {
-        ctx.ui.notify(
-          formatDenials(state),
-          state.recentDenials.length > 0 ? "warning" : "info",
-        );
+        notify(ctx, formatDenials(state), "safety");
         return;
       }
       if (command === "model") {
@@ -533,7 +554,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           effectiveConfig().classifierModel,
         );
         if (!selected) {
-          ctx.ui.notify("Classifier model unchanged", "info");
+          notify(ctx, "Classifier model unchanged");
           return;
         }
         const parsed = parseModelSpec(selected);
@@ -541,23 +562,24 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           ? ctx.modelRegistry.find(parsed.provider, parsed.id)
           : undefined;
         if (!model) {
-          ctx.ui.notify(`Model not found: ${selected}`, "error");
+          notify(ctx, `Model not found: ${selected}`, "safety");
           return;
         }
         const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
         if (!auth.ok) {
-          ctx.ui.notify(auth.error, "error");
+          notify(ctx, auth.error, "safety");
           return;
         }
         const modelSpec = formatModelSpec(model);
         try {
           saveClassifierModel(modelSpec);
         } catch (error) {
-          ctx.ui.notify(
+          notify(
+            ctx,
             `Failed to save classifier model: ${
               error instanceof Error ? error.message : String(error)
             }`,
-            "error",
+            "safety",
           );
           return;
         }
@@ -568,18 +590,19 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         updateUi(ctx);
         const active = effectiveConfig().classifierModel ??
           "current session model";
-        ctx.ui.notify(
+        notify(
+          ctx,
           active === modelSpec
             ? `pi-automode classifier saved globally: ${modelSpec}`
             : `pi-automode classifier saved globally: ${modelSpec}; current config uses ${active}`,
-          "info",
         );
         return;
       }
 
-      ctx.ui.notify(
+      notify(
+        ctx,
         "Usage: /automode [status|on|off|reload|reset|defaults|config|denials|model [provider/id]]",
-        "error",
+        "safety",
       );
     }
 

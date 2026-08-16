@@ -11,6 +11,7 @@ import {
   DEFAULT_LOG_CONFIG,
   DEFAULT_MAX_TOOL_TRANSCRIPT_TOKENS,
   DEFAULT_MAX_USER_TRANSCRIPT_TOKENS,
+  DEFAULT_NOTIFICATION_LEVEL,
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_SOFT_DENY,
   PI_GLOBAL_SETTINGS,
@@ -25,6 +26,7 @@ import type {
   EffectiveConfig,
   LoadedSettingsFile,
   LogConfig,
+  NotificationLevel,
   SettingsFile,
   SettingsSources,
   ToolPattern,
@@ -116,6 +118,7 @@ export function validateSettingsFile(
         "softDeny",
         "hard_deny",
         "hardDeny",
+        "notifications",
         "log",
       ]);
       for (const key of Object.keys(autoMode)) {
@@ -378,6 +381,19 @@ export function isClassifierReasoningLevel(
     CLASSIFIER_REASONING_LEVELS.has(value as ClassifierReasoningLevel);
 }
 
+const NOTIFICATION_LEVELS = new Set<NotificationLevel>([
+  "all",
+  "statusOnly",
+  "none",
+]);
+
+export function isNotificationLevel(
+  value: unknown,
+): value is NotificationLevel {
+  return typeof value === "string" &&
+    NOTIFICATION_LEVELS.has(value as NotificationLevel);
+}
+
 function validTranscriptBudget(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 32;
 }
@@ -420,6 +436,9 @@ function applyAutoModeScalars(
       ? settings.maxToolTranscriptTokens
       : base.maxToolTranscriptTokens,
     log: mergeLog(base.log, settings.log),
+    notifications: isNotificationLevel(settings.notifications)
+      ? settings.notifications
+      : base.notifications,
   };
 }
 
@@ -464,6 +483,7 @@ export function buildEffectiveConfigFromSources(
     permissionDeny: [],
     permissionAsk: [],
     log: { ...DEFAULT_LOG_CONFIG },
+    notifications: DEFAULT_NOTIFICATION_LEVEL,
   };
 
   const globalSettings = sources.globalSettings ?? [];

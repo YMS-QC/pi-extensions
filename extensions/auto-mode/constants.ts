@@ -216,3 +216,6 @@ export const DEFAULT_LOG_CONFIG = {
   enabled: false,
   classifierIo: false,
 };
+
+/** Default notification level: upstream behavior (all notifications). */
+export const DEFAULT_NOTIFICATION_LEVEL = "all";
