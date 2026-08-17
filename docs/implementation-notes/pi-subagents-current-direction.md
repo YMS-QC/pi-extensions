@@ -71,8 +71,9 @@ Changing the default, removing compatibility tools, or consolidating lifecycle t
 
 ## Active follow-ups
 
-- [`2026-08-10_pi-subagents-event-driven-workflow-runtime-plan.md`](../plans/2026-08-10_pi-subagents-event-driven-workflow-runtime-plan.md) remains the owner for rolling execution of caller-authored workflows.
-- [`2026-08-10_pi-subagents-minimal-delegation-admission-evaluation-plan.md`](../plans/2026-08-10_pi-subagents-minimal-delegation-admission-evaluation-plan.md) remains the owner for matched evidence before any adaptive/default routing change.
+None.
+
+New implementation work should respond to demonstrated user needs rather than extending automatic or adaptive routing speculatively.
 
 ## Current reference notes
 

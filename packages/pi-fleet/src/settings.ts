@@ -3,17 +3,17 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { FleetTerminal } from "./terminal.js";
+import type { FleetTerminalPreference } from "./terminal.js";
 
 export const FLEET_SETTINGS_FILE = "pi-fleet.json";
 export const MAX_FLEET_SETTINGS_BYTES = 64 * 1024;
 export const DEFAULT_FLEET_SETTINGS: Readonly<FleetSettings> = Object.freeze({
-	defaultTerminal: "tmux",
+	defaultTerminal: "auto",
 	confirmSessionLaunch: true,
 });
 
 export interface FleetSettings {
-	defaultTerminal: FleetTerminal;
+	defaultTerminal: FleetTerminalPreference;
 	confirmSessionLaunch: boolean;
 }
 
@@ -90,6 +90,7 @@ export function normalizeFleetSettingsDocument(
 
 	if (Object.hasOwn(value, "defaultTerminal")) {
 		if (
+			value.defaultTerminal !== "auto" &&
 			value.defaultTerminal !== "tmux" &&
 			value.defaultTerminal !== "ghostty" &&
 			value.defaultTerminal !== "zellij"

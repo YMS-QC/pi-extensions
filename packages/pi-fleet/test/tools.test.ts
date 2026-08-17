@@ -66,7 +66,9 @@ test("registers separate spawn and bus tools with focused schemas", () => {
 		mock.tools.map((tool) => tool.name),
 		["session_spawn", "session_bus"],
 	);
-	const spawn = mock.tools[0] as { parameters: { properties?: Record<string, unknown> } };
+	const spawn = mock.tools[0] as {
+		parameters: { properties?: Record<string, { enum?: string[] }> };
+	};
 	const bus = mock.tools[1] as { parameters: { properties?: Record<string, unknown> } };
 	assert.deepEqual(Object.keys(spawn.parameters.properties ?? {}).sort(), [
 		"cwd",
@@ -75,6 +77,7 @@ test("registers separate spawn and bus tools with focused schemas", () => {
 		"task",
 		"terminal",
 	]);
+	assert.deepEqual(spawn.parameters.properties?.terminal?.enum, ["tmux", "ghostty", "zellij"]);
 	assert.deepEqual(Object.keys(bus.parameters.properties ?? {}).sort(), [
 		"action",
 		"message",

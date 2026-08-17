@@ -2,7 +2,7 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { MenuDefinition } from "@narumitw/pi-tui-kit";
 import type { FleetSnapshot, SpawnSessionInput } from "./fleet-controller.js";
 import type { FleetSettingsPatch, FleetSettingsState } from "./settings.js";
-import { type FleetTerminal, terminalLabel } from "./terminal.js";
+import { type FleetTerminalPreference, terminalPreferenceLabel } from "./terminal.js";
 import { safeError, safeTerminalLine } from "./text.js";
 
 export interface FleetMenuState extends FleetSnapshot, FleetSettingsState {
@@ -126,9 +126,10 @@ export function createFleetMenu(source: FleetMenuSource) {
 					{
 						id: "defaultTerminal",
 						label: "Default terminal",
-						description: "Use this backend when a launch does not explicitly choose one.",
-						currentValue: terminalLabel(state.settings.defaultTerminal),
-						values: ["tmux", "Ghostty", "Zellij"],
+						description:
+							"Automatically detect or pin the backend for launches without an override.",
+						currentValue: terminalPreferenceLabel(state.settings.defaultTerminal),
+						values: ["Automatic", "tmux", "Ghostty", "Zellij"],
 						action: "setTerminal",
 					},
 					{
@@ -160,14 +161,14 @@ export function createFleetMenu(source: FleetMenuSource) {
 							`Cwd: ${safeTerminalLine(state.self?.cwd ?? "unknown")}`,
 							`Other live sessions: ${state.peers.length}`,
 							`Incoming requests: ${state.acceptsRequests ? "allowed" : "blocked"}`,
-							`Default terminal: ${terminalLabel(state.settings.defaultTerminal)}`,
+							`Default terminal: ${terminalPreferenceLabel(state.settings.defaultTerminal)}`,
 							`Launch confirmation: ${state.settings.confirmSessionLaunch ? "Ask" : "Skip"}`,
 							"Delivery acknowledgement means extension acceptance, not remote task completion.",
 						]
 					: [
 							"State: disconnected",
 							"No socket, group secret, or background discovery is active.",
-							`Default terminal: ${terminalLabel(state.settings.defaultTerminal)}`,
+							`Default terminal: ${terminalPreferenceLabel(state.settings.defaultTerminal)}`,
 							`Launch confirmation: ${state.settings.confirmSessionLaunch ? "Ask" : "Skip"}`,
 						],
 				hint: "back",
@@ -178,7 +179,7 @@ export function createFleetMenu(source: FleetMenuSource) {
 				lines: [
 					"Pi Fleet is experimental and connects explicit sessions owned by one OS user.",
 					"New Pi session creates a separate process in a terminal split and preserves the parent.",
-					"tmux remains the built-in default; Settings can select Ghostty 1.3+ on macOS or Zellij 0.44+.",
+					"Automatic selection prefers tmux, then Zellij 0.44+, then Ghostty 1.3+ on macOS.",
 					"Notify messages do not start turns, requests require recipient permission, and replies do not auto-trigger another turn.",
 					"Groups, invites, peer state, and message deduplication are ephemeral.",
 				],
@@ -199,9 +200,11 @@ export function createFleetMenu(source: FleetMenuSource) {
 		},
 		actions: {
 			spawn: async ({ ctx, signal, state }) => {
-				const terminal = state.settings.defaultTerminal;
+				const preference = state.settings.defaultTerminal;
 				const directionChoice = await ctx.ui.select(
-					`${terminalLabel(terminal)} split direction`,
+					preference === "auto"
+						? "Terminal split direction"
+						: `${terminalPreferenceLabel(preference)} split direction`,
 					[...DIRECTION_OPTIONS],
 					{ signal },
 				);
@@ -215,7 +218,6 @@ export function createFleetMenu(source: FleetMenuSource) {
 				await source.spawn(
 					ctx,
 					{
-						terminal,
 						direction: directionChoice.toLowerCase() as SpawnSessionInput["direction"],
 						...(task ? { task } : {}),
 					},
@@ -342,8 +344,10 @@ export async function showFleetMenu(
 	});
 }
 
-function terminalSettingValue(value: string | undefined): FleetTerminal {
+function terminalSettingValue(value: string | undefined): FleetTerminalPreference {
 	switch (value) {
+		case "Automatic":
+			return "auto";
 		case "tmux":
 			return "tmux";
 		case "Ghostty":

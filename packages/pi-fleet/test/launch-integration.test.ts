@@ -82,7 +82,10 @@ posixTest(
 				});
 			},
 			launchTimeoutMs: 5_000,
-			environment: {},
+			environment: {
+				TMUX: "/tmp/tmux-1000/default,1234,0",
+				TMUX_PANE: "%7",
+			},
 			runtimeBaseDirectory: runtimeBase,
 		};
 		const controller = new FleetController(mock.pi, deps);

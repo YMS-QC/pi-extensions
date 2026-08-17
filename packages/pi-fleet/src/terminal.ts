@@ -4,7 +4,11 @@ import { TmuxAdapter, TmuxLaunchError } from "./tmux.js";
 import { ZellijAdapter, ZellijLaunchError } from "./zellij.js";
 
 export type FleetTerminal = "tmux" | "ghostty" | "zellij";
+export type FleetTerminalPreference = "auto" | FleetTerminal;
 export type TerminalSplitDirection = "right" | "down" | "left" | "up";
+
+const TMUX_PANE_ID = /^%\d{1,20}$/u;
+const ZELLIJ_PANE_ID = /^\d{1,20}$/u;
 
 export interface FleetTerminalPort {
 	assertAvailable(signal?: AbortSignal): Promise<string>;
@@ -18,10 +22,24 @@ export interface FleetTerminalPort {
 	}): Promise<{ terminalId: string; version: string }>;
 }
 
-export function normalizeTerminal(value: FleetTerminal | undefined): FleetTerminal {
-	if (value === undefined || value === "tmux") return "tmux";
-	if (value === "ghostty" || value === "zellij") return value;
+export function normalizeTerminal(value: unknown): FleetTerminal {
+	if (value === "tmux" || value === "ghostty" || value === "zellij") return value;
 	throw new Error("Pi Fleet terminal must be tmux, ghostty, or zellij");
+}
+
+export function resolveTerminalPreference(
+	preference: FleetTerminalPreference,
+	environment: Readonly<NodeJS.ProcessEnv>,
+): FleetTerminal {
+	if (preference !== "auto") return normalizeTerminal(preference);
+	if (environment.TMUX && TMUX_PANE_ID.test(environment.TMUX_PANE ?? "")) return "tmux";
+	if (environment.ZELLIJ && ZELLIJ_PANE_ID.test(environment.ZELLIJ_PANE_ID ?? "")) {
+		return "zellij";
+	}
+	if (environment.TERM_PROGRAM === "ghostty") return "ghostty";
+	throw new Error(
+		"Pi Fleet could not detect a supported terminal for defaultTerminal auto; run inside tmux, Zellij, or Ghostty, or pin defaultTerminal in Settings",
+	);
 }
 
 export function terminalLabel(terminal: FleetTerminal): string {
@@ -33,6 +51,10 @@ export function terminalLabel(terminal: FleetTerminal): string {
 		case "zellij":
 			return "Zellij";
 	}
+}
+
+export function terminalPreferenceLabel(preference: FleetTerminalPreference): string {
+	return preference === "auto" ? "Automatic" : terminalLabel(preference);
 }
 
 export function createDefaultTerminalPort(

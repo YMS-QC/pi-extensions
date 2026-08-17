@@ -30,6 +30,7 @@ test("missing settings stay side-effect free until the first explicit save", asy
 	const loaded = await loadFleetSettings(settingsPath);
 	assert.equal(loaded.kind, "missing");
 	assert.deepEqual(loaded.settings, DEFAULT_FLEET_SETTINGS);
+	assert.equal(DEFAULT_FLEET_SETTINGS.defaultTerminal, "auto");
 	assert.equal(exists(path.join(directory, "agent")), false);
 
 	const runtime = createFleetSettingsRuntime({ path: settingsPath });
@@ -57,6 +58,10 @@ test("normalization accepts partial settings and rejects invalid owned values", 
 		settings: { defaultTerminal: "zellij", confirmSessionLaunch: true },
 		sources: { defaultTerminal: "user", confirmSessionLaunch: "built-in" },
 	});
+	assert.deepEqual(normalizeFleetSettingsDocument({ defaultTerminal: "auto" }), {
+		settings: { defaultTerminal: "auto", confirmSessionLaunch: true },
+		sources: { defaultTerminal: "user", confirmSessionLaunch: "built-in" },
+	});
 	assert.deepEqual(normalizeFleetSettingsDocument({}), {
 		settings: DEFAULT_FLEET_SETTINGS,
 		sources: { defaultTerminal: "built-in", confirmSessionLaunch: "built-in" },
@@ -64,7 +69,7 @@ test("normalization accepts partial settings and rejects invalid owned values", 
 	for (const value of [
 		null,
 		[],
-		{ defaultTerminal: "auto" },
+		{ defaultTerminal: "unknown" },
 		{ defaultTerminal: true },
 		{ confirmSessionLaunch: "yes" },
 	]) {
@@ -102,7 +107,7 @@ test("updates preserve unknown fields and publish private JSON atomically", asyn
 test("malformed, invalid, and invalid UTF-8 files remain unchanged and block updates", async (t) => {
 	for (const contents of [
 		Buffer.from("{bad json\n"),
-		Buffer.from('{"defaultTerminal":"auto"}\n'),
+		Buffer.from('{"defaultTerminal":"unknown"}\n'),
 		Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]),
 	]) {
 		const { settingsPath } = temporarySettings(t);

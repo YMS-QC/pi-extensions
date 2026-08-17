@@ -7,13 +7,13 @@
 > Its local protocol, terminal automation, tool schemas, and agent-request behavior may change between releases.
 
 `@narumitw/pi-fleet` starts a separate Pi process in a terminal split while preserving the parent session.
-Its built-in default remains tmux, and users can select Ghostty or Zellij in Settings or per tool call.
+Its built-in default automatically selects the current tmux, Zellij, or Ghostty context, while users can pin a backend in Settings or per tool call.
 It also lets explicitly joined Pi sessions owned by the same operating-system user exchange bounded local messages and one-turn requests.
 
 ## ✨ Features
 
-- Starts a distinct Pi process with a configurable tmux, Ghostty, or Zellij backend.
-- Keeps tmux as the built-in default while preserving native Ghostty and Zellij integrations.
+- Starts a distinct Pi process with automatic or pinned tmux, Ghostty, or Zellij selection.
+- Resolves the current supported terminal from bounded environment signatures before launch side effects.
 - Preserves the parent Pi session instead of replacing it with `ctx.newSession()`.
 - Inherits the parent cwd, model identity, thinking level, and an optional first task.
 - Lets users keep or skip the final launch preview while retaining one-time experimental consent.
@@ -60,9 +60,9 @@ Run:
 /fleet
 ```
 
-Choose **Settings** first when you want to change the default terminal or final launch confirmation.
+Choose **Settings** first when you want to pin a terminal backend or change final launch confirmation.
 Then choose **New Pi session…**.
-Pi Fleet uses the configured terminal and asks for a split direction and an optional first task.
+Pi Fleet resolves the configured terminal preference and asks for a split direction and an optional first task.
 It always requires one-time experimental consent.
 When **Confirm new sessions** is **Ask**, it also shows an exact launch preview before creating any socket or split.
 
@@ -84,7 +84,7 @@ Creates a separate Pi process in a terminal split.
 
 | Parameter | Required | Description |
 | --- | --- | --- |
-| `terminal` | No | Explicit `tmux`, `ghostty`, or `zellij` override; omission uses the configured default, initially `tmux`. |
+| `terminal` | No | Strict `tmux`, `ghostty`, or `zellij` override; omission uses `defaultTerminal`, initially `auto`. |
 | `direction` | No | `right`, `down`, `left`, or `up`; defaults to `right`. |
 | `task` | No | First task sent only after authenticated readiness. |
 | `name` | No | Child session display name. |
@@ -127,10 +127,21 @@ Connected sessions can send a message, inspect peers, copy the explicit invite, 
 
 ## 🖥️ Terminal backends
 
-Pi Fleet does not automatically fall back between terminal backends.
-A failed launch never probes or starts another configured backend.
+### Automatic built-in default
 
-### tmux built-in default
+`defaultTerminal: "auto"` resolves one backend from the Pi process environment for each launch.
+It selects the first complete signature in this fixed order:
+
+1. tmux when `TMUX` is non-empty and `TMUX_PANE` is `%` followed by a numeric pane id.
+2. Zellij when `ZELLIJ` is non-empty and `ZELLIJ_PANE_ID` is numeric.
+3. Ghostty when `TERM_PROGRAM` is exactly `ghostty`.
+
+This order is deterministic when nested terminals leave more than one signature in the environment, and it may select an outer multiplexer instead of the visually innermost pane.
+Pi Fleet does not inspect the process tree.
+If no signature matches, Pi Fleet fails before creating a group, launcher, socket, or split and asks the user to enter a supported context or pin a backend.
+After resolution, Pi Fleet preflights only the selected adapter and never switches backends after a version, platform, executable, focus, permission, split, child-startup, or kickoff failure.
+
+### tmux
 
 The tmux backend requires:
 
@@ -139,9 +150,10 @@ The tmux backend requires:
 
 Pi Fleet targets the current pane, uses `split-window`, passes the cwd and launch-only environment to the new pane, and maps left or up to a split inserted before the current pane.
 
-### Ghostty explicit opt-in
+### Ghostty
 
-Choose Ghostty under **Settings**, or pass `terminal: "ghostty"` to override the configured default for one `session_spawn` call.
+Automatic selection uses Ghostty when no tmux or Zellij signature matched and `TERM_PROGRAM=ghostty`.
+Choose Ghostty under **Settings**, or pass `terminal: "ghostty"` to pin or strictly override the configured preference.
 
 Ghostty requires:
 
@@ -153,12 +165,14 @@ Ghostty requires:
 Pi Fleet uses Ghostty's native `split` AppleScript command with positional arguments.
 It does not simulate user key presses or depend on customized keybindings.
 
-The first Ghostty launch may trigger a macOS Automation permission prompt.
+The first automatically selected or pinned Ghostty launch may trigger a macOS Automation permission prompt during availability checking.
 If permission is denied, enable it in **System Settings → Privacy & Security → Automation** and retry.
+Pi Fleet does not fall back to another backend after denial.
 
-### Zellij explicit opt-in
+### Zellij
 
-Choose Zellij under **Settings**, or pass `terminal: "zellij"` to override the configured default for one `session_spawn` call.
+Automatic selection uses Zellij before Ghostty when its complete pane signature is present.
+Choose Zellij under **Settings**, or pass `terminal: "zellij"` to pin or strictly override the configured preference.
 
 Zellij requires:
 
@@ -177,19 +191,20 @@ Pi Fleet stores user settings in `<getAgentDir()>/pi-fleet.json`, normally `~/.p
 
 ```json
 {
-  "defaultTerminal": "tmux",
+  "defaultTerminal": "auto",
   "confirmSessionLaunch": true
 }
 ```
 
 | Setting | Values | Default | Behavior |
 | --- | --- | --- | --- |
-| `defaultTerminal` | `tmux`, `ghostty`, `zellij` | `tmux` | Used by menu launches and by `session_spawn` when `terminal` is omitted. |
+| `defaultTerminal` | `auto`, `tmux`, `ghostty`, `zellij` | `auto` | Resolves the current backend automatically or pins one for menu launches and omitted tool values. |
 | `confirmSessionLaunch` | `true`, `false` | `true` | Shows or skips the final launch preview for menu and tool launches. |
 
-An explicit `session_spawn.terminal` value overrides `defaultTerminal` for that launch.
+An explicit `session_spawn.terminal` value strictly overrides `defaultTerminal` for that launch and never accepts `auto`.
 Disabling launch confirmation does not disable one-time experimental consent.
-Pi Fleet does not read project overrides or extension-specific environment variables.
+Pi Fleet reads standard terminal context variables only for automatic selection and does not treat them as settings overrides.
+Pi Fleet does not read project settings or extension-specific environment-variable overrides.
 A missing file keeps defaults without creating the file, while each Settings change saves immediately.
 Writes preserve unknown fields, serialize within one Pi process, and publish atomically through a private temporary file and rename.
 Malformed or invalid files are reported and never overwritten by the Settings screen.
@@ -237,12 +252,12 @@ Enabling them permits trusted invite holders to start paid model turns that may 
 - Local same-user communication only.
 - POSIX Unix-socket transport only.
 - Tmux spawning requires tmux 3.2 or newer and an active current pane.
-- Ghostty spawning remains an explicit opt-in and works only on macOS.
-- Zellij spawning remains an explicit opt-in and requires Zellij 0.44 or newer in an active pane.
+- Ghostty spawning works only on macOS and automatic selection may trigger its Automation permission check.
+- Zellij spawning requires Zellij 0.44 or newer in an active pane.
 - No LAN, internet, cross-user, remote-host, or public-room transport.
 - No daemon, offline mailbox, separate Fleet history, delivery receipt, global ordering, or exactly-once guarantee.
 - No automatic trust or discovery of every Pi process.
-- No automatic backend fallback after launch failure.
+- No backend fallback after automatic resolution, adapter preflight, or launch failure.
 - No automatic close of a split after partial child startup.
 - Protocol version 2 intentionally rejects version-1 manifests and frames while the package remains experimental.
 - One request uses one short-lived socket connection; there is no persistent multiplexed channel or delivery stream.

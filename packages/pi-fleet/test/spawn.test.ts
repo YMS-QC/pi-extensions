@@ -6,6 +6,7 @@ import {
 	type FleetControllerDependencies,
 	type FleetTerminalPort,
 	type FleetTransportPort,
+	type SpawnSessionInput,
 } from "../src/fleet-controller.js";
 import type { FleetMessage, FleetPeerDescription } from "../src/protocol.js";
 import {
@@ -21,6 +22,7 @@ import type {
 	FleetSendAuthorization,
 	FleetTransportOptions,
 } from "../src/transport.js";
+import { ZellijLaunchError } from "../src/zellij.js";
 
 class SpawnTransport implements FleetTransportPort {
 	peers: FleetPeerDescription[] = [];
@@ -167,7 +169,10 @@ function harness(options: { ready?: boolean; launchError?: Error } = {}) {
 			now += 101;
 		},
 		launchTimeoutMs: 200,
-		environment: {},
+		environment: {
+			TMUX: "/tmp/tmux-1000/default,1234,0",
+			TMUX_PANE: "%7",
+		},
 	};
 	return {
 		mock,
@@ -270,6 +275,7 @@ test("spawn reuses an existing group and supports all split directions", async (
 test("spawn uses the configured terminal when omitted and lets an explicit argument override it", async () => {
 	for (const explicitTerminal of [undefined, "tmux"] as const) {
 		const runtime = harness();
+		runtime.deps.environment = {};
 		const settings = memorySettingsRuntime({ defaultTerminal: "ghostty" });
 		const controller = new FleetController(runtime.mock.pi, runtime.deps, settings);
 		const context = createMockContext({
@@ -288,7 +294,105 @@ test("spawn uses the configured terminal when omitted and lets an explicit argum
 	}
 });
 
-test("spawn routes configured and explicit Zellij launches without changing the tmux default", async () => {
+test("spawn rejects an invalid explicit terminal instead of treating it as omitted", async () => {
+	const runtime = harness();
+	const controller = new FleetController(runtime.mock.pi, runtime.deps);
+	const context = createMockContext({ mode: "tui", hasUI: true, confirm: async () => true });
+	await controller.sessionStart({ reason: "startup" }, context.ctx);
+	await assert.rejects(
+		controller.spawn(context.ctx, { terminal: "" } as unknown as SpawnSessionInput),
+		/must be tmux, ghostty, or zellij/u,
+	);
+	assert.equal(runtime.tmuxCreated, 0);
+	assert.equal(runtime.transports.length, 0);
+	await controller.sessionShutdown({ reason: "quit" }, context.ctx);
+});
+
+test("spawn resolves the automatic default to one concrete current backend", async () => {
+	for (const [environment, terminal] of [
+		[{ TMUX: "/tmp/tmux-1000/default,1234,0", TMUX_PANE: "%7" }, "tmux"],
+		[{ ZELLIJ: "0", ZELLIJ_PANE_ID: "7", TERM_PROGRAM: "ghostty" }, "zellij"],
+		[{ TERM_PROGRAM: "ghostty" }, "ghostty"],
+	] as const) {
+		const runtime = harness();
+		runtime.deps.environment = environment;
+		const controller = new FleetController(runtime.mock.pi, runtime.deps);
+		const confirmations: string[] = [];
+		const context = createMockContext({
+			mode: "tui",
+			hasUI: true,
+			confirm: async (_title: string, message: string) => {
+				confirmations.push(message);
+				return true;
+			},
+		});
+		await controller.sessionStart({ reason: "startup" }, context.ctx);
+		const result = await controller.spawn(context.ctx, {});
+		assert.equal(result.terminal, terminal);
+		assert.equal(runtime.tmuxCreated, terminal === "tmux" ? 1 : 0);
+		assert.equal(runtime.zellijCreated, terminal === "zellij" ? 1 : 0);
+		assert.equal(runtime.ghosttyCreated, terminal === "ghostty" ? 1 : 0);
+		assert.equal(
+			confirmations.some((message) =>
+				new RegExp(`${terminal === "ghostty" ? "Ghostty" : terminal} split`, "iu").test(message),
+			),
+			true,
+		);
+		await controller.sessionShutdown({ reason: "quit" }, context.ctx);
+	}
+});
+
+test("automatic resolution fails before launch side effects and never falls back after preflight", async () => {
+	const missing = harness();
+	missing.deps.environment = {};
+	const missingController = new FleetController(missing.mock.pi, missing.deps);
+	const missingContext = createMockContext({ mode: "tui", hasUI: true, confirm: async () => true });
+	await missingController.sessionStart({ reason: "startup" }, missingContext.ctx);
+	await assert.rejects(
+		missingController.spawn(missingContext.ctx, {}),
+		/detect a supported terminal/u,
+	);
+	assert.equal(missing.tmuxCreated, 0);
+	assert.equal(missing.zellijCreated, 0);
+	assert.equal(missing.ghosttyCreated, 0);
+	assert.equal(missing.transports.length, 0);
+	await missingController.sessionShutdown({ reason: "quit" }, missingContext.ctx);
+
+	const unavailable = harness();
+	unavailable.deps.environment = {
+		ZELLIJ: "0",
+		ZELLIJ_PANE_ID: "7",
+		TERM_PROGRAM: "ghostty",
+	};
+	let zellijChecks = 0;
+	unavailable.deps.createZellij = () => {
+		zellijChecks += 1;
+		return {
+			assertAvailable: async () => {
+				throw new ZellijLaunchError("Zellij unavailable");
+			},
+			spawnSplit: async () => assert.fail("split must not start after failed preflight"),
+		};
+	};
+	const unavailableController = new FleetController(unavailable.mock.pi, unavailable.deps);
+	const unavailableContext = createMockContext({
+		mode: "tui",
+		hasUI: true,
+		confirm: async () => true,
+	});
+	await unavailableController.sessionStart({ reason: "startup" }, unavailableContext.ctx);
+	await assert.rejects(
+		unavailableController.spawn(unavailableContext.ctx, {}),
+		/Zellij unavailable/u,
+	);
+	assert.equal(zellijChecks, 1);
+	assert.equal(unavailable.tmuxCreated, 0);
+	assert.equal(unavailable.ghosttyCreated, 0);
+	assert.equal(unavailable.transports.length, 0);
+	await unavailableController.sessionShutdown({ reason: "quit" }, unavailableContext.ctx);
+});
+
+test("spawn routes configured and explicit Zellij launches without changing the auto default", async () => {
 	for (const configured of [false, true]) {
 		const runtime = harness();
 		const settings = memorySettingsRuntime(configured ? { defaultTerminal: "zellij" } : {});

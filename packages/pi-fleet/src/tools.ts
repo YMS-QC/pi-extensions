@@ -38,7 +38,7 @@ const spawnSchema = Type.Object(
 		terminal: Type.Optional(
 			StringEnum(TERMINALS, {
 				description:
-					"Explicit terminal split backend override; omission uses the configured Pi Fleet default",
+					"Explicit terminal split backend override; omission uses the configured Pi Fleet preference, which may resolve automatically",
 			}),
 		),
 		direction: Type.Optional(StringEnum(DIRECTIONS, { description: "Terminal split direction" })),
@@ -85,11 +85,11 @@ export function registerFleetTools(pi: ExtensionAPI, controller: FleetToolContro
 		name: "session_spawn",
 		label: "Spawn Pi Session",
 		description:
-			"Create a separate Pi process in a terminal split, wait for authenticated readiness, and optionally send its first task. An omitted terminal uses the configured Pi Fleet default, while an explicit terminal overrides it. This preserves the current session and follows the configured launch-confirmation policy.",
-		promptSnippet: "Start a collaborating Pi session in a configured terminal split",
+			"Create a separate Pi process in a terminal split, wait for authenticated readiness, and optionally send its first task. An omitted terminal uses the configured Pi Fleet preference, including automatic current-terminal resolution, while an explicit terminal strictly overrides it. This preserves the current session and follows the configured launch-confirmation policy.",
+		promptSnippet: "Start a collaborating Pi session using its configured terminal preference",
 		promptGuidelines: [
 			"Use session_spawn only when the user explicitly asks to open or start another Pi session.",
-			"Omit session_spawn terminal to use the user's configured Pi Fleet default; pass terminal only when the user explicitly requests a backend override.",
+			"Omit session_spawn terminal to use the user's configured Pi Fleet preference; pass terminal only when the user explicitly requests a strict backend override.",
 			"Do not claim the child is ready until session_spawn returns authenticated readiness metadata.",
 		],
 		parameters: spawnSchema,
@@ -97,7 +97,7 @@ export function registerFleetTools(pi: ExtensionAPI, controller: FleetToolContro
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const requestedTerminal = params.terminal
 				? terminalLabel(params.terminal)
-				: "the configured terminal";
+				: "the configured terminal preference";
 			onUpdate?.({
 				content: [
 					{

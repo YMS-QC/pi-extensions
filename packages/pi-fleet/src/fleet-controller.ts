@@ -37,6 +37,7 @@ import {
 	type FleetTerminalPort,
 	isTerminalLaunchError,
 	normalizeTerminal,
+	resolveTerminalPreference,
 	type TerminalSplitDirection,
 	terminalLabel,
 } from "./terminal.js";
@@ -464,7 +465,10 @@ export class FleetController {
 		await this.settings.flush();
 		if (!this.isCurrent(owner, ownerGeneration)) throw staleError();
 		const launchSettings = this.settings.get().settings;
-		const terminal = normalizeTerminal(input.terminal ?? launchSettings.defaultTerminal);
+		const terminal =
+			input.terminal !== undefined
+				? normalizeTerminal(input.terminal)
+				: resolveTerminalPreference(launchSettings.defaultTerminal, this.deps.environment);
 		const selectedTerminalLabel = terminalLabel(terminal);
 		const direction = input.direction ?? "right";
 		const cwd = await this.resolveSpawnCwd(ctx, input.cwd);
