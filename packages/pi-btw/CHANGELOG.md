@@ -1,5 +1,11 @@
 # @narumitw/pi-btw
 
+## 0.53.0
+
+### Minor Changes
+
+- d97edfd: Add a native main-session tree picker that starts a fresh side thread from any selected branch without switching the main conversation.
+
 ## 0.52.0
 
 ### Minor Changes

@@ -1,5 +1,27 @@
 # @narumitw/pi-subagents
 
+## 2.0.0
+
+### Major Changes
+
+- 00641d5: Remove the built-in `planner` subagent and the `subagent_auto` autonomous workflow planning tool.
+  Also remove `bash` from the built-in `explorer` default tools so automatic transport keeps a default read-only in-process route.
+  Use main-agent-authored `subagent` workflow calls when explicit task graphs are needed.
+- 9c78581: Remove the built-in `reviewer` subagent so the built-in catalog exposes only `explorer` and `worker`.
+  Review workflows can still use custom user or project agents with review capabilities.
+- 9308460: Remove the built-in `general` and `general-purpose` worker aliases so the built-in implementation agent catalog exposes only `worker`.
+  Remove Fast/Balanced/Deep execution profile presets so thinking defaults are selected by task calls or explicit per-agent settings.
+  Default the built-in `explorer` agent to `low` thinking while `worker` inherits unless configured.
+- 3cc246d: Rename the built-in `scout` subagent to `explorer` to align the read-only codebase exploration role with Codex.
+  Existing `agents.scout` settings apply to `explorer` when they are unambiguous.
+
+### Patch Changes
+
+- e4ceb64: Align delegation guidance around main-agent-owned critical-path work, integration, final verification, and final answers.
+  Require one ordinary async worker to run beside named non-overlapping main-agent work, and remove guidance that allowed the main agent to announce one spawn and stop.
+- ea22b7d: Recommend the async-only workflow in the `/subagents` chooser and README while preserving all delegation methods as the compatibility default.
+  Document exact mode-specific tool surfaces and retain explicit blocking, consultation, and split lifecycle compatibility routes.
+
 ## 1.0.2
 
 ### Patch Changes

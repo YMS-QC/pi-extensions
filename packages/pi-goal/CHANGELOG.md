@@ -1,5 +1,11 @@
 # @narumitw/pi-goal
 
+## 0.52.0
+
+### Minor Changes
+
+- 5269d4b: Remove the experimental ordered-goal queue and guide affected users to reprioritize with `/goal edit`.
+
 ## 0.51.0
 
 ### Minor Changes
