@@ -27,3 +27,16 @@
 
 - 本仓最初 fork 自 narumiruna/pi-extensions（2026-08），其 27 个上游包因不使用已从树中移除（历史仍在），upstream 关联已解除
 - 三方包补丁原先维护在独立 fork 仓（YMS-QC/pi-telegram 等），2026-08-17 起并入本仓 vendor 模式
+
+## memory/ — 原则/知识/记忆快照（非 vendor，自有内容）
+
+| 文件/目录 | 本机位置 | 内容 |
+|---|---|---|
+| `AGENTS.md` | ~/.pi/agent/AGENTS.md | 全局行为原则（回复风格/Office/视觉MCP/识图规则） |
+| `MEMORY.md` | ~/.pi/agent/pi-hermes-memory/ | 环境知识备忘（hermes 全局记忆，含手动头部块） |
+| `USER.md` `failures.md` | 同上 | 用户画像 / 教训记录（hermes 格式：§ 分隔+时间标记） |
+| `projects/` | ~/.pi/agent/projects-memory/ | 各项目知识（仅 .md；recovery/locks/数据库不进仓） |
+| `skills/` | ~/.pi/agent/skills/ | 自定义技能（ebs-jira-review 系列、frontend-design 等） |
+
+同步：`./sync-memory.sh pull`（日常快照进仓）/ `push`（换机恢复）。密钥扫描命中即中止。
+sessions.db（会话搜索索引）为运行时数据库，不迁移，hermes 启动后自动重建。

@@ -8,6 +8,8 @@
 packages/stack/     收纳的第三方扩展（已打补丁，pi 直接装载本区）
   pi-telegram/ pi-automode/ pi-hermes-memory/
 packages/           自有资产（agents / config / model-config）
+memory/             原则/知识/记忆快照（AGENTS.md 原则、MEMORY.md 环境知识、
+                    USER.md+failures.md 记忆、projects/ 项目知识、skills/ 技能）
 ```
 
 settings.json 唯一 git pin：`git:github.com/YMS-QC/pi-extensions@main`（root package.json
@@ -19,5 +21,6 @@ settings.json 唯一 git pin：`git:github.com/YMS-QC/pi-extensions@main`（root
 |---|---|
 | 同步上游（subtree pull，无需 fork 仓） | `./update-vendors.sh` → `pi update --extensions` |
 | 给收纳包打补丁 | 直接改 `packages/stack/<pkg>/`，提交推送，`pi update --extensions` |
+| 同步记忆快照（本机⇄仓） | `./sync-memory.sh pull`（快照）/ `./sync-memory.sh push`（换机恢复） |
 | 部署自有资产 | `./deploy.sh` |
 | 新收纳一个第三方包 | `git subtree add --prefix=packages/stack/<pkg> <上游URL> <分支>`，并在 SOURCES.md 登记 |
