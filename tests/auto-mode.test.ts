@@ -320,6 +320,34 @@ test("automode_inspect reports the active in-memory config", async () => {
 	assert.equal(JSON.parse(output.content[0].text).config.classifierModel, "test/model-a");
 });
 
+test("automode_inspect reports truncation metadata for arrays over 30 entries", async () => {
+	assert.ok(DEFAULT_PROTECTED_PATHS.length > 30);
+	const fake = createFakePi();
+	createPiAutomode({ loadConfig: () => baseConfig() })(fake.pi);
+	const ctx = createFakeCtx(fake.entries);
+	await fake.emit("session_start", { type: "session_start" }, ctx);
+
+	for (const action of ["defaults", "config"] as const) {
+		const output = await fake.tools.get("automode_inspect")?.execute(
+			`call-${action}`,
+			{ action },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const parsed = JSON.parse(output.content[0].text);
+		const protectedPaths = action === "defaults"
+			? parsed.protectedPaths
+			: parsed.config.protectedPaths;
+		assert.deepEqual(protectedPaths, {
+			$truncatedArray: true,
+			items: DEFAULT_PROTECTED_PATHS.slice(0, 30),
+			omittedEntries: DEFAULT_PROTECTED_PATHS.length - 30,
+			totalEntries: DEFAULT_PROTECTED_PATHS.length,
+		});
+	}
+});
+
 test("automode_inspect omits denial reasons and action payloads", async () => {
 	const fake = createFakePi();
 	const persistedState = {

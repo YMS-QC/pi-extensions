@@ -107,7 +107,7 @@ Classifier rule tuning cannot fix a permission or deterministic denial. Correct 
 
 ### 3. Inspect classifier metadata and effective rules
 
-When `classifierIo` was enabled, inspect the parsed result, attempt metadata, and effective system rules first. Do not dump `.prompt.user` or raw model responses; they can contain sensitive transcript and tool input.
+When `classifierIo` was enabled, inspect the parsed result, attempt metadata, and effective system rules first. Do not dump `.prompt.context` or raw model responses; they can contain sensitive transcript and tool input.
 
 ```bash
 jq --arg decision_id "$decision_id" '
@@ -133,12 +133,12 @@ jq -r --arg decision_id "$decision_id" '
 ' "$automode_log"
 ```
 
-Inspect the proposed action only when the user or session evidence establishes that it contains no secrets, credentials, signed URLs, or other sensitive values. The actual action follows the last marker in `.prompt.user`:
+Inspect the proposed action only when the user or session evidence establishes that it contains no secrets, credentials, signed URLs, or other sensitive values. The actual action follows the last marker in `.prompt.context`:
 
 ```bash
 jq -r --arg decision_id "$decision_id" '
     select(.decisionId == $decision_id and .type == "classifier") |
-    .prompt.user |
+    .prompt.context |
     if contains("Latest action to classify:\n") then
         split("Latest action to classify:\n") | last
     else
