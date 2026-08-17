@@ -1,0 +1,8 @@
+{
+  "_comment": "自用模型单一真源。改完跑 ~/private_repo/pi-config/sync-models.py 渲染到各目标。main=主对话模型(provider+id), aux=分类器/后台小模型(合体id格式)",
+  "main": {
+    "provider": "zai",
+    "model": "glm-5.3"
+  },
+  "aux": "zai/glm-4.7"
+}
