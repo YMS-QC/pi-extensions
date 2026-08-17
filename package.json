@@ -1,97 +1,16 @@
 {
-	"name": "pi-extensions",
-	"version": "0.0.0",
-	"private": true,
-	"description": "Monorepo for @narumitw pi extension packages.",
-	"type": "module",
-	"workspaces": [
-		"packages/*"
-	],
-	"pi": {
-		"extensions": [
-			"./packages/pi-accounts/src/index.ts",
-			"./packages/pi-btw/src/index.ts",
-			"./packages/pi-caffeinate/src/index.ts",
-			"./packages/pi-chrome-devtools/src/index.ts",
-			"./packages/pi-codex-compact/src/index.ts",
-			"./packages/pi-firecrawl/src/index.ts",
-			"./packages/pi-github-pr/src/index.ts",
-			"./packages/pi-goal/src/index.ts",
-			"./packages/pi-langfuse/src/index.ts",
-			"./packages/pi-lsp/src/index.ts",
-			"./packages/pi-plan-mode/src/index.ts",
-			"./packages/pi-stamp/src/index.ts",
-			"./packages/pi-starship/src/index.ts",
-			"./packages/pi-statusline/src/index.ts",
-			"./packages/pi-subagents/src/index.ts",
-			"./packages/pi-sync/src/index.ts",
-			"./packages/pi-tool/src/index.ts",
-			"./packages/pi-usage/src/index.ts",
-			"./packages/pi-worktree/src/index.ts"
-		]
-	},
-	"scripts": {
-		"format": "biome format --write .",
-		"lint": "biome lint .",
-		"biome:check": "biome check .",
-		"check:boundaries": "node ./scripts/check-extension-boundaries.mjs",
-		"typecheck": "node ./scripts/run-typechecks.mjs",
-		"build": "npm --workspaces --if-present run build",
-		"test": "node ./scripts/run-tests.mjs",
-		"smoke:chat-network": "node ./scripts/run-pi-chat-network-smoke.mjs",
-		"smoke:caffeinate-dbus": "node ./packages/pi-caffeinate/test/docker/run-docker.mjs",
-		"smoke:pi-fleet:ghostty": "cd packages/pi-fleet && tsc -p tsconfig.process-smoke.json && node ../../node_modules/.cache/pi-fleet-process/scripts/ghostty-smoke.js",
-		"check": "npm run build && node ./scripts/run-checks.mjs",
-		"precommit": "npm run biome:check && npm run typecheck",
-		"prepare": "node .husky/install.mjs",
-		"changeset": "changeset",
-		"changeset:status": "changeset status --verbose",
-		"version-packages": "changeset version && npm install --package-lock-only --ignore-scripts",
-		"publish-packages": "changeset publish",
-		"pack:btw": "npm --workspace @narumitw/pi-btw pack --dry-run",
-		"pack:caffeinate": "npm --workspace @narumitw/pi-caffeinate pack --dry-run",
-		"pack:chrome-devtools": "npm --workspace @narumitw/pi-chrome-devtools pack --dry-run",
-		"pack:codex-compact": "npm --workspace @narumitw/pi-codex-compact pack --dry-run",
-		"pack:accounts": "npm --workspace @narumitw/pi-accounts pack --dry-run",
-		"pack:analytics": "npm --workspace @narumitw/pi-analytics pack --dry-run",
-		"pack:usage": "npm --workspace @narumitw/pi-usage pack --dry-run",
-		"pack:firecrawl": "npm --workspace @narumitw/pi-firecrawl pack --dry-run",
-		"pack:github-pr": "npm --workspace @narumitw/pi-github-pr pack --dry-run",
-		"pack:goal": "npm --workspace @narumitw/pi-goal pack --dry-run",
-		"pack:langfuse": "npm --workspace @narumitw/pi-langfuse pack --dry-run",
-		"pack:lsp": "npm --workspace @narumitw/pi-lsp pack --dry-run",
-		"pack:plan-mode": "npm --workspace @narumitw/pi-plan-mode pack --dry-run",
-		"pack:recall": "npm --workspace @narumitw/pi-recall pack --dry-run",
-		"pack:stamp": "npm --workspace @narumitw/pi-stamp pack --dry-run",
-		"pack:starship": "npm --workspace @narumitw/pi-starship pack --dry-run",
-		"pack:statusline": "npm --workspace @narumitw/pi-statusline pack --dry-run",
-		"pack:sync": "npm --workspace @narumitw/pi-sync pack --dry-run",
-		"pack:subagents": "npm --workspace @narumitw/pi-subagents pack --dry-run",
-		"pack:worktree": "npm --workspace @narumitw/pi-worktree pack --dry-run"
-	},
-	"devDependencies": {
-		"@biomejs/biome": "^2.5.8",
-		"@changesets/cli": "3.0.0",
-		"@earendil-works/pi-agent-core": "0.84.2",
-		"@earendil-works/pi-ai": "0.84.2",
-		"@earendil-works/pi-coding-agent": "0.84.2",
-		"@earendil-works/pi-tui": "0.84.2",
-		"@types/node": "^26.2.0",
-		"concurrently": "^10.0.5",
-		"husky": "9.1.7",
-		"npm-check-updates": "23.0.2",
-		"typebox": "^1.3.14",
-		"typescript": "^7.0.2",
-		"vitest": "^4.1.10"
-	},
-	"overrides": {
-		"brace-expansion": "5.0.9",
-		"node-domexception": "npm:@profoundlogic/node-domexception@1.0.2",
-		"protobufjs": "7.6.5"
-	},
-	"allowScripts": {
-		"esbuild@0.28.1": true,
-		"@google/genai": false,
-		"protobufjs": false
-	}
+  "name": "pi-extensions",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "YMS-QC private pi extension monorepo: vendored upstream packages (patched) + own assets",
+  "workspaces": ["packages/*", "packages/stack/*"],
+  "pi": {
+    "extensions": [
+      "./packages/stack/pi-telegram/index.ts",
+      "./packages/stack/pi-automode/extensions/auto-mode.ts",
+      "./packages/stack/pi-hermes-memory/src/index.ts"
+    ],
+    "skills": ["./packages/stack/pi-telegram/skills"]
+  }
 }
