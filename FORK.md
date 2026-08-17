@@ -31,22 +31,18 @@
 
 ## 加载策略
 
-上游子包不整包安装：在 `~/.pi/agent/settings.json` 里用对象形式按需过滤加载，
-例如只装 pi-btw：
+**上游扩展包一律从 npm 安装，不从本 monorepo 加载**（如 `pi install npm:@narumitw/pi-btw`）。
 
-```json
-{
-  "packages": [
-    {
-      "source": "git:github.com/YMS-QC/pi-extensions@main",
-      "extensions": ["packages/pi-btw/src/index.ts"]
-    }
-  ]
-}
-```
+原因：monorepo 内 `@narumitw/pi-tui-kit` 等是 workspace 源码链接，`dist/` 只在 npm 发布时构建；
+git clone + npm install 不会构建，加载时会报 `No "exports" main defined ... pi-tui-kit/package.json`。
+npm 发布版自带构建产物，免维护。
 
-改动上游包（如给 pi-btw 打补丁）直接在对应 packages/<name>/ 下提交，
-update-forks.sh 的 merge 不会覆盖我们独有的子包路径。
+若将来要给上游包打补丁并从 git 加载：在 packages/<pkg> 补丁后还需在
+packages/pi-tui-kit 等被依赖包里 `npm run build` 生成 dist，且 `pi update --extensions`
+重置 clone 后需重建——除非必要，默认不走这条路。
+
+我们的子包（pi-agents / pi-model-config）不经 pi 包机制加载，由 deploy.sh 部署；
+本 monorepo 不需要出现在 settings.json 的 packages 里。
 
 ## 不并入本 monorepo 的仓（保持独立的原因）
 
