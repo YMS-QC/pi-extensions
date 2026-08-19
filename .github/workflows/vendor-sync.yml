@@ -66,7 +66,7 @@ jobs:
           add_or_set up-telegram https://github.com/llblab/pi-telegram.git
           add_or_set up-automode https://github.com/czottmann/pi-automode.git
           add_or_set up-hermes https://github.com/chandra447/pi-hermes-memory.git
-          git fetch --tags up-telegram main
+          git fetch --tags --force up-telegram main
           git fetch --no-tags up-automode main
           git fetch --no-tags up-hermes main
 
