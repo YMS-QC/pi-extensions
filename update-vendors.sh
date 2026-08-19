@@ -1,23 +1,34 @@
 #!/usr/bin/env bash
 # update-vendors.sh — 从上游直接 subtree pull 同步收纳包（无需 fork 仓）
 # 我们的补丁是 subtree 历史上的本地提交，merge 语义保留；冲突则中止提示手工处理
-# 之后: push && pi update --extensions
+# 跟踪策略与 vendor-sync 工作流一致：pi-telegram 对齐 main 上最新可达 tag（正式发版），
+# 其余跟 main 分支头。之后: push && pi update --extensions
 set -uo pipefail
 cd "$(dirname "$0")"
 
 declare -A VENDORS=(
-  [pi-telegram]="up-telegram main"
-  [pi-automode]="up-automode main"
-  [pi-hermes-memory]="up-hermes main"
+  [pi-telegram]="up-telegram main tag"
+  [pi-automode]="up-automode main branch"
+  [pi-hermes-memory]="up-hermes main branch"
 )
 
 updated=0
 failed=0
 for pkg in "${!VENDORS[@]}"; do
   echo "=== $pkg"
-  read -r remote branch <<< "${VENDORS[$pkg]}"
-  git fetch "$remote" --quiet 2>/dev/null || { echo "  [skip] fetch $remote 失败"; failed=$((failed+1)); continue; }
-  out="$(git subtree pull --prefix=packages/stack/$pkg "$remote" "$branch" -m "subtree: sync $pkg from $remote/$branch" 2>&1)"
+  read -r remote branch track <<< "${VENDORS[$pkg]}"
+  git fetch "$remote" --tags --quiet 2>/dev/null || { echo "  [skip] fetch $remote 失败"; failed=$((failed+1)); continue; }
+  ref="$remote/$branch"
+  if [ "$track" = "tag" ]; then
+    tag="$(git describe --tags --abbrev=0 "$remote/$branch" 2>/dev/null)" || tag=""
+    if [ -n "$tag" ]; then
+      ref="$tag"
+      echo "  [track] 对齐正式 tag $tag（main 未发版提交 $(git rev-list --count "$tag..$remote/$branch") 个不纳入）"
+    else
+      echo "  [track] 无可达 tag，退回 main"
+    fi
+  fi
+  out="$(git subtree pull --prefix=packages/stack/$pkg "$remote" "$ref" -m "subtree: sync $pkg from $ref" 2>&1)"
   if [ $? -ne 0 ]; then
     git merge --abort 2>/dev/null
     echo "  [fail] 冲突/失败已中止，手工处理: git subtree pull --prefix=packages/stack/$pkg $remote $branch"

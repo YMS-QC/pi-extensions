@@ -13,6 +13,18 @@
 
 同步命令：`git subtree pull --prefix=packages/stack/<子包> <上游URL> main`（update-vendors.sh 已封装）。
 
+### 稳定版本跟踪策略（逐包分治）
+
+上游版本号不是可靠的稳定信号（telegram 3 天 8 个 minor，且 dev 线挂过不在 main 上的
+v0.47~v0.49 tag；automode tag 停在 v1.9.0 但 package.json 已 1.11.0）。真正的保障是
+合并后的全量检查门禁（subtree merge 保补丁 + 各包测试 + check）。在此之上：
+
+| 包 | 策略 | 理由 |
+|---|---|---|
+| pi-telegram | main 最新可达 tag（git describe） | 每个 main 合并点都有正式 tag，tag 即发版；避开未发版 WIP |
+| pi-automode | main 分支头 | tag 失修，main 即稳定线 |
+| pi-hermes-memory | main 分支头 | tag 滞后于 main 修复，跟 main 才拿得到修复 |
+
 ### 依赖管理（重要）
 
 vendored 包**不进 root npm workspace**，各自用自带的 package-lock.json 在包目录内安装

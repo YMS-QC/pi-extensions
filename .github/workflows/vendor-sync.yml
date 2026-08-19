@@ -112,11 +112,11 @@ jobs:
             console.log([p.name, p.remote, p.branch, p.prefix, summary].join("\t"));
           }' > .vendor-sync/adopt.tsv
           : > .vendor-sync/merge.log
-          while IFS=$'\t' read -r name remote branch prefix summary; do
+          while IFS=$'\t' read -r name remote ref prefix summary; do
             [ -n "$name" ] || continue
-            echo "=== subtree pull $name ($remote/$branch)" | tee -a .vendor-sync/merge.log
-            if git subtree pull --prefix="$prefix" "$remote" "$branch" \
-              -m "subtree: sync $name from $remote/$branch" \
+            echo "=== subtree pull $name ($ref)" | tee -a .vendor-sync/merge.log
+            if git subtree pull --prefix="$prefix" "$remote" "$ref" \
+              -m "subtree: sync $name from $ref" \
               -m "LLM: $summary" 2>&1 | tee -a .vendor-sync/merge.log; then
               echo "[ok] $name 已合并" | tee -a .vendor-sync/merge.log
             else

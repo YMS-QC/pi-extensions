@@ -29,6 +29,8 @@ const VENDORS = [
 		url: "https://github.com/llblab/pi-telegram",
 		branch: "main",
 		prefix: "packages/stack/pi-telegram",
+		// 发布纪律好：每个 main 合并点都有正式 tag；跟踪最新可达 tag，避开未发版 WIP
+		track: "tag",
 	},
 	{
 		name: "pi-automode",
@@ -36,6 +38,8 @@ const VENDORS = [
 		url: "https://github.com/czottmann/pi-automode",
 		branch: "main",
 		prefix: "packages/stack/pi-automode",
+		// tag 停在 v1.9.0 但 package.json 已 1.11.0，tag 失修；main 即稳定线
+		track: "main",
 	},
 	{
 		name: "pi-hermes-memory",
@@ -43,6 +47,8 @@ const VENDORS = [
 		url: "https://github.com/chandra447/pi-hermes-memory",
 		branch: "main",
 		prefix: "packages/stack/pi-hermes-memory",
+		// tag 滞后于 main 修复（如 childExtensionPaths fix）；跟 main 拿修复
+		track: "main",
 	},
 ];
 
@@ -79,21 +85,42 @@ function cap(text, limit, label) {
 }
 
 function collect(v) {
-	const ref = `${v.remote}/${v.branch}`;
+	const branchRef = `${v.remote}/${v.branch}`;
 	try {
-		git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+		git(["rev-parse", "--verify", "--quiet", `${branchRef}^{commit}`]);
 	} catch {
 		return {
 			...v,
 			status: "error",
-			error: `本地引用 ${ref} 不存在，请先 git fetch ${v.remote} ${v.branch}`,
+			error: `本地引用 ${branchRef} 不存在，请先 git fetch ${v.remote} ${v.branch}`,
 		};
+	}
+	// 解析评审目标：track:"tag" 用分支上最新可达 tag（正式发版状态），否则分支头。
+	// 同时记录分支头领先 tag 的提交数，透明化“跳过了 N 个未发版提交”。
+	let ref = branchRef;
+	let trackedTag = null;
+	let aheadOfTracked = 0;
+	if (v.track === "tag") {
+		try {
+			trackedTag = git(["describe", "--tags", "--abbrev=0", branchRef]);
+			aheadOfTracked = Number(git(["rev-list", "--count", `${trackedTag}..${branchRef}`]));
+			ref = trackedTag;
+		} catch {
+			// 分支上无可达 tag，退回分支头（trackedTag 保持 null，报告中注明）
+		}
 	}
 	const newCommits = git(["log", "--format=%h|%s", `HEAD..${ref}`])
 		.split("\n")
 		.filter(Boolean);
 	if (newCommits.length === 0) {
-		return { ...v, status: "uptodate", newCommits: [] };
+		return {
+			...v,
+			status: "uptodate",
+			newCommits: [],
+			resolvedRef: ref,
+			trackedTag,
+			aheadOfTracked,
+		};
 	}
 	const mergeBase = git(["merge-base", "HEAD", ref]);
 	const changedFiles = git(["diff", "--name-only", mergeBase, ref]).split("\n").filter(Boolean);
@@ -111,6 +138,9 @@ function collect(v) {
 		...v,
 		status: "changed",
 		mergeBase,
+		resolvedRef: ref,
+		trackedTag,
+		aheadOfTracked,
 		newCommitTotal: newCommits.length,
 		newCommits: newCommits.slice(0, COMMIT_LIST_CAP),
 		commitListTruncated: newCommits.length > COMMIT_LIST_CAP,
@@ -162,6 +192,18 @@ function buildUserPrompt(p) {
 	lines.push(
 		`- 上游活跃度: 最近 ${p.upstreamActivity.sampled} 个提交中 ${p.upstreamActivity.mergedPRs} 个为 merged PR（上游愿意合并外部贡献的信号；0 可能是 squash 工作流）`,
 	);
+	lines.push(
+		`- 跟踪策略: ${p.track === "tag" ? `正式 tag（当前对齐 ${p.trackedTag}）` : "分支头 main"}`,
+	);
+	if (p.track === "tag") {
+		if (p.trackedTag) {
+			lines.push(
+				`- 未纳入范围: main 分支头还有 ${p.aheadOfTracked} 个未发版提交不在本次评审与合并范围内`,
+			);
+		} else {
+			lines.push("- ⚠️ 分支上无可达 tag，已退回跟踪分支头 main");
+		}
+	}
 	lines.push(`- 上游许可证文件变更: ${p.licenseChanged ? "是（必须重点审查）" : "否"}`);
 	lines.push(`- 上游 package.json 变更: ${p.pkgJsonChanged ? "是（注意依赖与入口变化）" : "否"}`);
 	lines.push(`- 上游变更文件数: ${p.changedFileCount}`);
@@ -332,6 +374,12 @@ function renderReport(state) {
 			continue;
 		}
 		lines.push(`- 判定: **${p.verdict}** — ${p.summary}`);
+		if (p.track === "tag" && p.status === "changed") {
+			const note = p.trackedTag
+				? `对齐正式 tag ${p.trackedTag}（main 另有 ${p.aheadOfTracked} 个未发版提交未纳入）`
+				: "⚠️ 无可达 tag，退回跟踪 main";
+			lines.push(`- 跟踪策略: ${note}`);
+		}
 		if (p.commitListTruncated) {
 			lines.push(`- 上游新提交: 共 ${p.newCommitTotal} 个（列表截断至 ${COMMIT_LIST_CAP}）`);
 		}
