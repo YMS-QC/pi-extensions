@@ -10,6 +10,7 @@
 			"**",
 			"!deprecated",
 			"!package-lock.json",
+			"!.vendor-sync",
 			"!memory",
 			"!packages/stack",
 			"!packages/pi-image-drop/src/web/{app.js,state.js,styles.css}",

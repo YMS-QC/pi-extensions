@@ -88,8 +88,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vendor-sync-analysis
-          path: .vendor-sync/
+          path: |
+            .vendor-sync/report.md
+            .vendor-sync/verdict.json
+            .vendor-sync/prompts.md
+            .vendor-sync/merge.log
+            .vendor-sync/check.log
           retention-days: 30
+          if-no-files-found: ignore
 
       # ---- 应用阶段：仅 overall 为 adopt（全包并入）或 mixed（只并入 adopt 的包） ----
 
@@ -212,13 +218,15 @@ jobs:
           } > .vendor-sync/issue-body.md
 
           if [ -n "$open_issue" ]; then
-            gh issue comment "$open_issue" --body-file .vendor-sync/issue-body.md
+            gh issue comment "$open_issue" --body-file .vendor-sync/issue-body.md \
+              || echo "::warning::issue 评论失败（issues 可能被禁用），报告见 step summary 与 artifact"
             echo "已评论 issue #$open_issue"
           else
             gh issue create \
               --title "vendor-sync 待人工处理（$(date -u +%F)）" \
               --label vendor-sync \
-              --body-file .vendor-sync/issue-body.md
+              --body-file .vendor-sync/issue-body.md \
+              || echo "::warning::issue 创建失败（issues 可能被禁用），报告见 step summary 与 artifact"
           fi
 
       - name: Fail loudly if apply path failed

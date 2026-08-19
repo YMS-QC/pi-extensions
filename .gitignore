@@ -204,3 +204,6 @@ vite.config.ts.timestamp-*
 .pi/agent/
 docs/plans/archived/
 docs/roadmaps/archived/
+
+# vendor-sync 本地分析输出
+.vendor-sync/
