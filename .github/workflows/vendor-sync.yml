@@ -1,0 +1,224 @@
+name: Vendor Sync
+
+# 上游 vendor 自动同步：LLM 评审 → (全绿时) subtree pull + check + push main → 否则只发 issue
+# 详见 SOURCES.md「自动同步」与 scripts/vendor-sync-llm.mjs
+
+on:
+  schedule:
+    - cron: "30 19 * * 1" # 每周二 03:30 (Asia/Shanghai)
+  workflow_dispatch:
+    inputs:
+      skip_llm:
+        description: "跳过 LLM 评审，机械同步（仅靠 merge 与 check 兜底）"
+        type: boolean
+        default: false
+      only:
+        description: "只处理这些包（逗号分隔，如 pi-telegram,pi-automode；留空=全部）"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: vendor-sync
+  cancel-in-progress: false
+
+env:
+  # LLM 默认走 GitHub Models（OpenAI 兼容），用 GITHUB_TOKEN 即可，无需额外密钥。
+  # 可用 repo variables/secrets 覆盖：VENDOR_SYNC_LLM_BASE_URL / VENDOR_SYNC_LLM_MODEL / VENDOR_SYNC_LLM_API_KEY
+  LLM_BASE_URL: ${{ vars.VENDOR_SYNC_LLM_BASE_URL || 'https://models.github.ai/inference' }}
+  LLM_MODEL: ${{ vars.VENDOR_SYNC_LLM_MODEL || 'openai/gpt-4.1' }}
+  LLM_API_KEY: ${{ secrets.VENDOR_SYNC_LLM_API_KEY || github.token }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository (full history for subtree)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Configure git identity
+        run: |
+          git config user.name "vendor-sync[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream vendor remotes
+        run: |
+          set -euo pipefail
+          add_or_set() {
+            if git remote get-url "$1" >/dev/null 2>&1; then
+              git remote set-url "$1" "$2"
+            else
+              git remote add "$1" "$2"
+            fi
+          }
+          add_or_set up-telegram https://github.com/llblab/pi-telegram.git
+          add_or_set up-automode https://github.com/czottmann/pi-automode.git
+          add_or_set up-hermes https://github.com/chandra447/pi-hermes-memory.git
+          git fetch --no-tags up-telegram main
+          git fetch --no-tags up-automode main
+          git fetch --no-tags up-hermes main
+
+      - name: Analyze upstream changes (LLM review)
+        id: analyze
+        run: |
+          set -euo pipefail
+          args=(--out .vendor-sync)
+          if [ "${{ inputs.skip_llm }}" = "true" ]; then args+=(--no-llm); fi
+          if [ -n "${{ inputs.only }}" ]; then args+=(--only "${{ inputs.only }}"); fi
+          node scripts/vendor-sync-llm.mjs "${args[@]}"
+          cat .vendor-sync/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload analysis artifact
+        if: always() && steps.analyze.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vendor-sync-analysis
+          path: .vendor-sync/
+          retention-days: 30
+
+      # ---- 应用阶段：仅 overall 为 adopt（全包并入）或 mixed（只并入 adopt 的包） ----
+
+      - name: Subtree pull adopted packages
+        id: merge
+        run: |
+          set -euo pipefail
+          overall="$(node -p 'JSON.parse(require("node:fs").readFileSync(".vendor-sync/verdict.json","utf8")).overall')"
+          if [ "$overall" != "adopt" ] && [ "$overall" != "mixed" ]; then
+            echo "overall=$overall，跳过合并"
+            exit 0
+          fi
+          mkdir -p .vendor-sync
+          node -e '
+          const fs = require("node:fs");
+          const v = JSON.parse(fs.readFileSync(".vendor-sync/verdict.json", "utf8"));
+          for (const p of Object.values(v.packages)) {
+            if (p.status !== "changed" || p.verdict !== "adopt") continue;
+            const summary = String(p.summary || "").replace(/[^\x20-\x7e]/g, " ").split("`").join(" ").slice(0, 200);
+            console.log([p.name, p.remote, p.branch, p.prefix, summary].join("\t"));
+          }' > .vendor-sync/adopt.tsv
+          : > .vendor-sync/merge.log
+          while IFS=$'\t' read -r name remote branch prefix summary; do
+            [ -n "$name" ] || continue
+            echo "=== subtree pull $name ($remote/$branch)" | tee -a .vendor-sync/merge.log
+            if git subtree pull --prefix="$prefix" "$remote" "$branch" \
+              -m "subtree: sync $name from $remote/$branch" \
+              -m "LLM: $summary" 2>&1 | tee -a .vendor-sync/merge.log; then
+              echo "[ok] $name 已合并" | tee -a .vendor-sync/merge.log
+            else
+              git merge --abort 2>/dev/null || true
+              echo "[fail] $name 合并冲突/失败，已中止 merge（本仓未被改动）" | tee -a .vendor-sync/merge.log
+              exit 42
+            fi
+          done < .vendor-sync/adopt.tsv
+          echo "合并完成:" && git log --oneline origin/main..HEAD
+
+      - name: Run repository checks
+        id: check
+        run: |
+          set -euo pipefail
+          overall="$(node -p 'JSON.parse(require("node:fs").readFileSync(".vendor-sync/verdict.json","utf8")).overall')"
+          if [ "$overall" != "adopt" ] && [ "$overall" != "mixed" ]; then
+            echo "overall=$overall，跳过检查"
+            exit 0
+          fi
+          npm ci 2>&1 | tee .vendor-sync/check.log
+          npm run check 2>&1 | tee -a .vendor-sync/check.log
+
+      - name: Push to main
+        id: push
+        run: |
+          set -euo pipefail
+          overall="$(node -p 'JSON.parse(require("node:fs").readFileSync(".vendor-sync/verdict.json","utf8")).overall')"
+          if [ "$overall" != "adopt" ] && [ "$overall" != "mixed" ]; then
+            echo "overall=$overall，跳过推送"
+            exit 0
+          fi
+          if [ -z "$(git log --oneline origin/main..HEAD)" ]; then
+            echo "无新提交，跳过推送"
+            exit 0
+          fi
+          git push origin HEAD:main
+          echo "已推送 main:"
+          git log --oneline origin/main~1..HEAD 2>/dev/null || git log --oneline -3
+
+      # ---- 收尾：成功则关闭历史 issue；有任何 hold/manual/失败则汇总发 issue ----
+
+      - name: Report and manage follow-up issue
+        if: always() && steps.analyze.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          overall="$(node -p 'JSON.parse(require("node:fs").readFileSync(".vendor-sync/verdict.json","utf8")).overall')"
+          merge="${{ steps.merge.outcome }}"
+          check="${{ steps.check.outcome }}"
+          push="${{ steps.push.outcome }}"
+          echo "overall=$overall merge=$merge check=$check push=$push"
+
+          gh label create vendor-sync --color B60205 --description "vendor 上游同步待人工处理" 2>/dev/null || true
+          open_issue="$(gh issue list --label vendor-sync --state open --json number --jq '.[0].number' || true)"
+
+          needs_attention=false
+          if [ "$overall" = "hold" ] || [ "$overall" = "manual" ] || [ "$overall" = "mixed" ]; then needs_attention=true; fi
+          if [ "$merge" = "failure" ] || [ "$check" = "failure" ] || [ "$push" = "failure" ]; then needs_attention=true; fi
+
+          if [ "$push" = "success" ] && [ "$overall" = "adopt" ] && [ "$needs_attention" = "false" ]; then
+            echo "全绿自动同步完成"
+            if [ -n "$open_issue" ]; then
+              printf '本轮 vendor-sync 已自动完成同步并推送 main，关闭本 issue。\n\n%s\n' "$(git log --oneline origin/main~3..HEAD 2>/dev/null | head -5)" \
+                | gh issue close "$open_issue" --comment-file - || true
+            fi
+            exit 0
+          fi
+
+          if [ "$needs_attention" = "false" ]; then
+            echo "无需人工跟进（overall=$overall）"
+            exit 0
+          fi
+
+          {
+            cat .vendor-sync/report.md
+            echo
+            echo "## 本次执行状态"
+            echo "- 分析(overall): $overall"
+            echo "- subtree merge: $merge / 仓库检查: $check / 推送: $push"
+            for f in merge check; do
+              if [ -s ".vendor-sync/$f.log" ]; then
+                echo
+                echo "### $f.log（尾部 40 行）"
+                echo '```'
+                tail -n 40 ".vendor-sync/$f.log"
+                echo '```'
+              fi
+            done
+            echo
+            echo "手工处理: 本地运行 ./update-vendors.sh，或按上面各包判定逐个 \`git subtree pull --prefix=packages/stack/<pkg> <remote> main\`。"
+            echo "完成后运行 \`pi update --extensions\` 同步运行时副本。"
+          } > .vendor-sync/issue-body.md
+
+          if [ -n "$open_issue" ]; then
+            gh issue comment "$open_issue" --body-file .vendor-sync/issue-body.md
+            echo "已评论 issue #$open_issue"
+          else
+            gh issue create \
+              --title "vendor-sync 待人工处理（$(date -u +%F)）" \
+              --label vendor-sync \
+              --body-file .vendor-sync/issue-body.md
+          fi
+
+      - name: Fail loudly if apply path failed
+        if: always() && (steps.merge.outcome == 'failure' || steps.check.outcome == 'failure' || steps.push.outcome == 'failure')
+        run: |
+          echo "vendor-sync 应用阶段失败，详见上方日志与 issue。"
+          exit 1

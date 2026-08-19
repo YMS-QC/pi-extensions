@@ -13,6 +13,23 @@
 
 同步命令：`git subtree pull --prefix=packages/stack/<子包> <上游URL> main`（update-vendors.sh 已封装）。
 
+### 依赖管理（重要）
+
+vendored 包**不进 root npm workspace**，各自用自带的 package-lock.json 在包目录内安装
+（`npm ci`），跑各自的 typecheck/test 脚本（root 门禁里的 `stack-checks`，见
+scripts/run-stack-checks.mjs）。好处：root lockfile 与上游依赖变化彻底解耦，subtree
+合并后 root `npm ci` 不会失配；vendored 树永远不被本仓工具链改写。
+
+### 自动同步（GitHub Actions）
+
+`.github/workflows/vendor-sync.yml` 每周二 03:30 (Asia/Shanghai) 自动：fetch 上游 →
+LLM 评审各包 diff（判定 adopt/hold/manual，输出报告，LLM 输出永不被执行）→ 全部
+adopt 时 subtree pull + `npm run check` + push main；否则只发/更新带 `vendor-sync`
+标签的 issue 等人处理。也可 Actions 页面手动触发（可跳过 LLM / 指定包）。
+评审脚本：scripts/vendor-sync-llm.mjs（本地可 `node scripts/vendor-sync-llm.mjs --dry-run` 预览）。
+LLM 默认走 GitHub Models（GITHUB_TOKEN 即可），可用 repo variables/secrets 覆盖
+（VENDOR_SYNC_LLM_BASE_URL / VENDOR_SYNC_LLM_MODEL / VENDOR_SYNC_LLM_API_KEY）。
+
 **给上游提 PR**：需要 PR 时临时 `gh repo fork` 对应上游仓，从本仓 subtree split 导出分支推送即可，平时不维护 fork 仓。
 
 ## packages/（自有资产，原创）
