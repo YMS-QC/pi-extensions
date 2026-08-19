@@ -23,7 +23,7 @@
  * 目标(target)系统可扩展: 每个目标声明如何应用(热)或需重启, 新插件接入=加一个 apply 函数。
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -33,9 +33,9 @@ const CONFIG_PATH = join(homedir(), ".pi/agent/model-profiles.json");
 // ─── 配置模型 ───
 
 interface Profile {
-	main: string;          // "provider/id"
-	thinking?: string;     // 主模型思考档
-	aux: string;           // 后台/分类器小模型 "provider/id"
+	main: string; // "provider/id"
+	thinking?: string; // 主模型思考档
+	aux: string; // 后台/分类器小模型 "provider/id"
 	[label: string]: unknown; // 允许扩展字段
 }
 
@@ -112,7 +112,10 @@ const TARGETS: Record<string, Target> = {
 			});
 			// 3) 同步 presets.json 的 main 档
 			patchJson(join(AGENT, "presets.json"), (o) => {
-				if (o.main) { o.main.provider = parts.provider; o.main.model = parts.model; }
+				if (o.main) {
+					o.main.provider = parts.provider;
+					o.main.model = parts.model;
+				}
 			});
 			return `${changed ? "settings.json 已更新(重启后为默认)" : "settings 无变化"}; presets.main 已同步; 当前会话请用 /preset main 热切`;
 		},
@@ -170,9 +173,7 @@ const TARGETS: Record<string, Target> = {
 				sa.agentOverrides = ov;
 				o.subagents = sa;
 			});
-			return changed
-				? `reviewer/oracle → ${modelId} (重启生效)`
-				: "重型档无变化";
+			return changed ? `reviewer/oracle → ${modelId} (重启生效)` : "重型档无变化";
 		},
 	},
 };
@@ -217,7 +218,10 @@ export default function (pi: ExtensionAPI) {
 			if (parts[0] === "set") {
 				const [, tk, id] = parts;
 				if (!tk || !id || !TARGETS[tk]) {
-					ctx.ui.notify(`用法: /models set <${Object.keys(TARGETS).join("|")}> <provider/id>`, "error");
+					ctx.ui.notify(
+						`用法: /models set <${Object.keys(TARGETS).join("|")}> <provider/id>`,
+						"error",
+					);
 					return;
 				}
 				cfg.overrides = { ...cfg.overrides, [tk]: id };
@@ -231,7 +235,10 @@ export default function (pi: ExtensionAPI) {
 			if (parts[0] === "reset") {
 				const [, tk] = parts;
 				if (!tk || !cfg.overrides?.[tk]) {
-					ctx.ui.notify(`无此 override。现有: ${Object.keys(cfg.overrides ?? {}).join(", ") || "无"}`, "error");
+					ctx.ui.notify(
+						`无此 override。现有: ${Object.keys(cfg.overrides ?? {}).join(", ") || "无"}`,
+						"error",
+					);
 					return;
 				}
 				delete cfg.overrides[tk];

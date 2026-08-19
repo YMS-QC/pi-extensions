@@ -18,7 +18,7 @@ const tsc = path.join(
 const vitest = path.join(root, "node_modules", "vitest", "vitest.mjs");
 
 const missingTests = activeExtensionDirectories(path.join(root, "packages"))
-	.filter((extensionDir) => !hasTestFile(path.join(extensionDir, "test")))
+	.filter((extensionDir) => !hasTestFile(extensionDir))
 	.map((extensionDir) => path.relative(root, extensionDir));
 if (missingTests.length > 0) {
 	console.error(`Missing test files for active extension(s): ${missingTests.join(", ")}`);
@@ -110,8 +110,12 @@ function activeExtensionDirectories(directory) {
 	return directories.sort();
 }
 
+// vendored 上游包沿用 tests/ 目录，自有包用 test/，两者都认。
 function hasTestFile(directory) {
-	return findFiles(directory, ".test.ts").length > 0;
+	return (
+		findFiles(path.join(directory, "test"), ".test.ts").length > 0 ||
+		findFiles(path.join(directory, "tests"), ".test.ts").length > 0
+	);
 }
 
 function runNpm(args) {
@@ -138,8 +142,13 @@ function findFiles(directory, suffix) {
 	const files = [];
 	for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
 		const entryPath = path.join(directory, entry.name);
-		if (entry.isDirectory()) files.push(...findFiles(entryPath, suffix));
-		else if (entry.isFile() && entry.name.endsWith(suffix)) files.push(entryPath);
+		// 跳过依赖目录，避免扫到 vendored 包自装 node_modules 里的测试文件
+		if (entry.isDirectory()) {
+			if (entry.name === "node_modules") continue;
+			files.push(...findFiles(entryPath, suffix));
+		} else if (entry.isFile() && entry.name.endsWith(suffix)) {
+			files.push(entryPath);
+		}
 	}
 	return files.sort();
 }

@@ -90,7 +90,8 @@ function findWorkspacePackages(directory) {
 	if (!fs.existsSync(directory)) return packages;
 
 	for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-		if (!entry.isDirectory() || entry.name === "node_modules") {
+		// packages/stack 下是 vendored 上游包（git subtree），不适用本仓扩展边界规范。
+		if (!entry.isDirectory() || entry.name === "node_modules" || entry.name === "stack") {
 			continue;
 		}
 
@@ -128,10 +129,19 @@ function checkRootPiManifest() {
 		)
 		.sort();
 	const actualEntries = rootPackage.pi?.extensions;
-	if (
-		!Array.isArray(actualEntries) ||
-		JSON.stringify([...actualEntries].sort()) !== JSON.stringify(expectedEntries)
-	) {
+	// vendored 入口（packages/stack/，上游布局）不参与 stable 包集合比对，只验证文件存在。
+	const vendoredEntries = (Array.isArray(actualEntries) ? actualEntries : []).filter((entry) =>
+		String(entry).startsWith("./packages/stack/"),
+	);
+	for (const entry of vendoredEntries) {
+		if (!fs.existsSync(path.join(rootDirectory, entry))) {
+			failures.push(`package.json pi.extensions vendored entrypoint does not exist: ${entry}.`);
+		}
+	}
+	const actualOwnEntries = (Array.isArray(actualEntries) ? actualEntries : []).filter(
+		(entry) => !String(entry).startsWith("./packages/stack/"),
+	);
+	if (JSON.stringify([...actualOwnEntries].sort()) !== JSON.stringify(expectedEntries)) {
 		failures.push(
 			`package.json pi.extensions must list every stable package entrypoint and no experimental entrypoints: ${JSON.stringify(expectedEntries)}.`,
 		);

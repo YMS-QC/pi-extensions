@@ -14,9 +14,10 @@ scan_secrets() {  # $1=file  密钥字段扫描 (与 pi-personal 同口径)
   fi
 }
 
-sync_skills() {  # $1=src $2=dst
+sync_skills() {  # $1=src $2=dst  --safe-links: 跳过指向树外的符号链接(如 ~/.agents), 避免快照出坏链
   mkdir -p "$2"
-  rsync -a --delete --exclude='.DS_Store' "$1/" "$2/"
+  rsync -a --safe-links --exclude='.DS_Store' "$1/" "$2/"
+  find "$2" -xtype l -delete 2>/dev/null || true
 }
 
 sync_projects() {  # $1=src $2=dst  只同步 .md (排除 recovery/locks/缓存)
@@ -48,6 +49,7 @@ push)
   mkdir -p "$A/pi-hermes-memory"
   for f in MEMORY.md USER.md failures.md; do cp "memory/$f" "$A/pi-hermes-memory/$f"; done
   sync_projects memory/projects "$A/projects-memory"
+  # push 不用 --delete: 保护本机自管符号链接(~/.agents 等)与本地新增状态, 陈旧快照可接受
   sync_skills memory/skills "$A/skills"
   echo "[ok] push 完成: memory/ → ~/.pi/agent/"
   echo "[i] sessions.db 会话索引不迁移, hermes 启动后自动重建"

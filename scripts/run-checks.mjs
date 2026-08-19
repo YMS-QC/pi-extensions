@@ -2,7 +2,7 @@
 
 import concurrently from "concurrently";
 
-const checks = ["biome:check", "check:boundaries", "typecheck", "test"];
+const checks = ["biome:check", "check:boundaries", "typecheck", "test", "stack-checks"];
 const env = { ...process.env, PI_EXTENSIONS_BUILD_READY: "1" };
 
 console.log(`Running checks in parallel: ${checks.join(", ")}`);
