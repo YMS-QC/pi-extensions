@@ -22,13 +22,18 @@ scripts/run-stack-checks.mjs）。好处：root lockfile 与上游依赖变化�
 
 ### 自动同步（GitHub Actions）
 
-`.github/workflows/vendor-sync.yml` 每周二 03:30 (Asia/Shanghai) 自动：fetch 上游 →
+`.github/workflows/vendor-sync.yml` 每天 06:00 (Asia/Shanghai) 自动：fetch 上游 →
 LLM 评审各包 diff（判定 adopt/hold/manual，输出报告，LLM 输出永不被执行）→ 全部
 adopt 时 subtree pull + `npm run check` + push main；否则只发/更新带 `vendor-sync`
 标签的 issue 等人处理。也可 Actions 页面手动触发（可跳过 LLM / 指定包）。
 评审脚本：scripts/vendor-sync-llm.mjs（本地可 `node scripts/vendor-sync-llm.mjs --dry-run` 预览）。
-LLM 默认走 GitHub Models（GITHUB_TOKEN 即可），可用 repo variables/secrets 覆盖
-（VENDOR_SYNC_LLM_BASE_URL / VENDOR_SYNC_LLM_MODEL / VENDOR_SYNC_LLM_API_KEY）。
+LLM 默认走 DeepSeek（`https://api.deepseek.com/v1`，模型 `deepseek-v4-pro`，思考型、
+代码评审强；GitHub Models 已于 2026-07-30 退休不可用）。密钥放 repo secret
+`VENDOR_SYNC_LLM_API_KEY`（本机 ~/.pi/agent/auth.json 的 deepseek.key），未配置时
+定时任务自动降级 `--no-llm` 机械同步。换任意 OpenAI 兼容源（OpenRouter/Anthropic/
+GLM 等）只需设 repo variables `VENDOR_SYNC_LLM_BASE_URL` / `VENDOR_SYNC_LLM_MODEL`。
+额度账：Actions 私有仓 2000 分钟/月，每日一跑约 2-8 分钟 + 同步 push 触发 CI，
+月度占用 <15%；LLM 每日 0-3 次调用，成本忽罝不计。
 
 评审策略为**乐观并入**：默认 adopt（文本冲突交给 subtree merge，行为回归交给 check
 门禁兼底），hold 仅限原则性冲突（许可证变更、上游静默废弃本地补丁且非等效实现、

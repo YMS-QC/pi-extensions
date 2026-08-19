@@ -5,7 +5,7 @@ name: Vendor Sync
 
 on:
   schedule:
-    - cron: "30 19 * * 1" # 每周二 03:30 (Asia/Shanghai)
+    - cron: "0 22 * * *" # 每天上海 06:00（UTC 22:00）
   workflow_dispatch:
     inputs:
       skip_llm:
@@ -26,11 +26,12 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # LLM 默认走 GitHub Models（OpenAI 兼容），用 GITHUB_TOKEN 即可，无需额外密钥。
-  # 可用 repo variables/secrets 覆盖：VENDOR_SYNC_LLM_BASE_URL / VENDOR_SYNC_LLM_MODEL / VENDOR_SYNC_LLM_API_KEY
-  LLM_BASE_URL: ${{ vars.VENDOR_SYNC_LLM_BASE_URL || 'https://models.github.ai/inference' }}
-  LLM_MODEL: ${{ vars.VENDOR_SYNC_LLM_MODEL || 'openai/gpt-4.1' }}
-  LLM_API_KEY: ${{ secrets.VENDOR_SYNC_LLM_API_KEY || github.token }}
+  # GitHub Models 已于 2026-07-30 退休，改用 DeepSeek（OpenAI 兼容）。
+  # 密钥放 repo secret VENDOR_SYNC_LLM_API_KEY；未配置时定时任务自动降级 --no-llm 机械同步。
+  # 可用 repo variables/secrets 覆盖端点与模型（换 OpenRouter/Anthropic 等任意 OpenAI 兼容源）。
+  LLM_BASE_URL: ${{ vars.VENDOR_SYNC_LLM_BASE_URL || 'https://api.deepseek.com/v1' }}
+  LLM_MODEL: ${{ vars.VENDOR_SYNC_LLM_MODEL || 'deepseek-v4-pro' }}
+  LLM_API_KEY: ${{ secrets.VENDOR_SYNC_LLM_API_KEY }}
 
 jobs:
   sync:
@@ -74,7 +75,10 @@ jobs:
         run: |
           set -euo pipefail
           args=(--out .vendor-sync)
-          if [ "${{ inputs.skip_llm }}" = "true" ]; then args+=(--no-llm); fi
+          if [ "${{ inputs.skip_llm }}" = "true" ] || [ -z "${LLM_API_KEY}" ]; then
+            [ -z "${LLM_API_KEY}" ] && echo "::warning::VENDOR_SYNC_LLM_API_KEY 未配置，降级 --no-llm 机械同步（仅靠 merge + check 兼底）"
+            args+=(--no-llm)
+          fi
           if [ -n "${{ inputs.only }}" ]; then args+=(--only "${{ inputs.only }}"); fi
           node scripts/vendor-sync-llm.mjs "${args[@]}"
           cat .vendor-sync/report.md >> "$GITHUB_STEP_SUMMARY"
