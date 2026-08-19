@@ -66,7 +66,7 @@ jobs:
           add_or_set up-telegram https://github.com/llblab/pi-telegram.git
           add_or_set up-automode https://github.com/czottmann/pi-automode.git
           add_or_set up-hermes https://github.com/chandra447/pi-hermes-memory.git
-          git fetch --no-tags up-telegram main
+          git fetch --tags up-telegram main
           git fetch --no-tags up-automode main
           git fetch --no-tags up-hermes main
 
@@ -115,7 +115,7 @@ jobs:
           for (const p of Object.values(v.packages)) {
             if (p.status !== "changed" || p.verdict !== "adopt") continue;
             const summary = String(p.summary || "").replace(/[^\x20-\x7e]/g, " ").split("`").join(" ").slice(0, 200);
-            console.log([p.name, p.remote, p.branch, p.prefix, summary].join("\t"));
+            console.log([p.name, p.remote, p.resolvedRef || `${p.remote}/${p.branch}`, p.prefix, summary].join("\t"));
           }' > .vendor-sync/adopt.tsv
           : > .vendor-sync/merge.log
           while IFS=$'\t' read -r name remote ref prefix summary; do
