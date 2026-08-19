@@ -27,8 +27,9 @@ LLM 评审各包 diff（判定 adopt/hold/manual，输出报告，LLM 输出永�
 adopt 时 subtree pull + `npm run check` + push main；否则只发/更新带 `vendor-sync`
 标签的 issue 等人处理。也可 Actions 页面手动触发（可跳过 LLM / 指定包）。
 评审脚本：scripts/vendor-sync-llm.mjs（本地可 `node scripts/vendor-sync-llm.mjs --dry-run` 预览）。
-LLM 默认走 DeepSeek（`https://api.deepseek.com/v1`，模型 `deepseek-v4-pro`，思考型、
-代码评审强；GitHub Models 已于 2026-07-30 退休不可用）。密钥放 repo secret
+LLM 默认走 DeepSeek（`https://api.deepseek.com/v1`，模型 `deepseek-v4-flash`，快且便宜
+适合每日自动跑；GitHub Models 已于 2026-07-30 退休不可用；要更强可换 deepseek-v4-pro
+或任意 OpenAI 兼容源，只设 repo vars 即可）。密钥放 repo secret
 `VENDOR_SYNC_LLM_API_KEY`（本机 ~/.pi/agent/auth.json 的 deepseek.key），未配置时
 定时任务自动降级 `--no-llm` 机械同步。换任意 OpenAI 兼容源（OpenRouter/Anthropic/
 GLM 等）只需设 repo variables `VENDOR_SYNC_LLM_BASE_URL` / `VENDOR_SYNC_LLM_MODEL`。

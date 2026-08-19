@@ -30,7 +30,7 @@ env:
   # 密钥放 repo secret VENDOR_SYNC_LLM_API_KEY；未配置时定时任务自动降级 --no-llm 机械同步。
   # 可用 repo variables/secrets 覆盖端点与模型（换 OpenRouter/Anthropic 等任意 OpenAI 兼容源）。
   LLM_BASE_URL: ${{ vars.VENDOR_SYNC_LLM_BASE_URL || 'https://api.deepseek.com/v1' }}
-  LLM_MODEL: ${{ vars.VENDOR_SYNC_LLM_MODEL || 'deepseek-v4-pro' }}
+  LLM_MODEL: ${{ vars.VENDOR_SYNC_LLM_MODEL || 'deepseek-v4-flash' }}
   LLM_API_KEY: ${{ secrets.VENDOR_SYNC_LLM_API_KEY }}
 
 jobs:

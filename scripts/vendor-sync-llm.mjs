@@ -13,7 +13,7 @@
  *   node scripts/vendor-sync-llm.mjs [--out DIR] [--only a,b] [--dry-run] [--no-llm] [--self-test]
  * 环境变量:
  *   LLM_BASE_URL  默认 https://api.deepseek.com/v1（OpenAI 兼容）
- *   LLM_MODEL     默认 deepseek-v4-pro（思考型，代码评审强；deepseek-v4-flash 更快更便宜）
+ *   LLM_MODEL     默认 deepseek-v4-flash（快且便宜，适合每日自动跑；要更强改 deepseek-v4-pro）
  *   LLM_API_KEY   必填（--dry-run / --no-llm / --self-test 除外）
  *
  * 安全边界: LLM 输出只做判定与文案，绝不执行；解析失败一律降级 manual（fail-safe）。
@@ -448,7 +448,7 @@ async function main() {
 	const noLlm = flag("--no-llm");
 	const mode = dryRun ? "dry-run" : noLlm ? "--no-llm（跳过 LLM，机械同步）" : "LLM 评审";
 	const base = process.env.LLM_BASE_URL || "https://api.deepseek.com/v1";
-	const model = process.env.LLM_MODEL || "deepseek-v4-pro";
+	const model = process.env.LLM_MODEL || "deepseek-v4-flash";
 	const apiKey = process.env.LLM_API_KEY || "";
 	if (!dryRun && !noLlm && !apiKey) {
 		console.error("缺少 LLM_API_KEY（或使用 --dry-run / --no-llm）");
