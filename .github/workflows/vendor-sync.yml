@@ -1,6 +1,6 @@
 name: Vendor Sync
 
-# 上游 vendor 自动同步：LLM 评审 → (全绿时) subtree pull + check + push main → 否则只发 issue
+# 上游 vendor 自动同步（乐观策略）：LLM 评审（默认 adopt，hold 仅原则性冲突）→ subtree pull + check + push main → 否则只发 issue
 # 详见 SOURCES.md「自动同步」与 scripts/vendor-sync-llm.mjs
 
 on:

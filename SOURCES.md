@@ -30,6 +30,11 @@ adopt 时 subtree pull + `npm run check` + push main；否则只发/更新带 `v
 LLM 默认走 GitHub Models（GITHUB_TOKEN 即可），可用 repo variables/secrets 覆盖
 （VENDOR_SYNC_LLM_BASE_URL / VENDOR_SYNC_LLM_MODEL / VENDOR_SYNC_LLM_API_KEY）。
 
+评审策略为**乐观并入**：默认 adopt（文本冲突交给 subtree merge，行为回归交给 check
+门禁兼底），hold 仅限原则性冲突（许可证变更、上游静默废弃本地补丁且非等效实现、
+可疑代码）。上游活跃度（近期 merged PR）会作为信号进入评审。本地补丁被上游等效
+覆盖时报告会标注 superseded_patches，可趁机删本地补丁或按上面流程给上游提 PR。
+
 **给上游提 PR**：需要 PR 时临时 `gh repo fork` 对应上游仓，从本仓 subtree split 导出分支推送即可，平时不维护 fork 仓。
 
 ## packages/（自有资产，原创）

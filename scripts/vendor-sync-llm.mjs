@@ -97,6 +97,13 @@ function collect(v) {
 	}
 	const mergeBase = git(["merge-base", "HEAD", ref]);
 	const changedFiles = git(["diff", "--name-only", mergeBase, ref]).split("\n").filter(Boolean);
+	// 上游活跃度信号：近期 merged PR 数量（>0 说明上游愿意合并外部贡献，协作正常；
+	// 0 可能只是 squash 工作流，不做负面解读）
+	const recentSubjects = git(["log", "--format=%s", "-n", "60", ref]).split("\n");
+	const upstreamActivity = {
+		sampled: recentSubjects.length,
+		mergedPRs: recentSubjects.filter((s) => /^Merge pull request #\d+/.test(s)).length,
+	};
 	// 上游历史在 DAG 里是根布局，直接用 pathspec 会把旧侧清零（整包误判为新增）；
 	// 因此用 tree 对象直接比较: <merge-base>根树 vs HEAD:<prefix>子树，输出为上游根路径视角。
 	const localDiffText = git(["diff", mergeBase, `HEAD:${v.prefix}`]);
@@ -112,6 +119,7 @@ function collect(v) {
 		changedFileCount: changedFiles.length,
 		licenseChanged: changedFiles.some((f) => /^(LICEN[SC]E|COPYING)/i.test(f)),
 		pkgJsonChanged: changedFiles.includes("package.json"),
+		upstreamActivity,
 		// fork 仓时代的补丁提交是根布局，pathspec 抓不到，净效果已在上面的 tree diff 里；
 		// 这里仅收集本仓内直接改 prefix 的提交，另从 SOURCES.md 补记载。
 		localCommits: git(["log", "--format=%h|%s", `${ref}..HEAD`, "--", v.prefix])
@@ -123,12 +131,22 @@ function collect(v) {
 }
 
 const SYSTEM_PROMPT = `你是私有 monorepo 的 vendor 同步评审员。仓库用 git subtree 收纳第三方扩展，
-本地在 subtree 之上维护自有补丁。现给出某包的上游新变化与本地补丁，请判断本次是否适合自动并入。
+本地在 subtree 之上维护少量自有补丁。现给出某包的上游新变化与本地补丁，判断本次是否自动并入。
 
-判定规则:
-- adopt: 安全可自动并入（bugfix、文档、不触碰本地补丁的常规特性、依赖小版本升级等）。
-- hold: 有风险需人审（破坏性 API/行为变更、与本地补丁语义重叠、许可证变更、配置格式不兼容等）。
-- manual: 信息不足或过于复杂（diff 被截断、大重构、无法判断与补丁的交互）。
+总体策略是**乐观并入**：上游是我们在用的活跃项目，默认信任其常规演进。
+文本冲突由 subtree merge 解决，行为回归由合并后的完整检查门禁兼底，
+这两者都不是 hold 的理由。adopt 是默认判定。
+
+- adopt（默认）：bugfix、新特性、重构、依赖升级、版本发布、大版本跨度、
+  与本地补丁有交叠但语义兼容。上游等效实现了本地补丁时也判 adopt，
+  并在 superseded_patches 里列出，便于我们之后删本地补丁或给上游提 PR。
+- hold（仅限原则性冲突，即使检查通过也不该进仓）：许可证更换或新增限制性条款；
+  上游删除/根本改变了本地补丁依赖的机制且非等效实现（合并会静默废掉我们的补丁）；
+  可疑代码（混淆注入、数据外传、后门）；上游停维且变更质量可疑。
+- manual（仅限信息不足）：提交列表与 diff 都无法判断意图，无法排除命中上述 hold 条件。
+
+注意：diff 截断本身不是 manual 的充分理由——若提交列表与 stat 显示常规演进，仍应 adopt，
+并在 risks 里注明截断供人事后抽查。宁可 adopt 也不要苛求。
 
 输出必须是单个 JSON 对象，禁止输出 JSON 之外的任何文字或代码块围栏:
 {"verdict":"adopt|hold|manual","summary":"一句话中文摘要",
@@ -141,6 +159,9 @@ function buildUserPrompt(p) {
 	lines.push(`- 名称: ${p.name}`);
 	lines.push(`- 上游: ${p.url} (${p.branch})`);
 	lines.push(`- 本仓 subtree 路径: ${p.prefix}`);
+	lines.push(
+		`- 上游活跃度: 最近 ${p.upstreamActivity.sampled} 个提交中 ${p.upstreamActivity.mergedPRs} 个为 merged PR（上游愿意合并外部贡献的信号；0 可能是 squash 工作流）`,
+	);
 	lines.push(`- 上游许可证文件变更: ${p.licenseChanged ? "是（必须重点审查）" : "否"}`);
 	lines.push(`- 上游 package.json 变更: ${p.pkgJsonChanged ? "是（注意依赖与入口变化）" : "否"}`);
 	lines.push(`- 上游变更文件数: ${p.changedFileCount}`);
@@ -350,7 +371,7 @@ function renderReport(state) {
 	lines.push("---");
 	const action = {
 		uptodate: "上游无变化，本次不产生提交。",
-		adopt: "工作流将执行 subtree pull → npm run check → 通过后自动 push main。",
+		adopt: "乐观并入：工作流将执行 subtree pull → npm run check → 通过后自动 push main。",
 		mixed: "工作流只自动并入判定 adopt 的包；其余见上，等人工处理。",
 		hold: "存在需人审的包，本次不自动并入，待 issue 跟进。",
 		manual: "信息不足或失败，本次不自动并入，待 issue 跟进。",
@@ -440,7 +461,7 @@ async function main() {
 		process.exit(2);
 	}
 
-	const prompts = [];
+	const prompts = [`===== SYSTEM PROMPT =====\n${SYSTEM_PROMPT}`];
 	const packages = [];
 	for (const v of vendors) {
 		const p = collect(v);
