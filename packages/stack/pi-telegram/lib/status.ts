@@ -1505,6 +1505,7 @@ function buildContextSummary(
 }
 
 function buildStatusSummary(ctx: TelegramStatusContext): string {
+  if (ctx.isCompactionInProgress?.()) return "compacting";
   if (ctx.hasPendingMessages?.()) return "pending";
   if (ctx.isIdle?.() === false) return "active";
   if (ctx.isIdle?.() === true) return "idle";

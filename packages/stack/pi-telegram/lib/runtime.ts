@@ -10,7 +10,6 @@ const TELEGRAM_TYPING_IDLE_DRAIN_MAX_MS = 250;
 export interface TelegramRuntimeQueueCounters {
   nextQueuedTelegramItemOrder: number;
   nextQueuedTelegramControlOrder: number;
-  nextPriorityReactionOrder: number;
 }
 
 export interface TelegramRuntimeLifecycleFlags {
@@ -34,8 +33,6 @@ export interface TelegramRuntimeQueuePort {
   syncCounters: (counters: Partial<TelegramRuntimeQueueCounters>) => void;
   allocateItemOrder: () => number;
   allocateControlOrder: () => number;
-  getNextPriorityReactionOrder: () => number;
-  incrementNextPriorityReactionOrder: () => void;
 }
 
 export interface TelegramRuntimeLifecyclePort {
@@ -85,7 +82,6 @@ export function createTelegramBridgeRuntimeState(): TelegramBridgeRuntimeState {
   return {
     nextQueuedTelegramItemOrder: 0,
     nextQueuedTelegramControlOrder: 0,
-    nextPriorityReactionOrder: 0,
     activeTelegramToolExecutions: 0,
     telegramTurnDispatchPending: false,
     compactionInProgress: false,
@@ -104,10 +100,6 @@ export function createTelegramBridgeRuntime(
         syncTelegramQueueRuntimeCounters(state, counters),
       allocateItemOrder: () => allocateTelegramQueueItemOrder(state),
       allocateControlOrder: () => allocateTelegramQueueControlOrder(state),
-      getNextPriorityReactionOrder: () =>
-        getNextTelegramPriorityReactionOrder(state),
-      incrementNextPriorityReactionOrder: () =>
-        incrementNextTelegramPriorityReactionOrder(state),
     },
     lifecycle: {
       syncFlags: (flags) => syncTelegramLifecycleRuntimeFlags(state, flags),
@@ -159,9 +151,6 @@ export function syncTelegramQueueRuntimeCounters(
     state.nextQueuedTelegramControlOrder =
       counters.nextQueuedTelegramControlOrder;
   }
-  if (counters.nextPriorityReactionOrder !== undefined) {
-    state.nextPriorityReactionOrder = counters.nextPriorityReactionOrder;
-  }
 }
 
 export function allocateTelegramQueueItemOrder(
@@ -174,18 +163,6 @@ export function allocateTelegramQueueControlOrder(
   state: TelegramBridgeRuntimeState,
 ): number {
   return state.nextQueuedTelegramControlOrder++;
-}
-
-export function getNextTelegramPriorityReactionOrder(
-  state: TelegramBridgeRuntimeState,
-): number {
-  return state.nextPriorityReactionOrder;
-}
-
-export function incrementNextTelegramPriorityReactionOrder(
-  state: TelegramBridgeRuntimeState,
-): void {
-  state.nextPriorityReactionOrder += 1;
 }
 
 export function syncTelegramLifecycleRuntimeFlags(

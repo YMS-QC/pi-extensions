@@ -188,7 +188,7 @@ test("shouldSuppressPreviewForVoice works correctly", () => {
 
 test("planTelegramVoiceReply extracts simple voice text", () => {
   const result = planTelegramVoiceReply(
-    'Hello\n\n<!-- telegram_voice: {"text":"World"} -->',
+    'Hello\n\n<!-- telegram_voice {"text":"World"} -->',
   );
   assert.equal(result.voiceText, "World");
   assert.ok(result.voiceReplies?.length === 1);
@@ -203,9 +203,9 @@ test("planTelegramVoiceReply extracts lang and rate attributes", () => {
   assert.equal(result.voiceText, "Hallo");
 });
 
-test("planTelegramVoiceReply handles colon-prefixed JSON", () => {
+test("planTelegramVoiceReply handles JSON payloads", () => {
   const result = planTelegramVoiceReply(
-    'Text\n\n<!-- telegram_voice: {"text":"This is the voice text"} -->',
+    'Text\n\n<!-- telegram_voice {"text":"This is the voice text"} -->',
   );
   assert.equal(result.voiceText, "This is the voice text");
   assert.ok(result.voiceReplies?.length === 1);
@@ -213,7 +213,7 @@ test("planTelegramVoiceReply handles colon-prefixed JSON", () => {
 
 test("planTelegramVoiceReply handles multiple voice blocks", () => {
   const result = planTelegramVoiceReply(
-    'First\n\n<!-- telegram_voice: {"text":"One"} -->\n\nand second\n\n<!-- telegram_voice {"text":"Two"} -->',
+    'First\n\n<!-- telegram_voice {"text":"One"} -->\n\nand second\n\n<!-- telegram_voice {"text":"Two"} -->',
   );
   assert.equal(result.voiceReplies?.length, 2);
   assert.equal(result.voiceText, "One\n\nTwo");
@@ -224,7 +224,7 @@ test("planTelegramVoiceReply handles multiple voice blocks", () => {
 
 test("planTelegramVoiceReply returns cleaned markdown", () => {
   const result = planTelegramVoiceReply(
-    'Normal\n\n<!-- telegram_voice: {"text":"Voice only"} -->\n\ntext',
+    'Normal\n\n<!-- telegram_voice {"text":"Voice only"} -->\n\ntext',
   );
   assert.ok(result.markdown.includes("Normal"));
   assert.ok(result.markdown.includes("text"));
@@ -365,14 +365,14 @@ test("Voice synthesis provider registry clear works reliably for tests", () => {
 // --- Stripping And Generic Parser Interaction ---
 
 test("stripTelegramCommentMarkupForPreview removes voice blocks and normalizes whitespace", () => {
-  const input = 'Hello\n\n<!-- telegram_voice: {"text":"World"} -->\n\nWorld';
+  const input = 'Hello\n\n<!-- telegram_voice {"text":"World"} -->\n\nWorld';
   const result = stripTelegramCommentMarkupForPreview(input);
   assert.ok(!result.includes("telegram_voice"));
   assert.ok(!result.includes("\n\n\n"));
 });
 
 test("planTelegramVoiceReply works with the original generic parsers (fence + comment)", () => {
-  const input = 'Text\n```\ncode\n```\n<!-- telegram_voice: {"text":"Spoken"} -->';
+  const input = 'Text\n```\ncode\n```\n<!-- telegram_voice {"text":"Spoken"} -->';
   const result = planTelegramVoiceReply(input);
   assert.equal(result.voiceText, "Spoken");
   assert.ok(result.markdown.includes("Text"));

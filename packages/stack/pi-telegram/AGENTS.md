@@ -43,7 +43,8 @@ Keep each fact in one authoritative layer:
 - `/lib/*.ts`: Flat, cohesive runtime domains; package-private unless re-exported through `/api`.
 - `/tests/*.test.ts`: Domain-mirrored suites; `tests/integration.test.ts` owns cross-domain runtime flows.
 - `/skills/telegram-bridge`: Stable agent operating protocol for Telegram turns, delivery, actions, Threaded Mode, and diagnosis.
-- `/skills/button-console`: Optional generated-button interface over truthful console evidence; it remains independent from the bridge skill.
+- `/skills/generated-control-surface`: Optional state-derived, late-bound interface over truthful domain evidence, capabilities, workflows, and choices; it remains renderer-neutral, independent from the bridge skill, and owns no parallel state.
+- `/skills/generative-apps`: Agent operating contract for compiling stable repeated Telegram interaction into deterministic standalone applications or bounded view/controller adapters whose buttons bypass model inference.
 - `/.agents/skills/telegram-bot`: Bot API lookup guidance and vendored `api.md`; keep the reference intact.
 - `/.agents/skills/domain-dag`: Repository architecture guidance and validator.
 
@@ -86,7 +87,7 @@ Use the relevant local skill before non-trivial work in its domain. Keep skill o
 
 ### 4.4 Queue, Delivery, And User Surfaces
 
-- Queue lane/kind admission is explicit. Dispatch waits for active-turn, pending-dispatch, control, compaction, `ctx.isIdle()`, and Pi pending-message guards; a dispatched prompt stays queued until `agent_start` consumes it. Waiting-turn reactions reconcile from the complete current set: removal suppresses without discard and outranks priority, priority promotes otherwise, and no recognized reaction restores default. Suppressed turns stay visible and cannot block unrelated dispatch.
+- Queue lane/kind admission is explicit. Dispatch waits for active-turn, pending-dispatch, control, compaction, `ctx.isIdle()`, and Pi pending-message guards; a dispatched prompt stays queued until `agent_start` consumes it. Each prompt is one object with one active lane and no reserved return slot. Normal and Priority are separate FIFO lanes: crossing lanes removes it from the source and appends it at the destination tail, while Keep/Skip and same-category emoji changes preserve lane position. Complete reaction sets independently derive Priority from recognized positive emoji and Skip from recognized negative emoji; both may coexist, Skip wins only at dispatch, and suppressed turns remain visible without blocking unrelated work.
 - `/stop`, `/abort`, `/next`, and `/continue` respectively reset+abort, abort while preserving queue, force the next turn, and enqueue a control-lane continuation. Abort-history folding applies only to Telegram-owned active turns.
 - Telegram extension side effects must not hold Pi's core lifecycle hostage after semantic completion. Preserve ordering in extension-owned background work, record failures, and fence target/profile/transport/session authority.
 - Complete assistant/guest model answers use Telegram-native Rich Markdown. Harness-owned menus, status, diagnostics, thinking, and tool evidence remain explicit HTML/plain or their documented native surface. Preserve literal code and structurally safe chunking; never split invalid markup.

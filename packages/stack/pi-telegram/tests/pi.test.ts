@@ -19,6 +19,7 @@ import {
   hasExtensionContextPendingMessages,
   isExtensionContextIdle,
   isExtensionContextPassiveRunMode,
+  normalizeSettingsManager,
 } from "../lib/pi.ts";
 
 type PiRuntimeApiHarness = Parameters<
@@ -116,10 +117,49 @@ test("Pi API runtime ports bind methods without losing receiver context", async 
   ]);
 });
 
+test("Pi settings adapter preserves legacy and generic host capabilities", async () => {
+  const legacyEvents: string[] = [];
+  const legacy = normalizeSettingsManager({
+    reload: async () => legacyEvents.push("reload"),
+    flush: async () => legacyEvents.push("flush"),
+    getEnabledModels: () => ["openai/gpt-5"],
+    setEnabledModels: (patterns: string[] | undefined) =>
+      legacyEvents.push(`set:${patterns?.join(",") ?? "all"}`),
+  });
+  await legacy.reload();
+  assert.deepEqual(legacy.getEnabledModels(), ["openai/gpt-5"]);
+  legacy.setEnabledModels(undefined);
+  await legacy.flush();
+  assert.deepEqual(legacyEvents, ["reload", "set:all", "flush"]);
+
+  const genericEvents: string[] = [];
+  let enabledModels = ["anthropic/claude-sonnet-4"];
+  const generic = normalizeSettingsManager({
+    get: (key: string) => {
+      genericEvents.push(`get:${key}`);
+      return enabledModels;
+    },
+    set: (key: string, value: unknown) => {
+      genericEvents.push(`set:${key}:${JSON.stringify(value)}`);
+      enabledModels = value as string[];
+    },
+    flush: async () => genericEvents.push("flush"),
+  });
+  await generic.reload();
+  assert.deepEqual(generic.getEnabledModels(), ["anthropic/claude-sonnet-4"]);
+  generic.setEnabledModels(undefined);
+  await generic.flush();
+  assert.deepEqual(genericEvents, [
+    "get:enabledModels",
+    "set:enabledModels:[]",
+    "flush",
+  ]);
+});
+
 test("Pi scoped model persister invalidates cached inputs without clearing live menus", async () => {
   const events: string[] = [];
   const persist = createScopedModelPatternPersister({
-    createSettingsManager: (cwd) => ({
+    createSettingsManager: async (cwd) => ({
       reload: async () => {},
       flush: async () => {
         events.push("flush");

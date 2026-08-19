@@ -46,16 +46,23 @@ Use `telegram_attach` outside Telegram turns only when the user explicitly reque
 
 ## Assistant-Authored Actions
 
+Before compiling assistant-authored controls, inspect already-loaded capability guidance for an advertised maintained Generative App or view/controller adapter. When that owner-provided view exists and the current intent concerns repeated interaction, load and follow the bundled `generative-apps` Skill and prefer binding or invoking the existing app over synthesizing one-shot prompt buttons. This is a routing breadcrumb, not permission for the bridge to discover capability-specific apps, own their state, or hard-code their identities.
+
+Otherwise, on Telegram turns, proactively load `generated-control-surface` when a likely next decision or action may benefit from prompt buttons; do not wait for an explicit button request, and accept zero controls when its admission rules reject decorative or low-value UI.
+
 `telegram_button` and `telegram_voice` are hidden top-level HTML comments, not tools. Emit them at column zero, outside lists, quotes, code blocks, and indentation.
 
 Button forms:
 
 ```html
-<!-- telegram_button: {"label":"Continue","prompt":"Continue with the current plan."} -->
+<!-- telegram_button {"label":"Continue","prompt":"Continue with the current plan."} -->
 <!-- telegram_button value="Continue" -->
+<!-- telegram_button [{"label":"⬆️ Up","prompt":"/"},[{"value":"⬅️ Previous"},{"value":"➡️ Next"}],{"label":"📁 etc","prompt":"/etc"}] -->
+<!-- telegram_buttons [[{"value":"Approve"},{"value":"Reject"}]] -->
+<!-- telegram_button [{⬆️ Up|/}[{⬅️|page-1}{➡️|page-3}]{📁 etc|/etc}] -->
 ```
 
-- Payloads accept JSON after an optional colon or double-quoted attributes; keep the complete action in one top-level comment and encode JSON line breaks as `\n`.
+- `telegram_button` accepts one JSON object, an adaptive JSON/CML matrix, positional Compact Matrix Literal (CML), or double-quoted attributes; `telegram_buttons` is an exact plural alias. One matrix or row may mix named JSON objects with positional cells, and commas are optional only between completed elements while JSON object internals remain strict. CML uses `{value}`, `{label|prompt}`, or `{label|prompt|selected_style}`; the optional third atom requires an explicit prompt and accepts only `primary`, `success`, or `danger`. It trims atom boundaries, preserves other printable text literally, and decodes only `\|`, `\}`, and `\\`. Prefer CML for model-authored controls whenever it can express the required surface; use expanded JSON only for multiline prompts, non-positional metadata, or a concrete parse/render failure fallback, never merely from implementation habit. Deterministic Generative App scripts may use ordinary JSON because their output does not spend model tokens. In a matrix, each top-level cell becomes a full-width row and each nested row groups one or more buttons horizontally without a parser-level width cap. Prefer one matrix comment for multiple buttons, normally keep generated rows at five columns or fewer, and use six through eight only for short position-bearing labels. Keep the complete action in one top-level comment and encode multiline content with JSON `\n`.
 - Use `label` plus a self-contained `prompt`, or non-empty `value` when both are identical.
 - Optional `selected_style` is `primary` (default), `success`, or `danger`; style never suppresses prompt admission.
 - If button comments form the whole reply, the bridge supplies the standard choice heading.
@@ -65,7 +72,7 @@ Button forms:
 Voice forms:
 
 ```html
-<!-- telegram_voice: {"text":"Short spoken message","lang":"en"} -->
+<!-- telegram_voice {"text":"Short spoken message","lang":"en"} -->
 <!-- telegram_voice text="Short spoken message" lang="en" -->
 ```
 
@@ -96,6 +103,10 @@ Threaded Mode operates in private chats when Telegram exposes thread support for
 - The `All` surface is routing/control, not process creation.
 
 Cross-Thread delivery must preserve the concrete target and current registration authority. Use ordinary reply delivery for the source turn and `telegram_message(thread=...)` only for an explicitly requested different live Thread.
+
+## Generative Apps
+
+Load and follow the bundled `generative-apps` Skill when work designs, authors, reviews, installs, replaces, invokes, or diagnoses a Generative App. Generative Apps compile stable repeated interaction into generated button views that may mix bound methods executed before Pi queue admission with ordinary model prompts; this bridge Skill continues to own Telegram transport, target authority, delivery, general button syntax, and turn behavior rather than duplicating the application workflow.
 
 ## Configurable Handlers And Extensions
 

@@ -31,8 +31,18 @@ export const TELEGRAM_MESSAGE_PROMPT_GUIDELINES = [
   "During an active Telegram turn, omit telegram_message for the current target and answer normally; use thread only when the user requests delivery to a different live Pi thread.",
 ] as const;
 
+const TELEGRAM_TOOL_METADATA_LINES = Object.fromEntries(
+  [
+    `- telegram_attach: ${TELEGRAM_ATTACH_PROMPT_SNIPPET}`,
+    `- telegram_message: ${TELEGRAM_MESSAGE_PROMPT_SNIPPET}`,
+    ...TELEGRAM_ATTACH_PROMPT_GUIDELINES.map((line) => `- ${line}`),
+    ...TELEGRAM_MESSAGE_PROMPT_GUIDELINES.map((line) => `- ${line}`),
+  ].map((line) => [line, true]),
+) as Record<string, true>;
+
 const TELEGRAM_MODEL_CONTEXT_TOOL_NAMES = new Set([
   "telegram_attach",
+  "telegram_bind",
   "telegram_message",
 ]);
 const TELEGRAM_MODEL_CONTEXT_MEMORY_KEY = Symbol.for(
@@ -131,13 +141,30 @@ export function createTelegramModelContextAvailabilityRuntime(deps: {
   };
 }
 
+export type TelegramSystemPrompt = string | string[];
+
+type TelegramBeforeAgentStartEvent = Omit<
+  BeforeAgentStartEvent,
+  "systemPrompt"
+> & {
+  systemPrompt: TelegramSystemPrompt;
+};
+
+type TelegramBeforeAgentStartResult = {
+  systemPrompt: TelegramSystemPrompt;
+};
+
+type TelegramBeforeAgentStartHook = (
+  event: TelegramBeforeAgentStartEvent,
+) => TelegramBeforeAgentStartResult;
+
 export function buildTelegramBridgeSystemPrompt(options: {
   prompt: string;
-  systemPrompt: string;
+  systemPrompt: TelegramSystemPrompt;
   telegramPrefix?: string;
   localSystemPromptSuffix: string;
   telegramTurnSystemPromptSuffix: string;
-}): { systemPrompt: string } {
+}): TelegramBeforeAgentStartResult {
   const telegramPrefix = options.telegramPrefix ?? TELEGRAM_PREFIX;
   const telegramHead = telegramPrefix.endsWith("]")
     ? telegramPrefix.slice(0, -1)
@@ -150,8 +177,14 @@ export function buildTelegramBridgeSystemPrompt(options: {
     ? `${options.telegramTurnSystemPromptSuffix}\n- The current user message came from Telegram.`
     : "";
   return {
-    systemPrompt:
-      options.systemPrompt + options.localSystemPromptSuffix + telegramSuffix,
+    systemPrompt: Array.isArray(options.systemPrompt)
+      ? [
+          ...options.systemPrompt,
+          options.localSystemPromptSuffix + telegramSuffix,
+        ]
+      : options.systemPrompt +
+        options.localSystemPromptSuffix +
+        telegramSuffix,
   };
 }
 
@@ -161,7 +194,7 @@ export function createTelegramBeforeAgentStartHook(
     localSystemPromptSuffix?: string;
     telegramTurnSystemPromptSuffix?: string;
   } = {},
-): (event: BeforeAgentStartEvent) => { systemPrompt: string } {
+): TelegramBeforeAgentStartHook {
   return (event) =>
     buildTelegramBridgeSystemPrompt({
       prompt: event.prompt,
@@ -175,23 +208,23 @@ export function createTelegramBeforeAgentStartHook(
     });
 }
 
-function stripTelegramToolMetadataFromSystemPrompt(
-  systemPrompt: string,
-): string {
-  const telegramLines = new Set([
-    `- telegram_attach: ${TELEGRAM_ATTACH_PROMPT_SNIPPET}`,
-    `- telegram_message: ${TELEGRAM_MESSAGE_PROMPT_SNIPPET}`,
-    ...TELEGRAM_ATTACH_PROMPT_GUIDELINES.map((line) => `- ${line}`),
-    ...TELEGRAM_MESSAGE_PROMPT_GUIDELINES.map((line) => `- ${line}`),
-  ]);
+function stripTelegramToolMetadataFromString(systemPrompt: string): string {
   return systemPrompt
     .split("\n")
-    .filter((line) => !telegramLines.has(line))
+    .filter((line) => TELEGRAM_TOOL_METADATA_LINES[line] !== true)
     .join("\n");
 }
 
+function stripTelegramToolMetadataFromSystemPrompt(
+  systemPrompt: TelegramSystemPrompt,
+): TelegramSystemPrompt {
+  return Array.isArray(systemPrompt)
+    ? systemPrompt.map(stripTelegramToolMetadataFromString)
+    : stripTelegramToolMetadataFromString(systemPrompt);
+}
+
 export interface TelegramProactivePromptHookDeps<TContext> {
-  baseHook?: (event: BeforeAgentStartEvent) => { systemPrompt: string };
+  baseHook?: TelegramBeforeAgentStartHook;
   reconcileAvailability?: () => void;
   isAvailable: (ctx: TContext) => boolean;
 }
@@ -199,9 +232,9 @@ export interface TelegramProactivePromptHookDeps<TContext> {
 export function createTelegramProactiveBeforeAgentStartHook<TContext>(
   deps: TelegramProactivePromptHookDeps<TContext>,
 ): (
-  event: BeforeAgentStartEvent,
+  event: TelegramBeforeAgentStartEvent,
   ctx: TContext,
-) => Promise<{ systemPrompt: string }> {
+) => Promise<TelegramBeforeAgentStartResult> {
   const baseHook = deps.baseHook ?? createTelegramBeforeAgentStartHook();
   return async (event, ctx) => {
     deps.reconcileAvailability?.();

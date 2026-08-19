@@ -228,6 +228,8 @@ export default function (pi: Pi.ExtensionAPI) {
   const proactivePushChatIdGetter =
     Config.createTelegramProactivePushChatIdGetter(proactivePushTargetGetter);
   const buttonActionStore = Outbound.createTelegramButtonActionStore();
+  const planGenerativeAppOutput =
+    Outbound.createTelegramOutboundReplyPlanner(buttonActionStore);
   const pendingModelSwitchStore =
     Model.createPendingModelSwitchStore<
       Model.ScopedTelegramModel<ActivePiModel>
@@ -502,6 +504,16 @@ export default function (pi: Pi.ExtensionAPI) {
       getHandlers: configStore.getOutboundHandlers,
       recordRuntimeEvent,
     });
+  const invokeGenerativeAppBoundButtonAction =
+    Bindings.createTelegramGenerativeAppBoundButtonActionInvoker({
+      agentDir: Paths.resolveAgentDir(),
+      assertExecutionCurrent: Updates.assertTelegramUpdateExecutionCurrent,
+      getExecutionFence: Updates.getTelegramUpdateExecutionFence,
+      planOutput: planGenerativeAppOutput,
+      sendMarkdownReply,
+      editInteractiveMessage,
+      recordRuntimeEvent,
+    });
   const {
     activityRuntime,
     activityVerbosityRuntime,
@@ -760,6 +772,7 @@ export default function (pi: Pi.ExtensionAPI) {
     settingsMenuCallbackHandler: settingsMenuRuntime.handleCallbackQuery,
     sectionRegistry,
     buttonActionStore,
+    invokeBoundButtonAction: invokeGenerativeAppBoundButtonAction,
     inboundHandlerRuntime,
     threadStore,
     updateStatus,
@@ -1219,6 +1232,7 @@ export default function (pi: Pi.ExtensionAPI) {
 
   Bindings.registerTelegramCommandsAndTools({
     pi,
+    agentDir: Paths.resolveAgentDir(),
     configStore,
     persistConfig: persistTelegramConfigWithSync,
     setup,

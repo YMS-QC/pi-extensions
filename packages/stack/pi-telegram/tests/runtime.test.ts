@@ -26,10 +26,6 @@ test("Runtime facade binds grouped operations to one bridge state", () => {
   assert.equal(runtime.state, state);
   assert.equal(runtime.queue.allocateItemOrder(), 0);
   assert.equal(runtime.queue.allocateControlOrder(), 0);
-  runtime.queue.syncCounters({ nextPriorityReactionOrder: 5 });
-  assert.equal(runtime.queue.getNextPriorityReactionOrder(), 5);
-  runtime.queue.incrementNextPriorityReactionOrder();
-  assert.equal(runtime.queue.getNextPriorityReactionOrder(), 6);
   runtime.lifecycle.setDispatchPending(true);
   runtime.lifecycle.setCompactionInProgress(true);
   runtime.lifecycle.setActiveToolExecutions(3);
@@ -62,17 +58,12 @@ test("Runtime state helpers allocate queue order and manage typing loops", async
   assert.equal(Runtime.allocateTelegramQueueItemOrder(state), 0);
   assert.equal(Runtime.allocateTelegramQueueItemOrder(state), 1);
   assert.equal(Runtime.allocateTelegramQueueControlOrder(state), 0);
-  assert.equal(Runtime.getNextTelegramPriorityReactionOrder(state), 0);
-  Runtime.incrementNextTelegramPriorityReactionOrder(state);
-  assert.equal(Runtime.getNextTelegramPriorityReactionOrder(state), 1);
   Runtime.syncTelegramQueueRuntimeCounters(state, {
     nextQueuedTelegramItemOrder: 10,
     nextQueuedTelegramControlOrder: 20,
-    nextPriorityReactionOrder: 30,
   });
   assert.equal(Runtime.allocateTelegramQueueItemOrder(state), 10);
   assert.equal(Runtime.allocateTelegramQueueControlOrder(state), 20);
-  assert.equal(Runtime.getNextTelegramPriorityReactionOrder(state), 30);
   assert.equal(Runtime.hasTelegramDispatchPending(state), false);
   assert.equal(Runtime.isTelegramCompactionInProgress(state), false);
   assert.equal(Runtime.getActiveTelegramToolExecutions(state), 0);

@@ -4,6 +4,9 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -11,11 +14,14 @@ import {
   createTelegramAgentMessageToolRoutingRuntime,
   createTelegramAssistantOutputBindingRuntime,
   createTelegramQueueBindingRuntime,
+  createTelegramGenerativeAppBoundButtonActionInvoker,
   registerTelegramCommandsAndTools,
   registerTelegramLifecycleRuntimeHooks,
 } from "../lib/bindings.ts";
+import * as Outbound from "../lib/outbound.ts";
 import * as Queue from "../lib/queue.ts";
 import * as Runtime from "../lib/runtime.ts";
+import * as GenerativeApps from "../lib/generative-apps.ts";
 import type { ExtensionAPI, ExtensionContext } from "../lib/pi.ts";
 
 type RegisteredBindingHandler = (
@@ -48,6 +54,100 @@ function createBindingApiHarness() {
   } as unknown as ExtensionAPI;
   return { api, handlers, tools, commands };
 }
+
+test("Generative App bound-button composition rejects a retained stale revision before delivery", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-telegram-binding-app-"));
+  const agentDir = join(root, "agent");
+  const script = join(root, "counter.mjs");
+  const store = Outbound.createTelegramButtonActionStore();
+  const edited: string[] = [];
+  const sent: string[] = [];
+  try {
+    await writeFile(
+      script,
+      `
+export function init() { return { state: { count: 0 }, output: "ready" }; }
+export function increment({ state }) {
+  return { state: { count: state.count + 1 }, output: "next", viewMode: "edit" };
+}
+`,
+      "utf8",
+    );
+    const installed = await GenerativeApps.installGenerativeApp({ agentDir, app: "counter", script });
+    const execution = new AbortController();
+    const invoke = createTelegramGenerativeAppBoundButtonActionInvoker({
+      agentDir,
+      assertExecutionCurrent: () => undefined,
+      getExecutionFence: () => ({
+        assertCurrent: () => undefined,
+        signal: execution.signal,
+      }),
+      planOutput: Outbound.createTelegramOutboundReplyPlanner(store),
+      sendMarkdownReply: async (_chatId, _messageId, markdown) => {
+        sent.push(markdown);
+      },
+      editInteractiveMessage: async (_chatId, _messageId, markdown) => {
+        edited.push(markdown);
+      },
+      recordRuntimeEvent: () => undefined,
+    });
+    const action = {
+      binding: { generation: installed.generation, app: "counter", revision: 0 },
+      prompt: "counter::increment",
+      text: "Next",
+    };
+    assert.equal(
+      await invoke(
+        action,
+        { message: { chat: { id: 1 }, message_id: 2 } },
+      ),
+      "edit",
+    );
+    assert.deepEqual(edited, ["next"]);
+    const invokeWithFallback = createTelegramGenerativeAppBoundButtonActionInvoker({
+      agentDir,
+      assertExecutionCurrent: () => undefined,
+      getExecutionFence: () => ({
+        assertCurrent: () => undefined,
+        signal: execution.signal,
+      }),
+      planOutput: Outbound.createTelegramOutboundReplyPlanner(store),
+      sendMarkdownReply: async (_chatId, _messageId, markdown) => {
+        sent.push(markdown);
+      },
+      editInteractiveMessage: async () => {
+        throw new Error("message not found");
+      },
+      recordRuntimeEvent: () => undefined,
+    });
+    assert.equal(
+      await invokeWithFallback(
+        {
+          ...action,
+          binding: {
+            generation: installed.generation,
+            app: "counter",
+            revision: 1,
+          },
+        },
+        { message: { chat: { id: 1 }, message_id: 2 } },
+      ),
+      "new",
+    );
+    assert.deepEqual(sent, ["next"]);
+    await assert.rejects(
+      invoke(
+        action,
+        { message: { chat: { id: 1 }, message_id: 2 } },
+      ),
+      /action is stale/,
+    );
+    assert.deepEqual(edited, ["next"]);
+    assert.deepEqual(sent, ["next"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("Agent message tool routing selects leader or follower composition", async () => {
   let leader = true;
@@ -114,14 +214,11 @@ test("Queue binding composes mutation, admission, dispatch, and watchdog ports",
   const deferredDispatch =
     Queue.createTelegramDeferredQueueDispatchRuntime<string>();
   deferredDispatch.bind("ctx");
-  let nextPriorityOrder = 0;
+  let nextLaneOrder = 0;
   const runtime = createTelegramQueueBindingRuntime({
     store,
     queue: {
-      getNextPriorityReactionOrder: () => nextPriorityOrder,
-      incrementNextPriorityReactionOrder: () => {
-        nextPriorityOrder += 1;
-      },
+      allocateItemOrder: () => nextLaneOrder++,
     },
     lifecycle: {
       isCompactionInProgress: () => false,
@@ -187,7 +284,7 @@ test("Queue binding composes mutation, admission, dispatch, and watchdog ports",
   );
   runtime.dispatchNext("ctx");
   assert.equal(runtime.mutation.removeByMessageIds([10], "ctx"), 1);
-  assert.equal(nextPriorityOrder, 1);
+  assert.equal(nextLaneOrder, 1);
   assert.deepEqual(events, [
     "status",
     "status",
@@ -875,8 +972,11 @@ test("Lifecycle binding routes native typing, previews, and normalized activity"
     "activity:tool-start:read",
     "activity:compact-start:unknown",
     "typing:42:9",
+    "send:🗜 Compaction started.",
     "activity:compact-end:unknown",
+    "send:✅ Compaction completed.",
     "activity:compact-start:unknown",
     "typing:42:8",
+    "send:🗜 Compaction started.",
   ]);
 });
