@@ -7,6 +7,12 @@ description: Operates pi-telegram turns, replies, attachments, direct delivery, 
 
 Use pi-telegram as a mobile companion surface for the current Pi session. Preserve the current Telegram target, ordinary reply ownership, durable queue semantics, and the boundary between agent intent and bridge transport.
 
+## Connection Awareness
+
+`Telegram session connected.` means this Pi instance currently has authorized Telegram transport, so Telegram tools and proactive projection may be available. It does not mean the current prompt came from Telegram and does not grant intent to add Telegram actions to unrelated local/TUI work. Use Telegram-specific reply features proactively only on a turn carrying structured Telegram origin; from local/TUI prompts, use them only when the user explicitly requests Telegram delivery or the established workflow is explicitly Telegram-mediated.
+
+`Telegram session disconnected.` revokes that availability. Do not attempt Telegram delivery, actions, buttons, or voice until a later connected context is present. Treat the newest connection-state context as authoritative.
+
 ## Turn Recognition
 
 Telegram-originated prompts carry structured context:
@@ -46,9 +52,9 @@ Use `telegram_attach` outside Telegram turns only when the user explicitly reque
 
 ## Assistant-Authored Actions
 
-Before compiling assistant-authored controls, inspect already-loaded capability guidance for an advertised maintained Generative App or view/controller adapter. When that owner-provided view exists and the current intent concerns repeated interaction, load and follow the bundled `generative-apps` Skill and prefer binding or invoking the existing app over synthesizing one-shot prompt buttons. This is a routing breadcrumb, not permission for the bridge to discover capability-specific apps, own their state, or hard-code their identities.
+Before compiling assistant-authored controls, inspect already-loaded capability guidance for an advertised maintained Generative App or view/controller adapter. When that owner-provided view exists and the current intent concerns repeated interaction, load and follow the bundled `generative-apps` Skill and prefer binding or invoking the existing app over synthesizing one-shot prompt buttons. This routing guidance is not permission for the bridge to discover capability-specific apps, own their state, or hard-code their identities.
 
-Otherwise, on Telegram turns, proactively load `generated-control-surface` when a likely next decision or action may benefit from prompt buttons; do not wait for an explicit button request, and accept zero controls when its admission rules reject decorative or low-value UI.
+Otherwise, only on Telegram-originated turns, proactively load `generated-control-surface` when a likely next decision or action may benefit from prompt buttons; do not activate it merely because Telegram is connected or local output may be projected by proactive push. Do not wait for an explicit button request on a Telegram-originated turn, and accept zero controls when its admission rules reject decorative or low-value UI.
 
 `telegram_button` and `telegram_voice` are hidden top-level HTML comments, not tools. Emit them at column zero, outside lists, quotes, code blocks, and indentation.
 
@@ -115,6 +121,8 @@ Prefer no-code command-template configuration in `telegram.json` before adding a
 - `inboundHandlers` transforms text/media before queueing.
 - `outboundHandlers` transforms final replies.
 - Voice transcription handlers can match `type: "voice"` or `mime: "audio/*"`; stdout becomes `[outputs]`.
+
+When asked to configure voice rather than merely operate it, follow the provider-neutral contracts in `docs/voice.md`, `docs/inbound.md`, `docs/outbound.md`, and `docs/command-templates.md` from the pi-telegram package or repository. Inspect the available Skill catalog and trusted local executables for STT, TTS, and media conversion capabilities; check only whether required environment variables exist, never reveal their values. Preserve unrelated `telegram.json` fields, order multiple matching inbound handlers as fallbacks, require OGG/Opus output for native voice delivery, and validate each stage before a live Telegram smoke test. Keep `voice.replyMode` at its existing value unless the user requests a policy change: the default `hidden` mode is fully functional because explicit top-level `telegram_voice` actions still use the configured synthesis pipeline.
 
 When configuration is insufficient, use documented `@llblab/pi-telegram/*` public API subpaths. Never import package-private `lib/*`, start another polling loop, or bypass bridge ownership with raw Bot API access.
 

@@ -15,6 +15,8 @@ import {
   TELEGRAM_ATTACH_PROMPT_GUIDELINES,
   type TelegramSystemPrompt,
   TELEGRAM_ATTACH_PROMPT_SNIPPET,
+  TELEGRAM_CONNECTED_CONTEXT_MESSAGE,
+  TELEGRAM_DISCONNECTED_CONTEXT_MESSAGE,
 } from "../lib/prompts.ts";
 
 type BeforeAgentStartHookEvent = Parameters<
@@ -78,7 +80,8 @@ test("Prompt helpers keep local prompts on compact safety guidance only", () => 
     createBeforeAgentStartEvent("local hello", "base"),
   ).systemPrompt;
   assert.ok(typeof result === "string");
-  assert.match(result, /Telegram bridge available/);
+  assert.match(result, /Telegram session connected/);
+  assert.match(result, /connectivity alone is not user intent/);
   assert.match(result, /`telegram-bridge` Skill/);
   assert.doesNotMatch(result, /telegram_help/);
   assert.doesNotMatch(result, /telegram_attach/);
@@ -86,6 +89,17 @@ test("Prompt helpers keep local prompts on compact safety guidance only", () => 
   assert.doesNotMatch(result, /37 visible cells/);
   assert.doesNotMatch(result, /telegram_voice text="Short summary"/);
   assert.doesNotMatch(result, /The current user message came from Telegram/);
+});
+
+test("Connection context messages are concise and explicit", () => {
+  assert.equal(
+    TELEGRAM_CONNECTED_CONTEXT_MESSAGE,
+    "Telegram session connected. Use Telegram features for Telegram-originated turns or explicit Telegram requests; connectivity alone is not user intent.",
+  );
+  assert.equal(
+    TELEGRAM_DISCONNECTED_CONTEXT_MESSAGE,
+    "Telegram session disconnected. Do not use Telegram delivery, actions, or Telegram-specific reply features unless the user reconnects it.",
+  );
 });
 
 test("Prompt helpers add full Telegram-turn guidance for Telegram prompts", () => {

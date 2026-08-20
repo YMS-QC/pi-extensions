@@ -47,11 +47,23 @@ test("Telegram extension contributes all bundled skills", async () => {
   );
   assert.match(
     bridge,
-    /routing breadcrumb.*not permission.*discover capability-specific apps.*hard-code their identities/su,
+    /routing guidance.*not permission.*discover capability-specific apps.*hard-code their identities/su,
   );
   assert.match(bridge, /before Pi queue admission/u);
+  assert.match(
+    bridge,
+    /does not mean the current prompt came from Telegram.*does not grant intent.*only on a turn carrying structured Telegram origin/su,
+  );
+  assert.match(
+    bridge,
+    /do not activate it merely because Telegram is connected.*proactive push/su,
+  );
   const generatedSurface = sources.get("generated-control-surface") ?? "";
-  assert.match(generatedSurface, /without requiring an explicit user request/u);
+  assert.match(generatedSurface, /without an explicit button request/u);
+  assert.match(
+    generatedSurface,
+    /connected Telegram session.*proactive projection.*not activation intent/su,
+  );
   assert.match(
     generatedSurface,
     /no semantic column headings.*first data row as the syntactic header.*Do not insert blank, dash-only, duplicate, or invented placeholder headings/su,

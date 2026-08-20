@@ -743,6 +743,7 @@ type RuntimeHarnessCommand = {
   handler: (args: string, ctx: unknown) => Promise<void>;
 };
 type RuntimePiHarnessOptions = {
+  sendMessage?: (message: unknown, options?: unknown) => void;
   sendUserMessage?: (content: RuntimeHarnessMessage) => void;
   activeTools?: string[];
   getThinkingLevel?: () => string;
@@ -769,6 +770,7 @@ function createRuntimePiHarness(options: RuntimePiHarnessOptions = {}) {
     setActiveTools: (names: string[]) => {
       activeTools = [...names];
     },
+    sendMessage: options.sendMessage ?? (() => {}),
     sendUserMessage: options.sendUserMessage ?? (() => {}),
     getCommands: options.getCommands ?? (() => []),
     getThinkingLevel: options.getThinkingLevel ?? (() => "medium"),

@@ -6,9 +6,19 @@ Voice messages flow through an **inbound transcription → outbound voice reply*
 
 1. **Inbound:** A voice message arrives via Telegram. Inbound handlers transcribe it to text.
 2. **Processing:** The transcription becomes the agent prompt. The bridge tags the turn if it originated from voice.
-3. **Outbound:** If voice replies are enabled, the agent's text response is converted to voice and sent back. No text draft appears in Telegram during generation.
+3. **Outbound:** When automatic voice delivery is selected or the agent emits an explicit `telegram_voice` action, the agent's text is converted to voice and sent back.
 
 The bridge owns Telegram transport, queue integration, reply-mode policy, preview suppression, fallback text delivery, and Settings UI. Provider extensions own STT/TTS calls, speech rewriting, provider-specific menus, transcript preference, and OGG/Opus conversion.
+
+### Choose an integration path
+
+Use the smallest path that fits the operator's available capabilities:
+
+1. **`telegram.json` command templates:** Compose trusted local executables through `inboundHandlers` and `outboundHandlers`. This works equally well for local models and API-backed scripts, supports ordered STT fallbacks, and requires no companion extension.
+2. **Companion extension:** Register programmatic STT/TTS providers when installation, provider-owned settings, lifecycle integration, or zero-config reuse justifies code.
+3. **Hybrid:** Keep explicit operator command templates first and let installed providers supply progressive fallbacks.
+
+pi-telegram does not catalog speech providers. Configuration agents should discover applicable Skills or trusted local executables, verify required environment variables by presence without exposing values, preserve unrelated `telegram.json` state, ensure TTS ends as OGG/Opus, and test each stage before the live Telegram path. `hidden` remains the safe and useful default: it disables only automatic voice replies, while explicit `telegram_voice` actions continue to use the configured synthesis pipeline.
 
 ## Voice Detection
 

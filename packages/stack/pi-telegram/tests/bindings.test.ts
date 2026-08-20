@@ -41,6 +41,7 @@ function createBindingApiHarness() {
   const handlers = new Map<string, RegisteredBindingHandler>();
   const tools = new Map<string, RegisteredBindingTool>();
   const commands = new Map<string, unknown>();
+  const messages: Array<{ message: unknown; options?: unknown }> = [];
   const api = {
     on: (event: string, handler: RegisteredBindingHandler) => {
       handlers.set(event, handler);
@@ -51,8 +52,11 @@ function createBindingApiHarness() {
     registerCommand: (name: string, definition: unknown) => {
       commands.set(name, definition);
     },
+    sendMessage: (message: unknown, options?: unknown) => {
+      messages.push({ message, options });
+    },
   } as unknown as ExtensionAPI;
-  return { api, handlers, tools, commands };
+  return { api, handlers, tools, commands, messages };
 }
 
 test("Generative App bound-button composition rejects a retained stale revision before delivery", async () => {
@@ -579,6 +583,17 @@ test("Named profile connect completes old teardown before activating new identit
     "activate:work",
     "start:work",
     "status",
+  ]);
+  assert.deepEqual(harness.messages, [
+    {
+      message: {
+        customType: "telegram-connection-state",
+        content:
+          "Telegram session connected. Use Telegram features for Telegram-originated turns or explicit Telegram requests; connectivity alone is not user intent.",
+        display: false,
+      },
+      options: { deliverAs: "nextTurn" },
+    },
   ]);
 });
 

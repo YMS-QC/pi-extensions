@@ -539,6 +539,8 @@ export default function (pi: Pi.ExtensionAPI) {
         sendRichMessage,
         editMessage: editTelegramMessageText,
         getAssistantRenderingMode: configControls.getAssistantRenderingMode,
+        planButtonReply:
+          Outbound.createTelegramButtonReplyPlanner(buttonActionStore),
         execCommand: CommandTemplates.execCommandTemplate,
         getHandlers: configStore.getOutboundHandlers,
         recordRuntimeEvent,

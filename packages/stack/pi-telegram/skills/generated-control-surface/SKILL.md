@@ -1,6 +1,6 @@
 ---
 name: generated-control-surface
-description: Proactively compiles current state, available capabilities, and user intent into contextual, evidence-backed, ephemeral prompt-button interfaces. Use on Telegram turns and other prompt-button transports whenever controls materially shorten likely feedback, without requiring an explicit user request; route reusable deterministic loops toward Generative Apps, omit decorative UI, and preserve domain ownership while fixed transport menus and callbacks remain with their runtime owners.
+description: Proactively compiles current state, available capabilities, and user intent into contextual, evidence-backed, ephemeral prompt-button interfaces. Use without an explicit button request on Telegram-originated turns when controls materially shorten likely feedback, or when a user explicitly requests controls on another prompt-button transport; connection or proactive projection alone is not activation intent. Route reusable deterministic loops toward Generative Apps, omit decorative UI, and preserve domain ownership while fixed transport menus and callbacks remain with their runtime owners.
 ---
 
 # Generated Control Surface
@@ -29,7 +29,7 @@ This Skill and `generative-apps` share one logical button-matrix and `label + pr
 
 When a generated surface reveals repeated stable interaction with bounded state and deterministic transitions, load the complementary `generative-apps` Skill and consider compiling that loop. A Generative App may retain ordinary model-mediated prompt buttons beside deterministic bound methods, so only the stable actions need bypass inference. Conversely, keep one-off, interpretive, changing, and context-heavy interaction here when a reusable script would add no concrete latency, token, cost, reliability, or UX value.
 
-On Telegram turns, evaluate this Skill proactively rather than waiting for the user to ask for buttons. Load and apply it when a likely next decision, approval, navigation step, inspection, or bounded action can be made materially easier through controls; its correct output may still contain zero buttons when the admission test fails.
+On Telegram-originated turns, evaluate this Skill proactively rather than waiting for the user to ask for buttons. A connected Telegram session, available button syntax, or proactive projection of local output is capability evidence, not activation intent: do not load this Skill for an unrelated local/TUI prompt merely because its answer may also appear in Telegram. Load and apply it when the current turn is Telegram-originated or the user explicitly requests a prompt-button surface and a likely next decision, approval, navigation step, inspection, or bounded action can be made materially easier through controls; its correct output may still contain zero buttons when the admission test fails.
 
 A control surface may expose:
 

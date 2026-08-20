@@ -958,6 +958,10 @@ export function createTelegramAssistantOutputSender<
   ) => Promise<TelegramSentMessage>;
   editMessage: (body: TelegramEditMessageTextBody) => Promise<unknown>;
   getAssistantRenderingMode: () => "rich" | "html";
+  planButtonReply?: (markdown: string) => {
+    markdown: string;
+    replyMarkup?: TReplyMarkup;
+  };
   execCommand: TelegramOutboundTextReplyRuntimeDeps<TReplyMarkup>["execCommand"];
   getHandlers?: TelegramOutboundTextReplyRuntimeDeps<TReplyMarkup>["getHandlers"];
   recordRuntimeEvent?: TelegramOutboundTextReplyRuntimeDeps<TReplyMarkup>["recordRuntimeEvent"];
@@ -997,11 +1001,19 @@ export function createTelegramAssistantOutputSender<
       getHandlers: deps.getHandlers,
       recordRuntimeEvent: deps.recordRuntimeEvent,
     });
+    const buttonReply = deps.planButtonReply?.(event.text) ?? {
+      markdown: event.text,
+    };
     await outboundRuntime.sendMarkdownReply(
       target.chatId,
       undefined,
-      event.text,
-      { target },
+      buttonReply.markdown,
+      {
+        target,
+        ...(buttonReply.replyMarkup
+          ? { replyMarkup: buttonReply.replyMarkup }
+          : {}),
+      },
     );
   };
 }

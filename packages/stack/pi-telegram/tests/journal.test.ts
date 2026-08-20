@@ -534,6 +534,39 @@ test("Update journal reconstructs ordered segments and rejects gaps and identity
   });
 });
 
+test("Update journal rejects orphaned segments before recreating a missing snapshot", async () => {
+  await withJournalTempDir(async ({ path }) => {
+    const store = createStore(path);
+    store.appendBatch([{ update_id: 1 }]);
+    publishTelegramUpdateJournalSegment(path, {
+      version: 1,
+      revision: 1,
+      previousRevision: 0,
+      profile: "work",
+      botIdentity: identity,
+      upsertedEntries: [],
+      removedUpdateIds: [],
+    });
+    await rm(path);
+
+    assert.throws(
+      () => store.read(),
+      (error: unknown) =>
+        error instanceof TelegramUpdateJournalError &&
+        error.code === "invalid" &&
+        /missing while .* retains revision segments/u.test(error.message),
+    );
+    assert.throws(
+      () => store.appendBatch([{ update_id: 2 }]),
+      (error: unknown) => isJournalError(error, "invalid"),
+    );
+    await assert.rejects(() => stat(path), /ENOENT/u);
+    assert.deepEqual(await readdir(`${path}.segments`), [
+      "0000000000000001.json",
+    ]);
+  });
+});
+
 test("Update journal compacts at the segment-count threshold without losing authority", async () => {
   await withJournalTempDir(async ({ path }) => {
     const store = createStore(path);

@@ -351,6 +351,9 @@ test("Command helpers register pi connect and disconnect commands", async () => 
     stopPolling: async () => {
       events.push("stop");
     },
+    queueAgentConnectionContext: (connected) => {
+      events.push(`context:${connected ? "connected" : "disconnected"}`);
+    },
     updateStatus: () => {
       events.push("update-status");
     },
@@ -374,8 +377,10 @@ test("Command helpers register pi connect and disconnect commands", async () => 
     "setup",
     "reload",
     "start",
+    "context:connected",
     "update-status",
     "stop",
+    "context:disconnected",
     "update-status",
   ]);
 });

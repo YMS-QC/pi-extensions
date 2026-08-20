@@ -334,6 +334,7 @@ export interface TelegramBridgeCommandRegistrationDeps {
     error: unknown,
   ) => Promise<TelegramPollingStartRecoveryResult>;
   getDisconnectThreadName?: () => string | undefined;
+  queueAgentConnectionContext?: (connected: boolean) => void;
   updateStatus: (ctx: ExtensionCommandContext) => void;
   getProfileNames?: () => string[];
   activateDefaultProfileConfig?: (ctx: ExtensionCommandContext) => Promise<void>;
@@ -468,6 +469,9 @@ export function registerTelegramBridgeCommands(
       if (result?.message) {
         ctx.ui.notify(result.message, result.ok ? "info" : "warning");
       }
+      if (!result || result.ok) {
+        deps.queueAgentConnectionContext?.(true);
+      }
       deps.updateStatus(ctx);
     },
   });
@@ -490,6 +494,7 @@ export function registerTelegramBridgeCommands(
       try {
         const message = await deps.stopPolling();
         if (message) ctx.ui.notify(message, "info");
+        deps.queueAgentConnectionContext?.(false);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         ctx.ui.notify(

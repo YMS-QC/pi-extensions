@@ -1757,6 +1757,30 @@ export function createTelegramUpdateJournalStore(
     } catch (error) {
       if (error instanceof TelegramUpdateJournalError) throw error;
       if ((error as { code?: unknown })?.code === "ENOENT") {
+        const segmentDirectory = getTelegramUpdateJournalSegmentDirectory(path);
+        let orphanedSegmentNames: string[];
+        try {
+          orphanedSegmentNames = readdirSync(segmentDirectory).filter((name) =>
+            /^\d{16}\.json$/u.test(name),
+          );
+        } catch (segmentError) {
+          if ((segmentError as { code?: unknown })?.code === "ENOENT") {
+            return { file: emptyFile(), exists: false, serializedBytes: 0 };
+          }
+          throw createJournalError(
+            "io",
+            segmentDirectory,
+            "could not be read while the journal snapshot is missing",
+            segmentError,
+          );
+        }
+        if (orphanedSegmentNames.length > 0) {
+          throw createJournalError(
+            "invalid",
+            path,
+            `is missing while ${segmentDirectory} retains revision segments`,
+          );
+        }
         return { file: emptyFile(), exists: false, serializedBytes: 0 };
       }
       throw createJournalError("io", path, "could not be read", error);

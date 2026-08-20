@@ -7,9 +7,14 @@
 import type { BeforeAgentStartEvent } from "./pi.ts";
 import { TELEGRAM_PREFIX } from "./turns.ts";
 
+export const TELEGRAM_CONNECTED_CONTEXT_MESSAGE =
+  "Telegram session connected. Use Telegram features for Telegram-originated turns or explicit Telegram requests; connectivity alone is not user intent.";
+export const TELEGRAM_DISCONNECTED_CONTEXT_MESSAGE =
+  "Telegram session disconnected. Do not use Telegram delivery, actions, or Telegram-specific reply features unless the user reconnects it.";
+
 const LOCAL_SYSTEM_PROMPT_SUFFIX = `
 
-Telegram bridge available. Load the \`telegram-bridge\` Skill for Telegram delivery, actions, Threaded Mode, or diagnosis. Do not use Telegram from local/TUI prompts unless explicitly asked.`;
+${TELEGRAM_CONNECTED_CONTEXT_MESSAGE} Load the \`telegram-bridge\` Skill for Telegram-originated turns or explicit requests involving Telegram delivery, actions, Threaded Mode, or diagnosis. Do not use Telegram-specific features from unrelated local/TUI prompts.`;
 
 const TELEGRAM_TURN_SYSTEM_PROMPT_SUFFIX = `
 

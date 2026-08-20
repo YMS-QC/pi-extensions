@@ -514,6 +514,18 @@ export function registerTelegramCommandsAndTools({
       sendMarkdownReply(chatId, undefined, markdown, options),
     recordRuntimeEvent,
   });
+  const queueAgentConnectionContext = (connected: boolean): void => {
+    pi.sendMessage(
+      {
+        customType: "telegram-connection-state",
+        content: connected
+          ? Prompts.TELEGRAM_CONNECTED_CONTEXT_MESSAGE
+          : Prompts.TELEGRAM_DISCONNECTED_CONTEXT_MESSAGE,
+        display: false,
+      },
+      { deliverAs: "nextTurn" },
+    );
+  };
   Commands.registerTelegramBridgeCommands(pi, {
     promptForConfig: async (ctx, profileName) => {
       const nextProfileName = profileName ?? undefined;
@@ -581,8 +593,11 @@ export function registerTelegramCommandsAndTools({
         recordRuntimeEvent,
       });
       const completion = await runSetup(ctx);
-      if (profileName && completion.status === "success") {
-        ctx.ui.notify(`Profile "${profileName}" saved and connected.`, "info");
+      if (completion.status === "success") {
+        queueAgentConnectionContext(true);
+        if (profileName) {
+          ctx.ui.notify(`Profile "${profileName}" saved and connected.`, "info");
+        }
       }
     },
     getStatusLines,
@@ -599,6 +614,7 @@ export function registerTelegramCommandsAndTools({
     stopPolling: stopPolling ?? lockedPollingRuntime.stop,
     recoverPollingStart,
     getDisconnectThreadName,
+    queueAgentConnectionContext,
     updateStatus,
     getProfileNames: () =>
       Config.getTelegramProfileNames(configStore.getStoredConfig()),

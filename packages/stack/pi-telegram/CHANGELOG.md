@@ -2,6 +2,16 @@
 
 > Each release keeps at most 8 outcome records of at most 512 characters.
 
+## 0.36.7: Context-Aware Proactive Controls
+
+- `Proactive Prompt Buttons`: Plans valid top-level `telegram_button` comments before local/autonomous assistant segments enter Rich or HTML proactive delivery, preserving the ordinary callback store and renderer path instead of silently hiding correct controls.
+- `Connection-Aware Agent Context`: Successful setup/connect and disconnect commands queue a hidden connection-state note for delivery with the next agent turn without triggering one. Connected system guidance and Telegram Skills now distinguish transport capability from user intent, reserving proactive Telegram controls for Telegram-originated turns or explicit requests.
+
+## 0.36.6: Orphan Journal Guard
+
+- `Orphan Journal Guard`: Rejects a missing journal snapshot when immutable revision segments still exist, preventing later admission from replacing uncertain durable authority with a new revisionless snapshot while preserving snapshot-first compaction and fail-closed recovery.
+- `Voice Configuration Guidance`: Guides agents from voice-configuration requests to provider-neutral `telegram.json` command templates, ordered STT fallbacks, OGG/Opus validation, and companion-provider alternatives while preserving `hidden` as the useful default for explicit `telegram_voice` delivery.
+
 ## 0.36.5: Separated Tool Errors
 
 - `Separated Tool Errors`: Prefixes Telegram attachment and direct-message Tool failures with one normalized leading newline so Pi renders error evidence on a visually separated line beneath the Tool name without changing the underlying diagnostic text.
@@ -28,7 +38,7 @@
 - `Destructive Skip State`: Changes the active queue Skip selector from yellow to red and records the indicator in the UI registry, making deferred prompt removal visually distinct from Priority, Scoped, and other elevated but non-destructive states.
 - `Worker Cancellation Fence`: Makes Generative App workers acknowledge child-process abort handling before parent termination, with a bounded forced fallback for synchronously blocked methods, preventing Linux CI load from orphaning a cancelled process long enough to commit its delayed side effect.
 - `Capability App Routing`: Telegram interaction now prefers an already-advertised capability-owned Generative App for repeated controls before synthesizing one-shot prompt buttons, while the bridge remains generic and neither discovers capability-specific apps nor owns their state or identities.
-- `Hybrid Surface Breadcrumbs`: Generated Control Surface and Generative Apps now cross-route over one logical button matrix and shared JSON/CML runtime notation: ephemeral agent composition stays separate from reusable scripts, while one app view may combine deterministic bound methods with ordinary model-mediated prompts and no third button Skill is introduced.
+- `Hybrid Surface Routing`: Generated Control Surface and Generative Apps now cross-route over one logical button matrix and shared JSON/CML runtime notation: ephemeral agent composition stays separate from reusable scripts, while one app view may combine deterministic bound methods with ordinary model-mediated prompts and no third button Skill is introduced.
 
 ## 0.36.0: Generative Apps
 
