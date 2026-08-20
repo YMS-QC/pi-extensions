@@ -19,3 +19,4 @@ echo "[ok] model-config → $AGENT/extensions/model-config/"
 
 # 3. 提示（不自动执行）
 echo "[i] pi-config: 需要渲染模型配置时手动运行 packages/pi-config/sync-models.py"
+echo "[i] 全新 clone 后先跑 just bootstrap（root + packages/stack/* 依赖一次装齐）"

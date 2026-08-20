@@ -11,6 +11,11 @@
  *   - 已有 node_modules → npm install --no-save --no-package-lock（本地增量，不写 vendored 树）
  * 环境变量:
  *   STACK_CHECK_SKIP_INSTALL=1  跳过安装（本地已装好时加速）
+ *
+ * --install-only  只装依赖、不跑检查，且跳过已有 node_modules 的包。
+ *   被 root package.json 的 postinstall 调用：pi 对 git: 包做 reconciliation 时
+ *   （reset + clean + root npm install）会连带触发，从而自动补齐 vendored 依赖，
+ *   避免 stack 扩展在 pi 运行时副本里报 Cannot find module。
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -19,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const stackDir = path.join(root, "packages", "stack");
+const installOnly = process.argv.includes("--install-only");
 
 // 各包要跑的脚本（用上游自己的定义，名字不同的在这里映射；未知包默认 typecheck+test）
 const SCRIPTS_BY_PACKAGE = {
@@ -46,18 +52,29 @@ let failed = 0;
 for (const name of packages) {
 	const dir = path.join(stackDir, name);
 	const scripts = SCRIPTS_BY_PACKAGE[name] ?? ["typecheck", "test"];
-	console.log(`\n=== stack ${name} (${scripts.join(", ")})`);
+	const hasModules = fs.existsSync(path.join(dir, "node_modules"));
+
+	if (installOnly && hasModules) {
+		console.log(`\n=== stack ${name}: node_modules 已存在，跳过 (install-only)`);
+		continue;
+	}
+
+	console.log(`\n=== stack ${name} (${installOnly ? "install-only" : scripts.join(", ")})`);
 
 	if (process.env.STACK_CHECK_SKIP_INSTALL === "1") {
 		console.log("  [skip-install] STACK_CHECK_SKIP_INSTALL=1");
 	} else {
-		const installArgs = fs.existsSync(path.join(dir, "node_modules"))
+		const installArgs = hasModules
 			? ["install", "--no-save", "--no-audit", "--no-fund"]
 			: ["ci", "--no-audit", "--no-fund"];
 		if (run("npm", installArgs, dir) !== 0) {
 			failed++;
 			continue;
 		}
+	}
+
+	if (installOnly) {
+		continue;
 	}
 
 	let ok = true;
@@ -75,7 +92,11 @@ if (failed > 0) {
 	console.error(`\nstack-checks: ${failed} package(s) failed`);
 	process.exit(1);
 }
-console.log(`\nstack-checks: all ${packages.length} package(s) passed`);
+console.log(
+	installOnly
+		? `\nstack-install: dependencies present for all ${packages.length} package(s)`
+		: `\nstack-checks: all ${packages.length} package(s) passed`,
+);
 
 function run(command, args, cwd) {
 	const result = spawnSync(command, args, { cwd, stdio: "inherit" });

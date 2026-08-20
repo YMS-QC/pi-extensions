@@ -24,6 +24,8 @@
 Run commands from the repository root unless a command says otherwise.
 
 - Run `npm install` to install dependencies.
+- Run `just bootstrap` after a fresh clone to install root and vendored stack dependencies together.
+- Run `npm run stack-install` to install only the vendored packages under `packages/stack/`.
 - Run `npm run check` or `just check` for the CI-equivalent verification gate.
 - Run `npm test` to execute all active tests.
 - Run `npm run format` or `just format` to format with Biome.
@@ -40,6 +42,8 @@ Run commands from the repository root unless a command says otherwise.
 - Keep imported Pi packages as root devDependencies so tests compiled beneath root `node_modules/.cache` resolve the intended versions.
 - Prefer Pi AI root exports; use a variable-specifier dynamic import only when a required subpath has no root export because official Pi can misresolve static `@earendil-works/pi-ai/api/*` imports.
 - Treat Pi's user and project managed npm roots as separate install scopes because deduplication is guaranteed only within one root.
+- Root `npm install` triggers `postinstall` -> `scripts/run-stack-checks.mjs --install-only`, which installs vendored `packages/stack/*` dependencies; Pi's reconciliation (reset + clean + root install) relies on this hook, so keep it intact.
+- If a stack extension fails to load with `Cannot find module` in Pi's managed clone, its vendored dependencies are missing; run `npm run stack-install` from the repository root.
 - Never use `npm audit fix --force`; if it alters Pi dependencies, restore every workspace manifest and the lockfile, then use targeted patched upgrades or overrides.
 
 ## Code and package rules

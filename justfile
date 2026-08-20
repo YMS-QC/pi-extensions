@@ -12,6 +12,11 @@ check:
 test:
     npm test
 
+# Install root dependencies plus vendored stack packages (fresh clone entry point)
+# root npm install triggers postinstall -> scripts/run-stack-checks.mjs --install-only
+bootstrap:
+    npm install
+
 # Format all files with Biome
 format:
     npm run format
