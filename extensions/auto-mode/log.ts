@@ -69,7 +69,7 @@ export type LoggerOptions = {
   /** Effective cwd for an in-memory session. */
   sessionCwd?: string;
   sessionId: string;
-  /** Test/embedder override. Runtime uses ~/.pi/agent/automode-logs. */
+  /** Test/embedder override. Runtime uses ~/.pi/agent/extensions/pi-automode/logs. */
   logRoot?: string;
   /** Test clock used for the UTC date partition. */
   now?: Date;
@@ -77,7 +77,7 @@ export type LoggerOptions = {
 
 export const DEFAULT_AUTOMODE_LOG_ROOT = join(
   homedir(),
-  ".pi/agent/automode-logs",
+  ".pi/agent/extensions/pi-automode/logs",
 );
 
 const VALID_SESSION_ID =

@@ -38,7 +38,7 @@ For example: `~/.pi/agent/sessions/<slug>/<id>-pi-automode.jsonl`. If a custom s
 Pi in-memory sessions, including `--no-session` and non-persisted subagents, intentionally have neither a session file nor a session directory. Their logs use an absolute application-owned path instead of a relative filename in the launching process directory:
 
 ```text
-~/.pi/agent/automode-logs/<encoded-session-cwd>/YYYY-MM-DD/<session-id>-pi-automode.jsonl
+~/.pi/agent/extensions/pi-automode/logs/<encoded-session-cwd>/YYYY-MM-DD/<session-id>-pi-automode.jsonl
 ```
 
 The project directory uses the same `--path-with-dashes--` encoding style as Pi's normal session directories, and the date partition is UTC. A custom session manager that supplies an absolute non-empty `sessionDir` without a session file continues to use that directory. Run `/automode config` to see the resolved path for the current session.
