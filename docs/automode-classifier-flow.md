@@ -320,7 +320,7 @@ When UI is available, the extension updates the footer status and shows a warnin
 
 Tool output becomes model context. The `status` and `denials` views therefore omit denial reasons and action summaries. The `config` view contains effective rule text and should not be used to store secrets.
 
-No state-changing command has a tool equivalent. The user must run `/automode on`, `/automode off`, `/automode reload`, `/automode reset`, and `/automode model` directly.
+No state-changing command has a tool equivalent. The user must run `/automode on`, `/automode off`, `/automode reload`, `/automode reset`, and `/automode model` directly. See [Agent diagnostics](diagnostics.md) for the inspection contract, privacy limits, and diagnosis workflow.
 
 ## Command interactions
 

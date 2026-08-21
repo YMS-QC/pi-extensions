@@ -58,7 +58,7 @@ The tool reads the same in-memory config and state that the guardrail enforces. 
 
 Tool output is sent to the current model. The `status` and `denials` views omit denial reasons and action payloads; inspect a known-safe reason from the local observability log when diagnosis requires it. The `config` view includes effective rule text but strips raw JSON parser details from diagnostics. Do not put credentials or other secrets in automode rules.
 
-The bundled `automode-diagnostics` skill uses this tool to diagnose unexpected decisions without asking the user to copy output from slash commands. Configuration edits and automode state changes remain user-controlled.
+The bundled `automode-diagnostics` skill uses this tool to diagnose unexpected decisions without asking the user to copy output from slash commands. Configuration edits and automode state changes remain user-controlled. See [Agent diagnostics](docs/diagnostics.md) for the inspection contract, privacy limits, and diagnosis workflow.
 
 ## Status line
 

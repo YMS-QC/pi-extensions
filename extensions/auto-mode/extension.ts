@@ -248,8 +248,11 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           config: cfg,
           logFile: resolveLogPath(
             ctx.sessionManager.getSessionFile?.(),
-            ctx.sessionManager.getSessionDir?.() ?? ctx.cwd,
+            ctx.sessionManager.getSessionDir?.() ?? "",
             ctx.sessionManager.getSessionId?.() ?? "unknown",
+            ctx.cwd,
+            options.logRoot,
+            now(),
           ),
           diagnostics: modelVisibleConfigDiagnostics(configDiagnostics),
         };

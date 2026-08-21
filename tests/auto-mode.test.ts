@@ -325,6 +325,42 @@ test("automode_inspect reports the active in-memory config", async () => {
 	assert.equal(JSON.parse(output.content[0].text).config.classifierModel, "test/model-a");
 });
 
+test("automode_inspect reports the effective cwd's in-memory log path", async () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-inspect-log-"));
+	try {
+		const sessionCwd = join(dir, "effective-worktree");
+		const logRoot = join(dir, "logs");
+		const sessionId = "in-memory-session";
+		const now = new Date("2026-08-21T12:00:00.000Z");
+		const fake = createFakePi();
+		createPiAutomode({
+			loadConfig: () => baseConfig(),
+			logRoot,
+			now: () => now,
+		})(fake.pi);
+		const ctx = createFakeCtx(fake.entries, {
+			cwd: sessionCwd,
+			sessionDir: "",
+			sessionId,
+		});
+		await fake.emit("session_start", { type: "session_start" }, ctx);
+
+		const output = await fake.tools.get("automode_inspect")?.execute(
+			"call-in-memory-log-path",
+			{ action: "config" },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const expected = resolveLogPath(
+			undefined, "", sessionId, sessionCwd, logRoot, now,
+		);
+		assert.equal(JSON.parse(output.content[0].text).logFile, expected);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("automode_inspect reports truncation metadata for arrays over 30 entries", async () => {
 	assert.ok(DEFAULT_PROTECTED_PATHS.length > 30);
 	const fake = createFakePi();
