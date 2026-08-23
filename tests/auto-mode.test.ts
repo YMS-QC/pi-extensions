@@ -10,7 +10,10 @@ import {
 	CLASSIFIER_DETAILED_INSTRUCTION,
 	CLASSIFIER_SYSTEM_PROMPT,
 	DEFAULT_ALLOW,
+	DEFAULT_ALLOW_INSIDE_WORKING_DIRECTORY,
+	DEFAULT_CLASSIFY_READ_ONLY_TOOLS,
 	DEFAULT_LOG_CONFIG,
+	DEFAULT_MAX_USER_TRANSCRIPT_TOKENS,
 	DEFAULT_PROTECTED_PATHS,
 	DEFAULT_SOFT_DENY,
 	MAX_WILDCARD_INPUT_LENGTH,
@@ -765,6 +768,89 @@ test("invalid classifier reasoning levels produce diagnostics and do not overrid
 		projectLocalSettings: [{ autoMode: { classifierReasoningLevel: "extreme" } as any }],
 	});
 	assert.equal(config.classifierReasoningLevel, "low");
+});
+
+test("invalid boolean config values produce diagnostics and do not override defaults", () => {
+	// enabled: 0 should not disable enforcement
+	const diagEnabled0 = validateSettingsFile({
+		autoMode: { enabled: 0 },
+	} as any, "test-config");
+	assert.equal(
+		diagEnabled0.some((line) => line.includes("autoMode.enabled must be a boolean")),
+		true,
+	);
+	const configEnabled0 = buildEffectiveConfigFromSources({
+		projectLocalSettings: [{ autoMode: { enabled: 0 } as any }],
+	});
+	assert.equal(configEnabled0.enabled, true);
+
+	// enabled: "false" should not enable enforcement from a disabled base
+	const diagEnabledStr = validateSettingsFile({
+		autoMode: { enabled: "false" },
+	} as any, "test-config");
+	assert.equal(
+		diagEnabledStr.some((line) => line.includes("autoMode.enabled must be a boolean")),
+		true,
+	);
+	const configEnabledStr = buildEffectiveConfigFromSources({
+		globalSettings: [{ autoMode: { enabled: false } }],
+		projectLocalSettings: [{ autoMode: { enabled: "false" } as any }],
+	});
+	assert.equal(configEnabledStr.enabled, false);
+
+	// classifyReadOnlyTools: 1 should not enable classification
+	const configCRO = buildEffectiveConfigFromSources({
+		projectLocalSettings: [{ autoMode: { classifyReadOnlyTools: 1 } as any }],
+	});
+	assert.equal(configCRO.classifyReadOnlyTools, DEFAULT_CLASSIFY_READ_ONLY_TOOLS);
+
+	// allowInsideWorkingDirectory: "true" should not enable the tier
+	const configAIWD = buildEffectiveConfigFromSources({
+		projectLocalSettings: [{ autoMode: { allowInsideWorkingDirectory: "true" } as any }],
+	});
+	assert.equal(configAIWD.allowInsideWorkingDirectory, DEFAULT_ALLOW_INSIDE_WORKING_DIRECTORY);
+});
+
+test("invalid numeric config values produce diagnostics and do not override defaults", () => {
+	// classifierTimeoutMs: -1 should be rejected
+	const configTimeout = buildEffectiveConfigFromSources({
+		globalSettings: [{ autoMode: { classifierTimeoutMs: 5000 } }],
+		projectLocalSettings: [{ autoMode: { classifierTimeoutMs: -1 } as any }],
+	});
+	assert.equal(configTimeout.classifierTimeoutMs, 5000);
+
+	// fastClassifierMaxTokens: 0 should be rejected
+	const configFast = buildEffectiveConfigFromSources({
+		globalSettings: [{ autoMode: { fastClassifierMaxTokens: 256 } }],
+		projectLocalSettings: [{ autoMode: { fastClassifierMaxTokens: 0 } as any }],
+	});
+	assert.equal(configFast.fastClassifierMaxTokens, 256);
+
+	// maxUserTranscriptTokens: 1 should be rejected
+	const configUser = buildEffectiveConfigFromSources({
+		projectLocalSettings: [{ autoMode: { maxUserTranscriptTokens: 1 } as any }],
+	});
+	assert.equal(configUser.maxUserTranscriptTokens, DEFAULT_MAX_USER_TRANSCRIPT_TOKENS);
+});
+
+test("invalid log config values produce diagnostics and do not override defaults", () => {
+	// log.enabled: 0 should not enable logging
+	const configLog = buildEffectiveConfigFromSources({
+		projectLocalSettings: [{ autoMode: { log: { enabled: 0 } } as any }],
+	});
+	assert.equal(configLog.log.enabled, false);
+
+	// log.enabled: 1 should not enable logging (non-boolean rejected)
+	const configLogOne = buildEffectiveConfigFromSources({
+		projectLocalSettings: [{ autoMode: { log: { enabled: 1 } } as any }],
+	});
+	assert.equal(configLogOne.log.enabled, false);
+
+	// log.classifierIo: 1 should not enable classifier I/O
+	const configIo = buildEffectiveConfigFromSources({
+		projectLocalSettings: [{ autoMode: { log: { classifierIo: 1 } } as any }],
+	});
+	assert.equal(configIo.log.classifierIo, false);
 });
 
 test("rule lists replace defaults only for their own section when $defaults is omitted", () => {

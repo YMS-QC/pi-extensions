@@ -340,8 +340,8 @@ function mergeLog(
 ): LogConfig {
   if (!patch) return base;
   return {
-    enabled: patch.enabled ?? base.enabled,
-    classifierIo: patch.classifierIo ?? base.classifierIo,
+    enabled: typeof patch.enabled === "boolean" ? patch.enabled : base.enabled,
+    classifierIo: typeof patch.classifierIo === "boolean" ? patch.classifierIo : base.classifierIo,
   };
 }
 
@@ -427,17 +427,20 @@ function applyAutoModeScalars(
   if (!settings) return base;
   return {
     ...base,
-    enabled: settings.enabled ?? base.enabled,
+    enabled: typeof settings.enabled === "boolean" ? settings.enabled : base.enabled,
     classifierModel: settings.classifierModel ?? base.classifierModel,
     classifierReasoningLevel: isClassifierReasoningLevel(
         settings.classifierReasoningLevel,
       )
       ? settings.classifierReasoningLevel
       : base.classifierReasoningLevel,
-    classifyReadOnlyTools: settings.classifyReadOnlyTools ??
-      base.classifyReadOnlyTools,
+    classifyReadOnlyTools: typeof settings.classifyReadOnlyTools === "boolean"
+      ? settings.classifyReadOnlyTools
+      : base.classifyReadOnlyTools,
     allowInsideWorkingDirectory:
-      settings.allowInsideWorkingDirectory ?? base.allowInsideWorkingDirectory,
+      typeof settings.allowInsideWorkingDirectory === "boolean"
+        ? settings.allowInsideWorkingDirectory
+        : base.allowInsideWorkingDirectory,
     fastClassifierMaxTokens: validFastClassifierBudget(
         settings.fastClassifierMaxTokens,
       )
