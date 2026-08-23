@@ -12,6 +12,8 @@ All notable changes to this project are documented in this file.
 
 ## Bug fixes
 
+- **Reject invalid config values** — Invalid boolean and log config values (e.g. `enabled: 0`, `log.enabled: 1`) are now rejected at merge time instead of being applied with diagnostics only. (#20)
+- **Preserve defaults for malformed rule lists** — A malformed `hard_deny` entry like `[42]` no longer strips all built-in hard-deny rules. Malformed entries are rejected and defaults preserved conservatively. (#21)
 - **Runtime classifier providers** — Dispatch classifier calls through Pi's runtime model registry so providers registered with `pi.registerProvider()` work immediately. Preserve normalized reasoning and header-only authentication on the temporary simple-completion bridge. (#15)
 - **Bounded wildcard matching** — Replace regex-based permission and denied-path globs with a linear-time matcher. Reject oversized patterns and fail closed for oversized runtime inputs. (#19)
 - **Complete classifier action input** — Send the exact current tool input to both classifier stages in a dedicated message. Block the action if it cannot fit without truncation. (#17)
