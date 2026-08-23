@@ -11,6 +11,7 @@ import { Type } from "typebox";
 import {
   classifierReasoningForConfig,
   defaultClassifyAction,
+  serializeClassifierAction,
 } from "./classifier.ts";
 import {
   AUTO_MODE_GUIDANCE,
@@ -567,7 +568,12 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         );
       }
 
-      const decision = await classify(ctx, cfg, summary, loadedContext);
+      const decision = await classify(
+        ctx,
+        cfg,
+        serializeClassifierAction(event.toolName, input),
+        loadedContext,
+      );
       logClassifierIo(decision, logCtx);
       if (decision.decision === "allow") {
         state.classifierAllowed += 1;

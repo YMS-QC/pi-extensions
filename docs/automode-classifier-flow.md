@@ -220,9 +220,9 @@ hard_deny, soft_deny, allow, explicit_intent, none
 
 An `allow` decision may use `allow`, `explicit_intent`, or `none`. A `block` decision may use `hard_deny`, `soft_deny`, or `none`. If an allow exception or explicit user instruction authorizes an otherwise soft-denied action, the tier must describe the reason it is allowed rather than remain `soft_deny`.
 
-### User message
+### User messages
 
-The shared context message has this structure:
+The first user message contains shared context:
 
 ```text
 <loaded-project-instructions>
@@ -232,24 +232,18 @@ ${loadedContext || "(none)"}
 <classifier-transcript>
 ${buildClassifierTranscript(...) || "(none)"}
 </classifier-transcript>
-
-Latest action to classify:
-${action}
 ```
 
-`action` is built as:
+The next user message contains the complete current action as JSON. It is
+separate from the transcript and is not truncated:
 
-```text
-${toolName} ${safeJson(input, 6000)}
+```json
+{"toolName":"bash","input":{"command":"npm test"}}
 ```
 
-For example:
-
-```text
-bash {
-  "command": "npm test"
-}
-```
+Both classifier stages receive the same context message and exact action
+message. If the exact action cannot fit in the classifier model's context
+window, auto mode blocks the call instead of removing action content.
 
 The transcript is built from Pi's active context entries when available. It includes only:
 
@@ -257,6 +251,8 @@ The transcript is built from Pi's active context entries when available. It incl
 - assistant tool-call names and payloads.
 
 Assistant prose, hidden reasoning, and tool results are excluded. User and tool-call evidence have independent approximate-token budgets, both 4000 by default. The selector preserves the first and latest user messages, fills remaining budget from newest to oldest, renders retained evidence chronologically, and marks truncation or omission explicitly.
+
+Transcript truncation does not change the dedicated current-action message.
 
 ## Classifier model resolution
 

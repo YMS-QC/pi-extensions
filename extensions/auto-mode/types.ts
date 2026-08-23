@@ -164,6 +164,7 @@ export type ClassifierIo = {
   prompt: {
     system: string;
     context: string;
+    action: string;
     fastInstruction: string;
     detailedInstruction: string;
   };

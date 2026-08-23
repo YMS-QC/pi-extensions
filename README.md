@@ -203,7 +203,7 @@ Read-only Pi tools (`read`, `grep`, `find`, `ls`) are allowed after those checks
 
 Path matches in `deniedPaths` are blocked before every classifier and fast-path decision, so secret and system paths never reach the model through the file tools. The deny list does not govern `bash`; shell access to those paths is handled by the classifier and the deterministic hard-deny checks. With `allowInsideWorkingDirectory: true`, file tools inside the working directory are allowed without a classifier call, and outside-working-directory file access (reads included) goes to the classifier.
 
-Classification starts with a one-token conservative filter and runs structured review only when that filter requests it. Both stages use a classifier-specific session key and short provider cache retention where the provider supports it. Missing models, provider failures, or malformed responses block the action.
+Classification starts with a one-token conservative filter and runs structured review only when that filter requests it. Both stages receive the complete current tool input in a dedicated message; transcript truncation cannot remove part of the action. If the exact input cannot fit in the classifier context, auto mode blocks the call. Both stages use a classifier-specific session key and short provider cache retention where the provider supports it. Missing models, provider failures, or malformed responses block the action.
 
 ## Examples
 

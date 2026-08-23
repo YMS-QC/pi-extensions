@@ -105,7 +105,8 @@ Written only for classifier-routed actions, and only when `classifierIo: true`. 
 | `model` | classifier model used, e.g. `anthropic/claude-haiku-4` |
 | `reasoning` | `server-default`, or the explicit requested and effective model-supported level |
 | `prompt.system` | the full system policy with `environment`/`allow`/`soft_deny`/`hard_deny` rules interpolated |
-| `prompt.context` | the shared context message: loaded project instructions + classifier transcript + action |
+| `prompt.context` | the shared context message: loaded project instructions + classifier transcript |
+| `prompt.action` | the complete, untruncated current tool action JSON |
 | `prompt.fastInstruction` | the exact one-token filter instruction |
 | `prompt.detailedInstruction` | the exact structured-review instruction |
 | `attempts` | one entry per classifier model call (see below) |
@@ -123,7 +124,7 @@ This records both stages, retries, and fail-closed cases verbatim. A fast allow 
 
 ## Privacy
 
-`prompt.context` is the shared content sent to both classifier stages: loaded project instructions, selected transcript evidence, and the action being classified. The stage-specific final instructions are logged separately. See [Auto-mode classifier flow → What is sent to the classifier](automode-classifier-flow.md#what-is-sent-to-the-classifier) for how the evidence is assembled and truncated.
+`prompt.context` contains the loaded project instructions and selected transcript evidence sent to both classifier stages. `prompt.action` contains the separate, untruncated current action. The stage-specific final instructions are logged separately. See [Auto-mode classifier flow → What is sent to the classifier](automode-classifier-flow.md#what-is-sent-to-the-classifier) for how the evidence is assembled.
 
 The log records this payload locally, but the same data is also sent to the classifier model endpoint on every classifier-routed call. If `classifierModel` points at a cloud provider, that payload leaves the machine. Enable `classifierIo` when debugging classifier behavior or tuning rules; leave it off for routine outcome logging.
 
