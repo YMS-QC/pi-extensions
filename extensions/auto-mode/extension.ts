@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -35,14 +35,17 @@ import {
 } from "./log.ts";
 import { formatModelSpec, parseModelSpec } from "./model.ts";
 import { promptForClassifierModel } from "./model-selector.ts";
-import { matchesDeniedPath, matchesToolPattern } from "./permissions.ts";
 import {
-  expandHomePattern,
+  matchesDeniedPath,
+  matchesToolPattern,
+  recursiveSearchMayReachDeniedPath,
+} from "./permissions.ts";
+import {
   extractInputPath,
   isInside,
   isProtectedPath,
-  resolveInputPath,
   resolvePathForPolicy,
+  resolveToolInputPath,
 } from "./paths.ts";
 import {
   actionSummary,
@@ -479,8 +482,9 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       ) {
         const inputPath = extractInputPath(event.toolName, input);
         if (inputPath !== undefined) {
-          const expanded = expandHomePattern(inputPath);
-          const resolved = resolveInputPath(ctx.cwd, expanded) ?? expanded;
+          const resolved =
+            resolveToolInputPath(event.toolName, ctx.cwd, inputPath) ??
+            inputPath;
           const policyPath = resolvePathForPolicy(resolved) ?? resolved;
           const denied =
             cfg.deniedPaths.length > 0 &&
@@ -491,6 +495,33 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
               timestamp: Date.now(),
               toolName: event.toolName,
               reason: `Path denied by policy: ${policyPath}`,
+              action: summary,
+              kind: "deterministic-path-deny",
+            }, logCtx);
+          }
+          let recursiveSearch =
+            event.toolName === "grep" || event.toolName === "find";
+          if (recursiveSearch) {
+            try {
+              recursiveSearch = statSync(policyPath).isDirectory();
+            } catch {
+              // A missing search root will fail in the tool. Treat it as a
+              // directory here so a denied scope cannot fail open in a race.
+            }
+          }
+          const deniedSearchScope =
+            recursiveSearch &&
+            cfg.deniedPaths.length > 0 &&
+            (recursiveSearchMayReachDeniedPath(resolved, cfg.deniedPaths) ||
+              recursiveSearchMayReachDeniedPath(
+                policyPath,
+                cfg.deniedPaths,
+              ));
+          if (deniedSearchScope) {
+            return block(ctx, {
+              timestamp: Date.now(),
+              toolName: event.toolName,
+              reason: `Search scope can contain a path denied by policy: ${policyPath}`,
               action: summary,
               kind: "deterministic-path-deny",
             }, logCtx);

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import os from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
@@ -30,6 +30,8 @@ import {
 	newDecisionId,
 	parseClassifierDecision,
 	parseToolPattern,
+	recursiveSearchMayReachDeniedPath,
+	resolveInputPath,
 	resolveLogPath,
 	statusLine,
 	statusText,
@@ -1643,6 +1645,71 @@ test("allowInsideWorkingDirectory defaults to false and deniedPaths defaults to 
 	assert.deepEqual(config.deniedPaths, []);
 });
 
+test("resolveInputPath mirrors Pi path normalization", () => {
+	const cwd = "/tmp/project";
+	assert.equal(resolveInputPath(cwd, "src/app.ts"), "/tmp/project/src/app.ts");
+	assert.equal(resolveInputPath(cwd, ""), cwd);
+	assert.equal(
+		resolveInputPath(cwd, "@~/outside.txt"),
+		join(os.homedir(), "outside.txt"),
+	);
+	assert.equal(
+		resolveInputPath(cwd, pathToFileURL("/tmp/outside.txt").href),
+		"/tmp/outside.txt",
+	);
+	assert.equal(
+		resolveInputPath(cwd, "src/non\u00a0breaking.txt"),
+		"/tmp/project/src/non breaking.txt",
+	);
+	assert.equal(
+		resolveInputPath("/tmp/non\u00a0breaking", "src/app.ts"),
+		"/tmp/non\u00a0breaking/src/app.ts",
+	);
+});
+
+test("direct file hard-denies use Pi-compatible path normalization", () => {
+	const profile = join(os.homedir(), ".zshrc");
+	for (const path of ["~/.zshrc", "@~/.zshrc", pathToFileURL(profile).href]) {
+		assert.match(
+			deterministicHardDeny("write", { path }, "/tmp/project") ?? "",
+			/shell profile modification is hard-denied/,
+		);
+	}
+});
+
+test("recursive denied-path scope checks are conservative but path-scoped", () => {
+	assert.equal(
+		recursiveSearchMayReachDeniedPath("/tmp/project", ["*.env"]),
+		true,
+	);
+	assert.equal(
+		recursiveSearchMayReachDeniedPath("/tmp/project", ["/etc/*"]),
+		false,
+	);
+	assert.equal(
+		recursiveSearchMayReachDeniedPath("/tmp/project", [
+			"/tmp/project/private/token.txt",
+		]),
+		true,
+	);
+	assert.equal(
+		recursiveSearchMayReachDeniedPath("/", ["/etc/*"]),
+		true,
+	);
+	assert.equal(
+		recursiveSearchMayReachDeniedPath("/tmp/project/public", [
+			"/tmp/project/private-*/token",
+		]),
+		false,
+	);
+	assert.equal(
+		recursiveSearchMayReachDeniedPath("/tmp/project/private-one", [
+			"/tmp/project/private-*/token",
+		]),
+		true,
+	);
+});
+
 test("allowInsideWorkingDirectory and deniedPaths merge from settings", () => {
 	const config = buildEffectiveConfigFromSources({
 		globalSettings: [{
@@ -1760,6 +1827,27 @@ test("allowInsideWorkingDirectory with classifyReadOnlyTools classifies out-of-c
 	assert.equal(harness.classifierCalls, 1);
 });
 
+test("allowInsideWorkingDirectory classifies Pi path aliases outside cwd", async () => {
+	const harness = await setupHookTest({
+		config: baseConfig({ allowInsideWorkingDirectory: true }),
+		classifier: async () => ({ decision: "block", tier: "soft_deny", reason: "outside" }),
+	});
+
+	for (const path of [
+		pathToFileURL("/tmp/outside.txt").href,
+		"@~/outside.txt",
+	]) {
+		const result = await harness.emit("tool_call", {
+			toolName: "write",
+			input: { path, content: "x" },
+		}, harness.ctx) as { block?: boolean; reason?: string };
+		assert.equal(result.block, true);
+		assert.match(result.reason ?? "", /outside/);
+	}
+
+	assert.equal(harness.classifierCalls, 2);
+});
+
 test("deniedPaths matches the symlink-resolved form of a path", async (t) => {
 	const base = mkdtempSync(join(os.tmpdir(), "pi-automode-denied-"));
 	t.after(() => rmSync(base, { recursive: true, force: true }));
@@ -1776,6 +1864,75 @@ test("deniedPaths matches the symlink-resolved form of a path", async (t) => {
 
 	assert.equal(result.block, true);
 	assert.match(result.reason ?? "", /Path denied by policy/);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("deniedPaths canonicalizes symlink aliases in configured patterns", async (t) => {
+	const base = mkdtempSync(join(os.tmpdir(), "pi-automode-denied-"));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const realSecrets = join(base, "real-secrets");
+	const linkedSecrets = join(base, "link-secrets");
+	mkdirSync(realSecrets);
+	symlinkSync(realSecrets, linkedSecrets);
+	const harness = await setupHookTest({
+		config: baseConfig({ deniedPaths: [`${linkedSecrets}/*`] }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "read",
+		input: { path: join(realSecrets, "token.txt") },
+	}, harness.ctx) as { block?: boolean; reason?: string };
+
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /Path denied by policy/);
+
+	const recursiveResult = await harness.emit("tool_call", {
+		toolName: "find",
+		input: { pattern: "token.txt", path: realSecrets },
+	}, harness.ctx) as { block?: boolean; reason?: string };
+	assert.equal(recursiveResult.block, true);
+	assert.match(
+		recursiveResult.reason ?? "",
+		/Search scope can contain a path denied by policy/,
+	);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("deniedPaths checks the fallback path variants used by Pi read", async (t) => {
+	const base = mkdtempSync(join(os.tmpdir(), "pi-automode-read-path-"));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const cases = [
+		{
+			input: join(base, "Capture d'écran.txt"),
+			actual: join(base, "Capture d’écran.txt"),
+		},
+		{
+			input: join(base, "café.txt"),
+			actual: join(base, "cafe\u0301.txt"),
+		},
+		{
+			input: join(base, "Screenshot 1.00.00 PM.png"),
+			actual: join(base, "Screenshot 1.00.00\u202fPM.png"),
+		},
+		{
+			input: join(base, "Café d'enfant.txt"),
+			actual: join(base, "Cafe\u0301 d’enfant.txt"),
+		},
+	];
+	for (const item of cases) writeFileSync(item.actual, "secret");
+	const harness = await setupHookTest({
+		config: baseConfig({ deniedPaths: cases.map((item) => item.actual) }),
+		ctx: createFakeCtx([], { cwd: base }),
+	});
+
+	for (const item of cases) {
+		const result = await harness.emit("tool_call", {
+			toolName: "read",
+			input: { path: item.input },
+		}, harness.ctx) as { block?: boolean; reason?: string };
+		assert.equal(result.block, true);
+		assert.match(result.reason ?? "", /Path denied by policy/);
+	}
 	assert.equal(harness.classifierCalls, 0);
 });
 
@@ -1817,6 +1974,90 @@ test("deniedPaths does not block non-matching read-only paths", async () => {
 	const result = await harness.emit("tool_call", {
 		toolName: "read",
 		input: { path: "/tmp/project/README.md" },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("deniedPaths applies Pi's default path to omitted search-tool paths", async () => {
+	for (const toolName of ["grep", "find", "ls"]) {
+		const harness = await setupHookTest({
+			config: baseConfig({ deniedPaths: ["/tmp/project"] }),
+		});
+
+		const result = await harness.emit("tool_call", {
+			toolName,
+			input: toolName === "grep" ? { pattern: "token" } : {},
+		}, harness.ctx) as { block?: boolean; reason?: string };
+
+		assert.equal(result.block, true);
+		assert.match(result.reason ?? "", /Path denied by policy/);
+		assert.equal(harness.classifierCalls, 0);
+	}
+});
+
+test("deniedPaths blocks recursive searches that can expose denied descendants", async (t) => {
+	const project = mkdtempSync(join(os.tmpdir(), "pi-automode-search-"));
+	t.after(() => rmSync(project, { recursive: true, force: true }));
+	mkdirSync(join(project, "private"));
+	writeFileSync(join(project, "private", "token.txt"), "secret");
+
+	for (const toolName of ["grep", "find"]) {
+		const harness = await setupHookTest({
+			config: baseConfig({
+				deniedPaths: [join(project, "private", "token.txt")],
+			}),
+			ctx: createFakeCtx([], { cwd: project }),
+		});
+
+		const result = await harness.emit("tool_call", {
+			toolName,
+			input: toolName === "grep"
+				? { pattern: "secret", path: "." }
+				: { pattern: "token.txt", path: "." },
+		}, harness.ctx) as { block?: boolean; reason?: string };
+
+		assert.equal(result.block, true);
+		assert.match(result.reason ?? "", /Search scope can contain a path denied by policy/);
+		assert.equal(harness.classifierCalls, 0);
+	}
+});
+
+test("deniedPaths allows recursive searches in unrelated path trees", async (t) => {
+	const base = mkdtempSync(join(os.tmpdir(), "pi-automode-search-"));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const project = join(base, "project");
+	const outside = join(base, "outside");
+	mkdirSync(project);
+	mkdirSync(outside);
+	const harness = await setupHookTest({
+		config: baseConfig({ deniedPaths: [join(outside, "secret.txt")] }),
+		ctx: createFakeCtx([], { cwd: project }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "grep",
+		input: { pattern: "hello", path: "." },
+	}, harness.ctx);
+
+	assert.equal(result, undefined);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("deniedPaths does not apply descendant checks to grep on one file", async (t) => {
+	const project = mkdtempSync(join(os.tmpdir(), "pi-automode-search-"));
+	t.after(() => rmSync(project, { recursive: true, force: true }));
+	const readme = join(project, "README.md");
+	writeFileSync(readme, "hello");
+	const harness = await setupHookTest({
+		config: baseConfig({ deniedPaths: ["*.env"] }),
+		ctx: createFakeCtx([], { cwd: project }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "grep",
+		input: { pattern: "hello", path: readme },
 	}, harness.ctx);
 
 	assert.equal(result, undefined);

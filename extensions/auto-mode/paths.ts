@@ -1,35 +1,119 @@
-import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  lstatSync,
+  readlinkSync,
+  realpathSync,
+} from "node:fs";
 import {
   basename,
   dirname,
   isAbsolute,
+  join,
   normalize,
   relative,
   resolve,
 } from "node:path";
+import { fileURLToPath } from "node:url";
 import { HOME, PATH_BEARING_TOOLS, PROFILE_FILES } from "./constants.ts";
 
-function stripLeadingAt(value: string): string {
-  return value.startsWith("@") ? value.slice(1) : value;
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/** Convert Git Bash, MSYS, Cygwin, and WSL drive paths for Windows APIs. */
+function normalizeWindowsShellPath(path: string): string {
+  if (
+    process.platform !== "win32" ||
+    !path.startsWith("/") ||
+    path.startsWith("//") ||
+    path.includes("\\")
+  ) {
+    return path;
+  }
+  const match = path.match(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i);
+  if (!match) return path;
+  const suffix = match[2]?.replaceAll("/", "\\");
+  return `${match[1]?.toUpperCase()}:\\${suffix ?? ""}`;
+}
+
+/** Mirror Pi's path normalization options. */
+function normalizeInputPath(
+  value: string,
+  options: { normalizeUnicodeSpaces?: boolean; stripAtPrefix?: boolean } = {},
+): string {
+  let normalized = options.normalizeUnicodeSpaces
+    ? value.replace(UNICODE_SPACES, " ")
+    : value;
+  if (options.stripAtPrefix && normalized.startsWith("@")) {
+    normalized = normalized.slice(1);
+  }
+  normalized = normalizeWindowsShellPath(normalized);
+  if (normalized === "~") return HOME;
+  if (
+    normalized.startsWith("~/") ||
+    (process.platform === "win32" && normalized.startsWith("~\\"))
+  ) {
+    return join(HOME, normalized.slice(2));
+  }
+  if (/^file:\/\//.test(normalized)) return fileURLToPath(normalized);
+  return normalized;
 }
 
 export function resolveInputPath(
   cwd: string,
   value: unknown,
 ): string | undefined {
-  if (typeof value !== "string" || value.trim() === "") return undefined;
-  const raw = stripLeadingAt(value.trim());
-  return isAbsolute(raw) ? resolve(raw) : resolve(cwd, raw);
+  if (typeof value !== "string") return undefined;
+  const normalized = normalizeInputPath(value, {
+    normalizeUnicodeSpaces: true,
+    stripAtPrefix: true,
+  });
+  return isAbsolute(normalized)
+    ? resolve(normalized)
+    : resolve(normalizeInputPath(cwd), normalized);
 }
 
-/** The target path a file tool operates on, from `input.path` (or undefined). */
+function existingReadVariant(path: string): string {
+  const candidates = [
+    path,
+    path.replace(/ (AM|PM)\./gi, "\u202F$1."),
+    path.normalize("NFD"),
+    path.replace(/'/g, "\u2019"),
+    path.normalize("NFD").replace(/'/g, "\u2019"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants.F_OK);
+      return candidate;
+    } catch {
+      // Try the next Pi-compatible read fallback.
+    }
+  }
+  return path;
+}
+
+/** Resolve the path that the named Pi file tool will operate on. */
+export function resolveToolInputPath(
+  toolName: string,
+  cwd: string,
+  value: unknown,
+): string | undefined {
+  const resolved = resolveInputPath(cwd, value);
+  if (!resolved || toolName !== "read") return resolved;
+  return existingReadVariant(resolved);
+}
+
+/** The effective target path of a file tool, including Pi's `.` defaults. */
 export function extractInputPath(
   toolName: string,
   input: Record<string, unknown>,
 ): string | undefined {
   if (!PATH_BEARING_TOOLS.has(toolName)) return undefined;
   const value = input.path;
-  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+  if (typeof value === "string" && value !== "") return value;
+  if (toolName === "grep" || toolName === "find" || toolName === "ls") {
+    return ".";
+  }
+  return typeof value === "string" ? value : undefined;
 }
 
 /** Expand a leading `~`, `$HOME`, or `${HOME}` in a path-denial pattern. */
