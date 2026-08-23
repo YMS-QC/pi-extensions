@@ -12,6 +12,7 @@ import {
 	DEFAULT_ALLOW,
 	DEFAULT_ALLOW_INSIDE_WORKING_DIRECTORY,
 	DEFAULT_CLASSIFY_READ_ONLY_TOOLS,
+	DEFAULT_HARD_DENY,
 	DEFAULT_LOG_CONFIG,
 	DEFAULT_MAX_USER_TRANSCRIPT_TOKENS,
 	DEFAULT_PROTECTED_PATHS,
@@ -877,6 +878,43 @@ test("rule lists combine across configurable scopes when $defaults is present", 
 	assert.equal(DEFAULT_ALLOW.every((rule) => config.allow.includes(rule)), true);
 	assert.equal(config.allow.includes("global allow"), true);
 	assert.equal(config.allow.includes("local allow"), true);
+});
+
+test("malformed hard_deny list preserves all default hard-deny rules", () => {
+	const config = buildEffectiveConfigFromSources({
+		projectLocalSettings: [{ autoMode: { hard_deny: [42] } as any }],
+	});
+	assert.deepEqual(config.hardDeny, DEFAULT_HARD_DENY);
+});
+
+test("hard_deny with valid entries replaces defaults when $defaults is omitted", () => {
+	const config = buildEffectiveConfigFromSources({
+		projectLocalSettings: [{ autoMode: { hard_deny: ["valid-rule"] } }],
+	});
+	assert.deepEqual(config.hardDeny, ["valid-rule"]);
+});
+
+test("hard_deny with $defaults adds to the built-in defaults", () => {
+	const config = buildEffectiveConfigFromSources({
+		projectLocalSettings: [{ autoMode: { hard_deny: ["$defaults", "extra-rule"] } }],
+	});
+	assert.equal(DEFAULT_HARD_DENY.every((rule) => config.hardDeny.includes(rule)), true);
+	assert.equal(config.hardDeny.includes("extra-rule"), true);
+});
+
+test("hard_deny with malformed and valid entries keeps defaults and adds the valid rule", () => {
+	const config = buildEffectiveConfigFromSources({
+		projectLocalSettings: [{ autoMode: { hard_deny: [42, "valid-rule"] } as any }],
+	});
+	assert.equal(DEFAULT_HARD_DENY.every((rule) => config.hardDeny.includes(rule)), true);
+	assert.equal(config.hardDeny.includes("valid-rule"), true);
+});
+
+test("empty hard_deny list replaces defaults (documented replacement behavior)", () => {
+	const config = buildEffectiveConfigFromSources({
+		projectLocalSettings: [{ autoMode: { hard_deny: [] } }],
+	});
+	assert.deepEqual(config.hardDeny, []);
 });
 
 test("permission patterns keep argument scope instead of flattening to a tool allow", () => {

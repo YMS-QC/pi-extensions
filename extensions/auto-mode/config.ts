@@ -283,12 +283,11 @@ export function validateSettingsFile(
 type RuleAccumulator = {
   defaults: string[];
   includeDefaults: boolean;
-  seen: boolean;
   entries: string[];
 };
 
 function createRuleAccumulator(defaults: string[]): RuleAccumulator {
-  return { defaults, includeDefaults: true, seen: false, entries: [] };
+  return { defaults, includeDefaults: true, entries: [] };
 }
 
 function applyRuleSetting(
@@ -298,19 +297,22 @@ function applyRuleSetting(
 ): void {
   const entries = stringArray(value);
   if (!entries) return;
-  accumulator.seen = true;
-  accumulator.includeDefaults = entries.includes("$defaults");
+  // Any entry that stringArray or acceptEntry drops marks the list malformed.
+  // Fail conservative: keep defaults rather than replace them with a partial list.
+  let malformed = Array.isArray(value) && value.length !== entries.length;
   for (const entry of entries) {
-    if (entry !== "$defaults" && acceptEntry(entry)) {
+    if (entry === "$defaults") continue;
+    if (acceptEntry(entry)) {
       accumulator.entries.push(entry);
+    } else {
+      malformed = true;
     }
   }
+  accumulator.includeDefaults = entries.includes("$defaults") || malformed;
 }
 
 function finalizeRuleSetting(accumulator: RuleAccumulator): string[] {
-  const base = accumulator.includeDefaults || !accumulator.seen
-    ? accumulator.defaults
-    : [];
+  const base = accumulator.includeDefaults ? accumulator.defaults : [];
   return [...new Set([...base, ...accumulator.entries])];
 }
 
