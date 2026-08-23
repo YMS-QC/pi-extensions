@@ -1,9 +1,5 @@
 import { createHash } from "node:crypto";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
-import {
-  complete,
-  completeSimple,
-} from "@earendil-works/pi-ai/compat";
 import type {
   AssistantMessage,
   Model,
@@ -56,6 +52,7 @@ type ClassifierResolution = {
     model: Model<any>;
     apiKey?: string;
     headers?: ProviderHeaders;
+    env?: Record<string, string>;
   };
   completionPlan?: ClassifierCompletionPlan;
 };
@@ -87,18 +84,25 @@ async function resolveClassifier(
     };
   }
 
+  const rawComplete: ClassifierCompletionFn = (callModel, context, options) =>
+    ctx.modelRegistry.complete(callModel, context, options);
+  const simpleComplete: ClassifierCompletionFn = (callModel, context, options) =>
+    completeSimpleWithRegistry(ctx, callModel, context, options);
   const completionPlan = createClassifierCompletionPlan(
     model,
     config.classifierReasoningLevel,
+    rawComplete,
+    simpleComplete,
   );
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) return { reasoning: completionPlan.reasoning };
   return {
     reasoning: completionPlan.reasoning,
     classifier: {
-      model,
+      model: auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
       apiKey: auth.apiKey,
       headers: auth.headers,
+      env: auth.env,
     },
     completionPlan,
   };
@@ -110,6 +114,7 @@ export type ClassifierCompletionFn = (
   callOptions: {
     apiKey?: string;
     headers?: ProviderHeaders;
+    env?: Record<string, string>;
     signal?: AbortSignal;
     maxTokens: number;
     temperature?: number;
@@ -149,6 +154,23 @@ export type ClassifierCompletionPlan = {
   reasoning: ClassifierReasoning;
   reasoningLevel?: Exclude<EffectiveClassifierReasoningLevel, "off">;
 };
+
+/**
+ * Run normalized Pi AI completion through the provider in Pi's runtime registry.
+ * This temporary bridge is only valid until Pi exposes
+ * `ctx.modelRegistry.completeSimple(...)` natively. Replace this function with
+ * that API when the project's minimum supported Pi version includes it.
+ */
+async function completeSimpleWithRegistry(
+  ctx: ExtensionContext,
+  model: Model<any>,
+  context: { systemPrompt: string; messages: UserMessage[] },
+  options: Parameters<ClassifierCompletionFn>[2],
+): Promise<AssistantMessage> {
+  const provider = ctx.modelRegistry.getProvider(model.provider);
+  if (!provider) throw new Error(`Unknown provider: ${model.provider}`);
+  return provider.streamSimple(model, context, options).result();
+}
 
 const DETAILED_CLASSIFIER_MAX_TOKENS = 1200;
 // Match Pi AI's context clamp safety reserve.
@@ -239,8 +261,8 @@ export function classifierActionLimitReason(
 export function createClassifierCompletionPlan(
   model: Model<any>,
   requestedLevel: ClassifierReasoningLevel | undefined,
-  rawComplete: ClassifierCompletionFn = complete,
-  simpleComplete: ClassifierCompletionFn = completeSimple,
+  rawComplete: ClassifierCompletionFn,
+  simpleComplete: ClassifierCompletionFn,
 ): ClassifierCompletionPlan {
   if (requestedLevel === undefined) {
     return {
@@ -396,6 +418,7 @@ export async function classifyWithRetry(
     model: Model<any>;
     apiKey?: string;
     headers?: ProviderHeaders;
+    env?: Record<string, string>;
   },
   prompt: { systemPrompt: string; messages: UserMessage[] },
   signal: AbortSignal | undefined,
@@ -418,6 +441,7 @@ export async function classifyWithRetry(
         {
           apiKey: classifier.apiKey,
           headers: classifier.headers,
+          env: classifier.env,
           signal,
           maxTokens,
           ...(temperature === undefined ? {} : { temperature }),
@@ -468,6 +492,7 @@ export async function classifyInStages(
     model: Model<any>;
     apiKey?: string;
     headers?: ProviderHeaders;
+    env?: Record<string, string>;
   },
   prompt: {
     systemPrompt: string;
@@ -493,6 +518,7 @@ export async function classifyInStages(
       {
         apiKey: classifier.apiKey,
         headers: classifier.headers,
+        env: classifier.env,
         signal,
         // Reasoning and OpenAI-compatible models may consume hidden reasoning,
         // control, and EOS tokens before emitting the required visible digit.

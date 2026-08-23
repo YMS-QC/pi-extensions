@@ -11,6 +11,7 @@ All notable changes to this project are documented in this file.
 
 ## Bug fixes
 
+- **Runtime classifier providers** — Dispatch classifier calls through Pi's runtime model registry so providers registered with `pi.registerProvider()` work immediately. Preserve normalized reasoning and header-only authentication on the temporary simple-completion bridge. (#15)
 - **Bounded wildcard matching** — Replace regex-based permission and denied-path globs with a linear-time matcher. Reject oversized patterns and fail closed for oversized runtime inputs. (#19)
 - **Complete classifier action input** — Send the exact current tool input to both classifier stages in a dedicated message. Block the action if it cannot fit without truncation. (#17)
 - **Path policy normalization** — Use Pi-compatible resolution for file-tool paths, including file URLs, `@` and tilde aliases, and read fallback names. Enforce denied paths across omitted and recursive search scopes and both sides of symlink aliases. (#18)

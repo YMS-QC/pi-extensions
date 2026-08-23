@@ -1192,6 +1192,116 @@ test("classifier completion plan preserves server default and clamps explicit le
 	});
 });
 
+test("default classifier dispatches runtime-only models through the model registry", async () => {
+	const model = {
+		provider: "runtime-provider",
+		id: "runtime-model",
+		api: "runtime-only-api",
+		reasoning: false,
+		contextWindow: 128_000,
+		maxTokens: 4096,
+	} as any;
+	const calls: Array<{ model: any; context: any; options: any }> = [];
+	const ctx = createFakeCtx([], {
+		model,
+		modelRegistry: {
+			find: () => model,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "runtime-key" }),
+			async complete(callModel: any, context: any, options: any) {
+				calls.push({ model: callModel, context, options });
+				return assistantWith("0");
+			},
+		},
+	});
+
+	const result = await defaultClassifyAction(
+		ctx as never,
+		baseConfig(),
+		'{"toolName":"bash","input":{"command":"echo ok"}}',
+		"",
+	);
+
+	assert.equal(result.decision, "allow");
+	assert.equal(result.tier, "none");
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]?.model, model);
+	assert.equal(calls[0]?.options.apiKey, "runtime-key");
+});
+
+test("runtime provider simple completion preserves reasoning and header-only auth", async () => {
+	const model = {
+		provider: "runtime-provider",
+		id: "runtime-reasoner",
+		api: "runtime-only-api",
+		baseUrl: "https://original.invalid",
+		reasoning: true,
+		contextWindow: 128_000,
+		maxTokens: 32_000,
+	} as any;
+	const simpleCalls: Array<{ model: any; context: any; options: any }> = [];
+	let rawCalls = 0;
+	let authCalls = 0;
+	const signal = new AbortController().signal;
+	const provider = {
+		streamSimple(callModel: any, context: any, options: any) {
+			simpleCalls.push({ model: callModel, context, options });
+			return { result: async () => assistantWith("0") };
+		},
+	};
+	const ctx = createFakeCtx([], {
+		model,
+		signal,
+		modelRegistry: {
+			find: () => model,
+			getProvider: () => provider,
+			getApiKeyAndHeaders: async () => authCalls++ === 0
+				? {
+					ok: true,
+					headers: { "x-runtime-auth": "secret" },
+					baseUrl: "https://resolved.invalid",
+					env: { RUNTIME_TOKEN: "secret" },
+				}
+				: { ok: true, apiKey: "runtime-key" },
+			async complete() {
+				rawCalls += 1;
+				return assistantWith("0");
+			},
+		},
+	});
+
+	const config = baseConfig({
+		classifierReasoningLevel: "high",
+		classifierTimeoutMs: 12_345,
+	});
+	const headerAuthResult = await defaultClassifyAction(
+		ctx as never,
+		config,
+		'{"toolName":"bash","input":{"command":"echo ok"}}',
+		"",
+	);
+	const apiKeyResult = await defaultClassifyAction(
+		ctx as never,
+		config,
+		'{"toolName":"bash","input":{"command":"echo ok"}}',
+		"",
+	);
+
+	assert.equal(headerAuthResult.decision, "allow");
+	assert.equal(apiKeyResult.decision, "allow");
+	assert.equal(rawCalls, 0);
+	assert.equal(simpleCalls.length, 2);
+	assert.equal(simpleCalls[0]?.model.baseUrl, "https://resolved.invalid");
+	assert.equal(simpleCalls[0]?.options.apiKey, undefined);
+	assert.deepEqual(simpleCalls[0]?.options.headers, { "x-runtime-auth": "secret" });
+	assert.deepEqual(simpleCalls[0]?.options.env, { RUNTIME_TOKEN: "secret" });
+	assert.equal(simpleCalls[0]?.options.signal, signal);
+	assert.equal(simpleCalls[0]?.options.timeoutMs, 12_345);
+	assert.match(simpleCalls[0]?.options.sessionId, /^pi-automode-[a-f0-9]{32}$/);
+	assert.equal(simpleCalls[0]?.options.cacheRetention, "short");
+	assert.equal(simpleCalls[0]?.options.reasoning, "high");
+	assert.equal(simpleCalls[1]?.options.apiKey, "runtime-key");
+});
+
 test("classifier cache session ids are stable, classifier-specific, and scoped to the Pi session", () => {
 	const first = classifierCacheSessionId(createFakeCtx([], {
 		sessionManager: {
