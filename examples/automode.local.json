@@ -28,6 +28,10 @@
     ]
   },
   "permissions": {
+    "allow": [
+      "bash(git status*)",
+      "example-extension-tool"
+    ],
     "ask": [
       "bash(git push *)"
     ],

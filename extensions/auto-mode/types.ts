@@ -67,6 +67,11 @@ export type SettingsFile = {
   permissions?: {
     deny?: unknown;
     ask?: unknown;
+    /**
+     * Deterministic allow tier: matching calls skip the classifier only. Read
+     * from user-owned config sources, never shared project config.
+     */
+    allow?: unknown;
   };
 };
 
@@ -100,6 +105,7 @@ export type EffectiveConfig = {
   hardDeny: string[];
   permissionDeny: ToolPattern[];
   permissionAsk: ToolPattern[];
+  permissionAllow: ToolPattern[];
   log: LogConfig;
 };
 
@@ -131,6 +137,7 @@ export type DenialRecord = {
 /** Denial kind plus the deterministic allow fast paths, used for decision log entries. */
 export type DecisionKind =
   | DenialRecord["kind"]
+  | "permissions.allow"
   | "read-only"
   | "inside-working-directory";
 

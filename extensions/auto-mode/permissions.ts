@@ -95,21 +95,25 @@ function findLiteral(
   return -1;
 }
 
+export type WildcardOverflowPolicy = "match" | "no-match";
+
 /**
  * Match a case-insensitive `*` wildcard pattern in linear time.
  *
  * `*` matches zero or more characters, including newlines and path separators.
- * Over-limit values match conservatively so deny and ask rules fail closed.
+ * Denial callers use `match` for over-limit values so they fail closed. Allow
+ * callers use `no-match` so an oversized input cannot broaden an allow rule.
  */
 export function matchesWildcardPattern(
   pattern: string,
   value: string,
+  overflowPolicy: WildcardOverflowPolicy = "match",
 ): boolean {
   if (
     pattern.length > MAX_WILDCARD_PATTERN_LENGTH ||
     value.length > MAX_WILDCARD_INPUT_LENGTH
   ) {
-    return true;
+    return overflowPolicy === "match";
   }
 
   const normalizedPattern = canonicalizeCase(pattern);
@@ -287,10 +291,11 @@ export function matchesToolPattern(
   toolName: string,
   input: Record<string, unknown>,
   cwd: string,
+  overflowPolicy: WildcardOverflowPolicy = "match",
 ): boolean {
   if (!pattern.toolName) return false;
   if (pattern.toolName !== normalizeToolName(toolName)) return false;
-  if (!pattern.argumentPattern || pattern.argumentPattern === "*") return true;
+  if (!pattern.argumentPattern) return true;
   const primary = getPrimaryArgument(toolName, input, cwd);
-  return matchesWildcardPattern(pattern.argumentPattern, primary);
+  return matchesWildcardPattern(pattern.argumentPattern, primary, overflowPolicy);
 }

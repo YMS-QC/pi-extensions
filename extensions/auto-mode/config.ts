@@ -249,11 +249,11 @@ export function validateSettingsFile(
     } else {
       const permissions = settings.permissions as Record<string, unknown>;
       for (const key of Object.keys(permissions)) {
-        if (key !== "deny" && key !== "ask") {
+        if (key !== "deny" && key !== "ask" && key !== "allow") {
           diagnostics.push(`${source}: unknown permissions key ${key}`);
         }
       }
-      for (const key of ["deny", "ask"] as const) {
+      for (const key of ["deny", "ask", "allow"] as const) {
         const value = permissions[key];
         if (value === undefined) continue;
         if (!Array.isArray(value)) {
@@ -463,7 +463,7 @@ function applyAutoModeScalars(
 function appendPermissionPatterns(
   target: ToolPattern[],
   settings: SettingsFile | undefined,
-  key: "deny" | "ask",
+  key: "deny" | "ask" | "allow",
 ): void {
   const values = stringArray(settings?.permissions?.[key]);
   if (!values) return;
@@ -478,8 +478,9 @@ function appendPermissionPatterns(
  * Merge settings with Claude Code-style precedence using Pi-owned config files.
  *
  * Important details:
- * - shared project `.pi/automode.json` contributes `permissions.*` but not `autoMode`,
- *   so a checked-in repo cannot weaken classifier rules;
+ * - shared project `.pi/automode.json` contributes `permissions.deny` and
+ *   `permissions.ask` but not `permissions.allow` or `autoMode`, so checked-in
+ *   config can only add permission barriers;
  * - global, project-local, and inline `autoMode` settings combine additively across scopes;
  * - omitting `$defaults` in any scope for a rule list means "replace built-ins" for that list.
  */
@@ -502,6 +503,7 @@ export function buildEffectiveConfigFromSources(
     hardDeny: [...DEFAULT_HARD_DENY],
     permissionDeny: [],
     permissionAsk: [],
+    permissionAllow: [],
     log: { ...DEFAULT_LOG_CONFIG },
   };
 
@@ -563,6 +565,15 @@ export function buildEffectiveConfigFromSources(
     appendPermissionPatterns(config.permissionDeny, settings, "deny");
     appendPermissionPatterns(config.permissionAsk, settings, "ask");
   }
+  for (
+    const settings of [
+      ...globalSettings,
+      ...projectLocalSettings,
+      ...inlineSettings,
+    ]
+  ) {
+    appendPermissionPatterns(config.permissionAllow, settings, "allow");
+  }
 
   return config;
 }
@@ -577,6 +588,18 @@ function loadedSettingsDiagnostics(
   files: Array<LoadedSettingsFile | undefined>,
 ): string[] {
   return files.flatMap((file) => file?.diagnostics ?? []);
+}
+
+function ignoredSharedAllowDiagnostics(
+  files: Array<LoadedSettingsFile | undefined>,
+): string[] {
+  return files.flatMap((file) => {
+    const permissions = file?.settings?.permissions;
+    if (!file || !permissions || !hasOwn(permissions, "allow")) return [];
+    return [
+      `${file.path}: permissions.allow is ignored in shared project config. Use a user-owned config source instead`,
+    ];
+  });
 }
 
 /** Load config from disk and environment variables, including diagnostics for `/automode config`. Project files require explicit trust. */
@@ -631,6 +654,9 @@ export function loadEffectiveConfigWithDiagnostics(
     ...projectLocalFiles,
     ...projectSharedFiles,
   ]);
+  const sharedAllowDiagnostics = ignoredSharedAllowDiagnostics(
+    projectSharedFiles,
+  );
 
   return {
     config: buildEffectiveConfigFromSources({
@@ -639,7 +665,11 @@ export function loadEffectiveConfigWithDiagnostics(
       projectSharedSettings: loadedSettingsToSettings(projectSharedFiles),
       inlineSettings,
     }),
-    diagnostics: [...fileDiagnostics, ...diagnostics],
+    diagnostics: [
+      ...fileDiagnostics,
+      ...sharedAllowDiagnostics,
+      ...diagnostics,
+    ],
   };
 }
 

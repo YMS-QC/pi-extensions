@@ -373,8 +373,11 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       // Enforcement order:
       // 1. permission deny/ask rules,
       // 2. deterministic hard-deny checks that never consult the model,
-      // 3. read-only built-in fast path (skipped when classifyReadOnlyTools is set),
-      // 4. classifier for every remaining action, fail-closed on setup/parse errors.
+      // 3. extension-owned read-only inspection tool,
+      // 4. deterministic path denials,
+      // 5. accepted ask rules force classifier review and skip all allow tiers,
+      // 6. inside-CWD, permissions.allow, and read-only allow tiers,
+      // 7. classifier for every remaining action, fail-closed on setup/parse errors.
       const cfg = effectiveConfig();
       if (!cfg.enabled) return undefined;
       if (ctx.signal?.aborted) return { block: true, reason: "Cancelled" };
@@ -413,6 +416,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }
       }
 
+      let askRequiresClassifier = false;
       for (const pattern of cfg.permissionAsk) {
         if (!matchesToolPattern(pattern, event.toolName, input, ctx.cwd)) {
           continue;
@@ -443,6 +447,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
             kind: "permissions.ask",
           }, logCtx);
         }
+        askRequiresClassifier = true;
       }
 
       const deterministicReason = deterministicHardDeny(
@@ -461,7 +466,8 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }, logCtx);
       }
 
-      if (isOwnedInspection) return undefined;
+      if (isOwnedInspection && !askRequiresClassifier) return undefined;
+      if (isOwnedInspection) state.checkedActions += 1;
 
       // Deterministic path gate for file tools.
       //
@@ -476,7 +482,9 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       // The gate is skipped entirely when both features are off, so the
       // default configuration costs no extra filesystem calls.
       let readOnlyFastPath =
-        !cfg.classifyReadOnlyTools && READ_ONLY_TOOLS.has(event.toolName);
+        !askRequiresClassifier &&
+        !cfg.classifyReadOnlyTools &&
+        READ_ONLY_TOOLS.has(event.toolName);
       if (
         (cfg.deniedPaths.length > 0 || cfg.allowInsideWorkingDirectory) &&
         PATH_BEARING_TOOLS.has(event.toolName)
@@ -530,16 +538,12 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           if (cfg.allowInsideWorkingDirectory) {
             const policyCwd = resolvePathForPolicy(ctx.cwd) ?? ctx.cwd;
             if (isInside(policyPath, policyCwd)) {
-              // Protected in-tree writes must still reach the classifier;
-              // otherwise the allow tier bypasses the protected-path policy
-              // for sensitive repository content such as .git/hooks/*, .pi/*,
-              // .husky/*, or .gitignore.
-              if (
+              // Protected in-tree writes and accepted ask rules must still
+              // reach the classifier. They cannot use the inside-CWD tier.
+              const protectedWrite =
                 (event.toolName === "write" || event.toolName === "edit") &&
-                isProtectedPath(policyPath, policyCwd, cfg.protectedPaths)
-              ) {
-                readOnlyFastPath = false;
-              } else {
+                isProtectedPath(policyPath, policyCwd, cfg.protectedPaths);
+              if (!askRequiresClassifier && !protectedWrite) {
                 return allow(
                   ctx,
                   "inside-working-directory",
@@ -550,10 +554,51 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
                 );
               }
             }
-            // Outside the working directory: the read-only fast path must not
-            // apply; the classifier reviews this call.
+            // Outside the working directory, protected writes, and accepted
+            // ask rules must not use the read-only fast path.
             readOnlyFastPath = false;
           }
+        }
+      }
+
+      // Deterministic allow tier. It runs after every deterministic denial.
+      // Accepted ask rules skip this tier and always reach the classifier.
+      if (!askRequiresClassifier) {
+        for (const pattern of cfg.permissionAllow) {
+          if (
+            !matchesToolPattern(
+              pattern,
+              event.toolName,
+              input,
+              ctx.cwd,
+              "no-match",
+            )
+          ) {
+            continue;
+          }
+          // A protected-path write/edit is never covered by permissions.allow;
+          // it stays on the classifier path (same rule as the inside-CWD tier).
+          if (event.toolName === "write" || event.toolName === "edit") {
+            const inputPath = extractInputPath(event.toolName, input);
+            const resolved = inputPath === undefined
+              ? undefined
+              : resolveToolInputPath(event.toolName, ctx.cwd, inputPath) ??
+                inputPath;
+            if (
+              resolved !== undefined &&
+              isProtectedPath(resolved, ctx.cwd, cfg.protectedPaths)
+            ) {
+              break;
+            }
+          }
+          return allow(
+            ctx,
+            "permissions.allow",
+            `Allowed by permissions.allow: ${pattern.raw}`,
+            event.toolName,
+            summary,
+            logCtx,
+          );
         }
       }
 

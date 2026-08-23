@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ## New features
 
+- **Deterministic permission allows** — Add user-owned `permissions.allow` patterns that skip classifier review after deterministic checks pass. Accepted ask rules still require classifier review. Thank you, @sergeykonkin! (#14)
 - **Configurable classifier request timeout** — new `autoMode.classifierTimeoutMs` setting. The default is 20000 ms. The timeout applies to each classifier request. The fast stage and the detailed stage each have their own budget. A request that exceeds the timeout is aborted. Auto mode fails closed and blocks the action.
 - **Read-only agent diagnostics** — Add `automode_inspect` tool for status, configuration, defaults, and recent denial metadata. Thank you, @blalor! (#11)
 
