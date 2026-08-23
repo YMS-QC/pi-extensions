@@ -6,6 +6,27 @@ import {
   resolveToolInputPath,
 } from "./paths.ts";
 
+export const MAX_WILDCARD_PATTERN_LENGTH = 4096;
+export const MAX_WILDCARD_INPUT_LENGTH = 1024 * 1024;
+
+/** Preserve the previous non-Unicode RegExp `/i` case-equivalence rules. */
+function canonicalizeCase(value: string): string {
+  let canonical = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index] ?? "";
+    const uppercase = character.toUpperCase();
+    if (
+      uppercase.length !== 1 ||
+      (character.charCodeAt(0) >= 128 && uppercase.charCodeAt(0) < 128)
+    ) {
+      canonical += character;
+    } else {
+      canonical += uppercase;
+    }
+  }
+  return canonical;
+}
+
 function normalizeToolName(name: string): string {
   const lower = name.trim().replace(/^@/, "").toLowerCase();
   const aliases: Record<string, string> = {
@@ -41,11 +62,104 @@ export function parseToolPattern(value: unknown): ToolPattern | undefined {
   };
 }
 
-function wildcardToRegExp(pattern: string): RegExp {
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*/g, ".*");
-  return new RegExp(`^${escaped}$`, "i");
+function literalPrefixTable(value: string): number[] {
+  const table = new Array<number>(value.length).fill(0);
+  let prefixLength = 0;
+  for (let index = 1; index < value.length; index += 1) {
+    while (
+      prefixLength > 0 && value[index] !== value[prefixLength]
+    ) {
+      prefixLength = table[prefixLength - 1] ?? 0;
+    }
+    if (value[index] === value[prefixLength]) prefixLength += 1;
+    table[index] = prefixLength;
+  }
+  return table;
+}
+
+function findLiteral(
+  value: string,
+  literal: string,
+  start: number,
+  end: number,
+): number {
+  const prefixTable = literalPrefixTable(literal);
+  let matched = 0;
+  for (let index = start; index < end; index += 1) {
+    while (matched > 0 && value[index] !== literal[matched]) {
+      matched = prefixTable[matched - 1] ?? 0;
+    }
+    if (value[index] === literal[matched]) matched += 1;
+    if (matched === literal.length) return index - literal.length + 1;
+  }
+  return -1;
+}
+
+/**
+ * Match a case-insensitive `*` wildcard pattern in linear time.
+ *
+ * `*` matches zero or more characters, including newlines and path separators.
+ * Over-limit values match conservatively so deny and ask rules fail closed.
+ */
+export function matchesWildcardPattern(
+  pattern: string,
+  value: string,
+): boolean {
+  if (
+    pattern.length > MAX_WILDCARD_PATTERN_LENGTH ||
+    value.length > MAX_WILDCARD_INPUT_LENGTH
+  ) {
+    return true;
+  }
+
+  const normalizedPattern = canonicalizeCase(pattern);
+  const normalizedValue = canonicalizeCase(value);
+  if (!normalizedPattern.includes("*")) {
+    return normalizedPattern === normalizedValue;
+  }
+
+  const startsWithWildcard = normalizedPattern.startsWith("*");
+  const endsWithWildcard = normalizedPattern.endsWith("*");
+  const literals = normalizedPattern.split("*").filter(Boolean);
+  if (literals.length === 0) return true;
+
+  let literalIndex = 0;
+  let valueIndex = 0;
+  let lastLiteralIndex = literals.length;
+
+  if (!startsWithWildcard) {
+    const prefix = literals[0] ?? "";
+    if (!normalizedValue.startsWith(prefix)) return false;
+    valueIndex = prefix.length;
+    literalIndex = 1;
+  }
+
+  let searchEnd = normalizedValue.length;
+  if (!endsWithWildcard) {
+    const suffix = literals[literals.length - 1] ?? "";
+    searchEnd -= suffix.length;
+    if (
+      searchEnd < valueIndex ||
+      !normalizedValue.endsWith(suffix)
+    ) {
+      return false;
+    }
+    lastLiteralIndex -= 1;
+  }
+
+  for (; literalIndex < lastLiteralIndex; literalIndex += 1) {
+    const literal = literals[literalIndex] ?? "";
+    const found = findLiteral(
+      normalizedValue,
+      literal,
+      valueIndex,
+      searchEnd,
+    );
+    if (found < 0) return false;
+    valueIndex = found + literal.length;
+  }
+
+  return true;
 }
 
 function getPrimaryArgument(
@@ -93,7 +207,7 @@ export function matchesDeniedPath(
   const normalized = resolvedPath.replace(/\\/g, "/").normalize("NFC");
   return deniedPaths.some((pattern) =>
     deniedPatternVariants(pattern).some((variant) =>
-      wildcardToRegExp(variant.normalize("NFC")).test(normalized)
+      matchesWildcardPattern(variant.normalize("NFC"), normalized)
     )
   );
 }
@@ -130,41 +244,20 @@ function withoutTrailingSlash(path: string): string {
 
 function wildcardCanMatchDescendant(root: string, pattern: string): boolean {
   const normalizedRoot = withoutTrailingSlash(
-    root.replace(/\\/g, "/").normalize("NFC").toLowerCase(),
+    canonicalizeCase(root.replace(/\\/g, "/").normalize("NFC")),
   );
-  const prefix = normalizedRoot === "/" || /^[a-z]:\/$/.test(normalizedRoot)
+  const prefix = normalizedRoot === "/" || /^[A-Za-z]:\/$/.test(normalizedRoot)
     ? normalizedRoot
     : `${normalizedRoot}/`;
-  const normalizedPattern = pattern.normalize("NFC").toLowerCase();
-
-  const addWildcardSkips = (states: Set<number>): Set<number> => {
-    const closure = new Set(states);
-    const pending = [...states];
-    while (pending.length > 0) {
-      const state = pending.pop();
-      if (state === undefined || normalizedPattern[state] !== "*") continue;
-      const next = state + 1;
-      if (!closure.has(next)) {
-        closure.add(next);
-        pending.push(next);
-      }
-    }
-    return closure;
-  };
-
-  let states = addWildcardSkips(new Set([0]));
-  for (const character of prefix) {
-    const nextStates = new Set<number>();
-    for (const state of states) {
-      const token = normalizedPattern[state];
-      if (token === "*") nextStates.add(state);
-      else if (token === character) nextStates.add(state + 1);
-    }
-    states = addWildcardSkips(nextStates);
-    if (states.size === 0) return false;
+  const normalizedPattern = canonicalizeCase(pattern.normalize("NFC"));
+  const wildcardIndex = normalizedPattern.indexOf("*");
+  if (wildcardIndex < 0) {
+    return normalizedPattern.length > prefix.length &&
+      normalizedPattern.startsWith(prefix);
   }
 
-  return [...states].some((state) => state < normalizedPattern.length);
+  const fixedPrefix = normalizedPattern.slice(0, wildcardIndex);
+  return prefix.startsWith(fixedPrefix) || fixedPrefix.startsWith(prefix);
 }
 
 /**
@@ -177,11 +270,15 @@ export function recursiveSearchMayReachDeniedPath(
   resolvedRoot: string,
   deniedPaths: string[],
 ): boolean {
-  return deniedPaths.some((pattern) =>
-    deniedPatternVariants(pattern).some((expanded) =>
+  if (resolvedRoot.length > MAX_WILDCARD_INPUT_LENGTH) {
+    return deniedPaths.length > 0;
+  }
+  return deniedPaths.some((pattern) => {
+    if (pattern.length > MAX_WILDCARD_PATTERN_LENGTH) return true;
+    return deniedPatternVariants(pattern).some((expanded) =>
       wildcardCanMatchDescendant(resolvedRoot, expanded)
-    )
-  );
+    );
+  });
 }
 
 /** Match a scoped permission rule against a concrete tool call. */
@@ -195,5 +292,5 @@ export function matchesToolPattern(
   if (pattern.toolName !== normalizeToolName(toolName)) return false;
   if (!pattern.argumentPattern || pattern.argumentPattern === "*") return true;
   const primary = getPrimaryArgument(toolName, input, cwd);
-  return wildcardToRegExp(pattern.argumentPattern).test(primary);
+  return matchesWildcardPattern(pattern.argumentPattern, primary);
 }

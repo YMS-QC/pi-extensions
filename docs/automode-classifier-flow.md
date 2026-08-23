@@ -131,6 +131,8 @@ Example rule:
 
 Permission patterns are scoped to the Pi tool and its primary argument. For `bash`, the primary argument is `input.command`. For file tools such as `read`, `write`, and `edit`, it is the resolved path normalized for matching.
 
+The `*` wildcard matches zero or more characters, including newlines and path separators. Matching is case-insensitive and uses a bounded linear-time algorithm. A configured pattern can contain at most 4,096 characters. A primary argument can contain at most 1,048,576 characters. A longer argument conservatively matches a scoped deny or ask rule.
+
 ### `permissions.ask`
 
 `permissions.ask` runs after `permissions.deny`.

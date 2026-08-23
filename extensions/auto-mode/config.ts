@@ -18,7 +18,10 @@ import {
   PI_PROJECT_LOCAL_SETTINGS,
   PI_PROJECT_SHARED_SETTINGS,
 } from "./constants.ts";
-import { parseToolPattern } from "./permissions.ts";
+import {
+  MAX_WILDCARD_PATTERN_LENGTH,
+  parseToolPattern,
+} from "./permissions.ts";
 import type {
   AutoModeSettings,
   ClassifierReasoningLevel,
@@ -264,6 +267,10 @@ export function validateSettingsFile(
             diagnostics.push(
               `${source}: permissions.${key}[${index}] must be a tool pattern string`,
             );
+          } else if (entry.length > MAX_WILDCARD_PATTERN_LENGTH) {
+            diagnostics.push(
+              `${source}: permissions.${key}[${index}] must be at most ${MAX_WILDCARD_PATTERN_LENGTH} characters`,
+            );
           }
         }
       }
@@ -284,13 +291,19 @@ function createRuleAccumulator(defaults: string[]): RuleAccumulator {
   return { defaults, includeDefaults: true, seen: false, entries: [] };
 }
 
-function applyRuleSetting(accumulator: RuleAccumulator, value: unknown): void {
+function applyRuleSetting(
+  accumulator: RuleAccumulator,
+  value: unknown,
+  acceptEntry: (entry: string) => boolean = () => true,
+): void {
   const entries = stringArray(value);
   if (!entries) return;
   accumulator.seen = true;
   accumulator.includeDefaults = entries.includes("$defaults");
   for (const entry of entries) {
-    if (entry !== "$defaults") accumulator.entries.push(entry);
+    if (entry !== "$defaults" && acceptEntry(entry)) {
+      accumulator.entries.push(entry);
+    }
   }
 }
 
@@ -353,6 +366,12 @@ function validateDeniedPathsSetting(
     if (typeof entry !== "string" || entry.trim() === "") {
       diagnostics.push(
         `${source}: deniedPaths[${index}] must be a non-empty path pattern`,
+      );
+      continue;
+    }
+    if (entry.length > MAX_WILDCARD_PATTERN_LENGTH) {
+      diagnostics.push(
+        `${source}: deniedPaths[${index}] must be at most ${MAX_WILDCARD_PATTERN_LENGTH} characters`,
       );
       continue;
     }
@@ -449,6 +468,7 @@ function appendPermissionPatterns(
   const values = stringArray(settings?.permissions?.[key]);
   if (!values) return;
   for (const value of values) {
+    if (value.length > MAX_WILDCARD_PATTERN_LENGTH) continue;
     const pattern = parseToolPattern(value);
     if (pattern) target.push(pattern);
   }
@@ -507,7 +527,11 @@ export function buildEffectiveConfigFromSources(
     applyRuleSetting(environment, settings.autoMode?.environment);
     applyRuleSetting(allow, settings.autoMode?.allow);
     applyRuleSetting(protectedPaths, settings.autoMode?.protectedPaths);
-    applyRuleSetting(deniedPaths, settings.autoMode?.deniedPaths);
+    applyRuleSetting(
+      deniedPaths,
+      settings.autoMode?.deniedPaths,
+      (entry) => entry.length <= MAX_WILDCARD_PATTERN_LENGTH,
+    );
     applyRuleSetting(
       softDeny,
       settings.autoMode?.soft_deny ?? settings.autoMode?.softDeny,

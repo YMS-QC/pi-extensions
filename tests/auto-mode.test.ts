@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -12,6 +13,8 @@ import {
 	DEFAULT_LOG_CONFIG,
 	DEFAULT_PROTECTED_PATHS,
 	DEFAULT_SOFT_DENY,
+	MAX_WILDCARD_INPUT_LENGTH,
+	MAX_WILDCARD_PATTERN_LENGTH,
 	PI_GLOBAL_SETTINGS,
 	buildClassifierActionMessage,
 	buildClassifierTranscript,
@@ -27,8 +30,10 @@ import {
 	deterministicHardDeny,
 	isRootHomeOrSystemPath,
 	loadEffectiveConfigWithDiagnostics,
+	matchesDeniedPath,
 	matchesProtectedPath,
 	matchesToolPattern,
+	matchesWildcardPattern,
 	modelVisibleConfigDiagnostics,
 	newDecisionId,
 	parseClassifierDecision,
@@ -700,6 +705,96 @@ test("permission patterns keep argument scope instead of flattening to a tool al
 	const capitalized = parseToolPattern("Bash(git status*)");
 	assert.ok(capitalized);
 	assert.equal(matchesToolPattern(capitalized, "bash", { command: "git status --short" }, process.cwd()), true);
+});
+
+test("wildcard matching is anchored, case-insensitive, and includes newlines", () => {
+	assert.equal(matchesWildcardPattern("git *", "GIT status\n--short"), true);
+	assert.equal(matchesWildcardPattern("*.env", "/tmp/project/.ENV"), true);
+	assert.equal(matchesWildcardPattern("Σ*", "ς-file"), true);
+	assert.equal(matchesWildcardPattern("Μ*", "µ-file"), true);
+	assert.equal(matchesWildcardPattern("a.b", "axb"), false);
+	assert.equal(matchesWildcardPattern("prefix*suffix", "prefixsuffix"), true);
+	assert.equal(matchesWildcardPattern("prefix*suffix", "xprefixsuffix"), false);
+	assert.equal(matchesWildcardPattern("prefix*suffix", "prefixsuffixx"), false);
+});
+
+test("wildcard matching accepts maximum lengths and fails closed above them", () => {
+	const maximumPattern = "a".repeat(MAX_WILDCARD_PATTERN_LENGTH);
+	const maximumInput = "a".repeat(MAX_WILDCARD_INPUT_LENGTH);
+	assert.equal(matchesWildcardPattern(maximumPattern, maximumPattern), true);
+	assert.equal(matchesWildcardPattern("b", maximumInput), false);
+	assert.equal(matchesWildcardPattern(`${maximumPattern}a`, "b"), true);
+	assert.equal(matchesWildcardPattern("b", `${maximumInput}a`), true);
+});
+
+test("wildcard config limits produce diagnostics and reject oversized entries", () => {
+	const maximumPermission = `bash(${
+		"a".repeat(MAX_WILDCARD_PATTERN_LENGTH - "bash()".length)
+	})`;
+	const oversizedPermission = `${maximumPermission}a`;
+	const maximumDeniedPath = `/${
+		"a".repeat(MAX_WILDCARD_PATTERN_LENGTH - 1)
+	}`;
+	const oversizedDeniedPath = `${maximumDeniedPath}a`;
+	const settings = {
+		autoMode: {
+			deniedPaths: [maximumDeniedPath, oversizedDeniedPath],
+		},
+		permissions: {
+			deny: [maximumPermission, oversizedPermission],
+		},
+	};
+
+	const diagnostics = validateSettingsFile(settings, "test-config");
+	assert.equal(
+		diagnostics.some((line) =>
+			line.includes(`permissions.deny[1] must be at most ${MAX_WILDCARD_PATTERN_LENGTH} characters`)
+		),
+		true,
+	);
+	assert.equal(
+		diagnostics.some((line) =>
+			line.includes(`deniedPaths[1] must be at most ${MAX_WILDCARD_PATTERN_LENGTH} characters`)
+		),
+		true,
+	);
+
+	const config = buildEffectiveConfigFromSources({
+		projectLocalSettings: [settings],
+	});
+	assert.deepEqual(config.deniedPaths, [maximumDeniedPath]);
+	assert.deepEqual(config.permissionDeny.map((pattern) => pattern.raw), [
+		maximumPermission,
+	]);
+});
+
+test("adversarial wildcard matching completes within a bounded child process", () => {
+	const script = `
+		import { matchesWildcardPattern } from "./extensions/auto-mode.ts";
+		const pattern = "*a".repeat(30) + "b";
+		const value = "a".repeat(300);
+		process.stdout.write(String(matchesWildcardPattern(pattern, value)));
+	`;
+	const result = spawnSync(
+		process.execPath,
+		["--import", "tsx", "--input-type=module", "-e", script],
+		{ cwd: process.cwd(), encoding: "utf8", timeout: 3000 },
+	);
+
+	assert.equal(result.error, undefined, result.error?.message);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.stdout, "false");
+});
+
+test("denied-path matching uses the bounded wildcard matcher", () => {
+	assert.equal(
+		matchesDeniedPath("/tmp/project/secret\nfile", ["/tmp/*"]),
+		true,
+	);
+	assert.equal(
+		matchesDeniedPath("/tmp/project/public.txt", ["/tmp/*/secret.txt"]),
+		false,
+	);
 });
 
 test("deterministic hard deny catches safety-control edits", () => {
@@ -1917,6 +2012,16 @@ test("recursive denied-path scope checks are conservative but path-scoped", () =
 		recursiveSearchMayReachDeniedPath("/tmp/project/private-one", [
 			"/tmp/project/private-*/token",
 		]),
+		true,
+	);
+	assert.equal(
+		recursiveSearchMayReachDeniedPath("/tmp/ς-dir", [
+			"/tmp/Σ*/token",
+		]),
+		true,
+	);
+	assert.equal(
+		recursiveSearchMayReachDeniedPath("C:/", ["C:/secrets/*"]),
 		true,
 	);
 });
