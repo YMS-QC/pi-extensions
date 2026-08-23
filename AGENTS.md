@@ -43,6 +43,8 @@ npm pack --dry-run
 
 ## Testing expectations
 
+Use red/green TDD for behavior changes: first add or update a test that demonstrates the missing behavior, then implement the smallest passing change.
+
 When changing guardrail behavior, add or update tests in `tests/auto-mode.test.ts` for:
 
 - config precedence and diagnostics;
