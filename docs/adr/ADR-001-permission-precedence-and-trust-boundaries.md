@@ -20,7 +20,7 @@ Pi-automode uses this permission policy:
 4. If the user accepts, deterministic denial checks continue.
 5. After these checks pass, the classifier reviews the accepted tool call.
 6. An accepted ask rule disables all later deterministic allow tiers for that call.
-7. A `permissions.allow` rule can skip classifier review only when no ask rule matched.
+7. If no ask rule matched, a `permissions.allow` rule can skip classifier review.
 8. Deterministic hard-deny checks, path-deny checks, and protected-path controls take precedence over allow rules.
 
 Pi-automode reads `permissions.allow` only from user-owned configuration sources:

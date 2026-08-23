@@ -1,6 +1,6 @@
 # Agent diagnostics
 
-`automode_inspect` is a model-callable, read-only tool. It lets an agent inspect the active pi-automode state without asking a user to copy slash-command output.
+`automode_inspect` is a model-callable, read-only tool. An agent can use it to inspect active pi-automode state without copied slash-command output.
 
 Use this tool to investigate an unexpected allow or block. Do not use it to change a safety control or to bypass a denial.
 
@@ -15,7 +15,7 @@ The tool accepts one `action` value.
 | `defaults` | Inspect built-in rule lists. | The built-in environment, allow, protected-path, soft-deny, and hard-deny lists. |
 | `denials` | Find recent rejected actions. | Reverse-chronological timestamps, enforcement kinds, and tool names. |
 
-The tool reads the same in-memory configuration and state that pi-automode uses for enforcement. Configuration changes take effect after session start or `/automode reload`.
+The tool reads the same in-memory configuration and state that pi-automode enforces. Configuration changes take effect after session start or `/automode reload`.
 
 ## Enforcement behavior
 
@@ -26,7 +26,7 @@ An inspection call is not an unrestricted escape hatch.
 3. Deterministic hard-deny checks run next.
 4. The extension bypasses classifier routing only for its own registered `automode_inspect` tool.
 
-If a local check blocks the call, pi-automode records it like any other blocked action. If the call passes the local checks, inspection does not change action counters, persisted state, or observability logs.
+If a local check blocks the call, pi-automode records it as a blocked action. If the call passes, inspection does not change counters, state, or logs.
 
 The extension verifies the registered tool source before it applies the bypass. A tool from another extension with the same name does not receive this exemption.
 
@@ -34,7 +34,7 @@ The tool cannot enable or disable auto mode, reload configuration, reset state, 
 
 ## Model-visible data
 
-Tool output becomes context for the current model. The output has deliberate privacy limits:
+Pi sends tool output to the current model. The output has deliberate privacy limits:
 
 - `status` does not include the last decision reason.
 - `denials` does not include denial reasons or action payloads.
@@ -53,7 +53,7 @@ The tool serializes output defensively. Arrays longer than 30 entries become an 
 }
 ```
 
-String values and the complete serialized result also have size limits. Treat a truncated result as incomplete. Do not infer that an omitted rule does not exist.
+String values and the complete serialized result also have size limits. Treat a truncated result as incomplete. An omitted rule can still exist.
 
 ## Observability log path
 
@@ -62,7 +62,7 @@ Use the `config` view to get the log path for the current session. Its `logFile`
 - A persisted session uses a sidecar beside its Pi session file.
 - An in-memory session uses the application-owned log directory for the effective session working directory.
 
-For in-memory sessions, the default location is:
+For in-memory sessions, pi-automode uses this default location:
 
 ```text
 ~/.pi/agent/extensions/pi-automode/logs/<encoded-session-cwd>/YYYY-MM-DD/<session-id>-pi-automode.jsonl
@@ -74,13 +74,17 @@ See [Observability logging](observability-logging.md) for log configuration and 
 
 ## Diagnosis workflow
 
+Classifier rules cannot override permission or deterministic denials.
+
 1. Call `automode_inspect` with `status`, `config`, and `denials`.
-2. Use the reported log path only when observability logging is enabled.
+2. If observability logging is enabled, use the reported log path.
 3. Read a matching decision entry before you propose a rule change.
-4. Identify the enforcement layer before you change a rule. Classifier rules cannot override permission or deterministic denials.
-5. If a configuration change is necessary, explain it and ask the user to run `/automode off`.
-6. Make only the requested configuration change during that maintenance window.
-7. Ask the user to run `/automode reload` and `/automode on`.
-8. Confirm the enabled state with `automode_inspect` before you retry a safe action.
+4. Identify the enforcement layer before you change a rule.
+5. If a configuration change is necessary, explain the change.
+6. Ask the user to run `/automode off`.
+7. Make only the requested configuration change during that maintenance window.
+8. Ask the user to run `/automode reload` and `/automode on`.
+9. Use `automode_inspect` to make sure that auto mode is enabled.
+10. Retry only an action that you know is safe.
 
 Do not replay an unsafe action because auto mode is off. Do not print sensitive tool input or log content in a diagnosis report.
