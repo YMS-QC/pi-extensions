@@ -555,9 +555,10 @@ function loadedSettingsDiagnostics(
   return files.flatMap((file) => file?.diagnostics ?? []);
 }
 
-/** Load config from disk and environment variables, including diagnostics for `/automode config`. */
+/** Load config from disk and environment variables, including diagnostics for `/automode config`. Project files require explicit trust. */
 export function loadEffectiveConfigWithDiagnostics(
   cwd: string,
+  projectTrusted = false,
 ): ConfigLoadResult {
   const inlineSettings: SettingsFile[] = [];
   const diagnostics: string[] = [];
@@ -580,12 +581,27 @@ export function loadEffectiveConfigWithDiagnostics(
   }
 
   const globalFiles = PI_GLOBAL_SETTINGS.map(readSettingsFile);
-  const projectLocalFiles = PI_PROJECT_LOCAL_SETTINGS.map((file) =>
-    readSettingsFile(resolve(cwd, file))
+  const projectLocalPaths = PI_PROJECT_LOCAL_SETTINGS.map((file) =>
+    resolve(cwd, file)
   );
-  const projectSharedFiles = PI_PROJECT_SHARED_SETTINGS.map((file) =>
-    readSettingsFile(resolve(cwd, file))
+  const projectSharedPaths = PI_PROJECT_SHARED_SETTINGS.map((file) =>
+    resolve(cwd, file)
   );
+  const projectLocalFiles = projectTrusted
+    ? projectLocalPaths.map(readSettingsFile)
+    : [];
+  const projectSharedFiles = projectTrusted
+    ? projectSharedPaths.map(readSettingsFile)
+    : [];
+  if (!projectTrusted) {
+    for (
+      const path of [...projectLocalPaths, ...projectSharedPaths].filter(
+        existsSync,
+      )
+    ) {
+      diagnostics.push(`${path}: ignored because project is not trusted`);
+    }
+  }
   const fileDiagnostics = loadedSettingsDiagnostics([
     ...globalFiles,
     ...projectLocalFiles,
@@ -604,8 +620,11 @@ export function loadEffectiveConfigWithDiagnostics(
 }
 
 /** Load config from disk and environment variables. Exported for tests and diagnostics. */
-export function loadEffectiveConfig(cwd: string): EffectiveConfig {
-  return loadEffectiveConfigWithDiagnostics(cwd).config;
+export function loadEffectiveConfig(
+  cwd: string,
+  projectTrusted = false,
+): EffectiveConfig {
+  return loadEffectiveConfigWithDiagnostics(cwd, projectTrusted).config;
 }
 
 function readWritableSettingsFile(path: string): SettingsFile {

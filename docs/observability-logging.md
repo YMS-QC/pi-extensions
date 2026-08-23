@@ -4,7 +4,7 @@ Auto mode can write a JSONL observability log so you can inspect decisions and c
 
 ## Enabling
 
-Set `autoMode.log` in any Pi-owned config source (`~/.pi/agent/automode.json`, `.pi/automode.local.json`, or `PI_AUTOMODE_SETTINGS_JSON`):
+Set `autoMode.log` in any Pi-owned config source (`~/.pi/agent/automode.json`, trusted-project `.pi/automode.local.json`, or `PI_AUTOMODE_SETTINGS_JSON`):
 
 ```json
 {
@@ -20,7 +20,7 @@ Set `autoMode.log` in any Pi-owned config source (`~/.pi/agent/automode.json`, `
 - `enabled` — write one `decision` line per tool-call decision and one ccusage-compatible `message` line per classifier model response.
 - `classifierIo` — also write the classifier's prompt, raw model responses, and parsed decision for classifier-routed actions. Off by default; see [Privacy](#privacy) below.
 
-Fields merge independently across config scopes (set `enabled` globally and `classifierIo` per project, for example). Shared project `.pi/automode.json` cannot set `log` — it follows the same `autoMode` exclusion as the rest of the config. Shape is validated and reported by `/automode config`.
+Fields merge independently across config scopes (set `enabled` globally and `classifierIo` for a trusted project, for example). Shared project `.pi/automode.json` cannot set `log` — it follows the same `autoMode` exclusion as the rest of the config. Shape is validated and reported by `/automode config`.
 
 Logging only writes entries while auto-mode is **enabled**. With auto-mode off, no tool calls reach the hook, so no entries are produced.
 

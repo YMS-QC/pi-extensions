@@ -23,7 +23,6 @@ import {
   READ_ONLY_TOOLS,
 } from "./constants.ts";
 import {
-  loadEffectiveConfig,
   loadEffectiveConfigWithDiagnostics,
   writeGlobalClassifierModel,
 } from "./config.ts";
@@ -96,7 +95,7 @@ export function modelVisibleConfigDiagnostics(
 
 export type PiAutomodeOptions = {
   /** Override config loading in tests. Runtime code uses Pi-owned disk settings. */
-  loadConfig?: (cwd: string) => EffectiveConfig;
+  loadConfig?: (cwd: string, projectTrusted: boolean) => EffectiveConfig;
   /** Override classifier calls in tests so unit tests never need a real LLM/API key. */
   classifyAction?: ClassifyAction;
   /** Override classifier-model persistence in tests. Runtime code writes ~/.pi/agent/automode.json. */
@@ -155,8 +154,8 @@ function logClassifierIo(decision: ClassifyResult, log: LogCtx): void {
 /** Create a Pi extension instance. Default export uses production dependencies. */
 export function createPiAutomode(options: PiAutomodeOptions = {}) {
   const loadConfigWithDiagnostics = options.loadConfig
-    ? (cwd: string): ConfigLoadResult => ({
-      config: options.loadConfig?.(cwd) ?? loadEffectiveConfig(cwd),
+    ? (cwd: string, projectTrusted: boolean): ConfigLoadResult => ({
+      config: options.loadConfig!(cwd, projectTrusted),
       diagnostics: [],
     })
     : loadEffectiveConfigWithDiagnostics;
@@ -166,7 +165,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
   const now = options.now ?? (() => new Date());
 
   return function piAutomode(pi: ExtensionAPI) {
-    let loadResult = loadConfigWithDiagnostics(process.cwd());
+    let loadResult = loadConfigWithDiagnostics(process.cwd(), false);
     let config: EffectiveConfig = loadResult.config;
     let configDiagnostics: string[] = loadResult.diagnostics;
     let state: AutoModeState = {
@@ -347,7 +346,10 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
     }
 
     pi.on("session_start", (_event, ctx) => {
-      loadResult = loadConfigWithDiagnostics(ctx.cwd);
+      loadResult = loadConfigWithDiagnostics(
+        ctx.cwd,
+        ctx.isProjectTrusted(),
+      );
       config = loadResult.config;
       configDiagnostics = loadResult.diagnostics;
       state = restoreState(ctx);
@@ -609,7 +611,10 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         return;
       }
       if (command === "reload") {
-        loadResult = loadConfigWithDiagnostics(ctx.cwd);
+        loadResult = loadConfigWithDiagnostics(
+          ctx.cwd,
+          ctx.isProjectTrusted(),
+        );
         config = loadResult.config;
         configDiagnostics = loadResult.diagnostics;
         persist();
@@ -713,7 +718,10 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           );
           return;
         }
-        loadResult = loadConfigWithDiagnostics(ctx.cwd);
+        loadResult = loadConfigWithDiagnostics(
+          ctx.cwd,
+          ctx.isProjectTrusted(),
+        );
         config = loadResult.config;
         configDiagnostics = loadResult.diagnostics;
         persist();

@@ -23,6 +23,7 @@ import {
 	createPiAutomode,
 	deterministicHardDeny,
 	isRootHomeOrSystemPath,
+	loadEffectiveConfigWithDiagnostics,
 	matchesProtectedPath,
 	matchesToolPattern,
 	modelVisibleConfigDiagnostics,
@@ -458,6 +459,125 @@ test("automode exposes one read-only inspection tool", () => {
 
 test("global config path uses Pi agent config directory", () => {
 	assert.match(PI_GLOBAL_SETTINGS[0] ?? "", /\.pi\/agent\/automode\.json$/);
+});
+
+test("disk config ignores all project files until the project is trusted", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-trust-"));
+	const previousInlineSettings = process.env.PI_AUTOMODE_SETTINGS_JSON;
+	delete process.env.PI_AUTOMODE_SETTINGS_JSON;
+	try {
+		const piDir = join(dir, ".pi");
+		mkdirSync(piDir, { recursive: true });
+		const localPath = join(piDir, "automode.local.json");
+		const sharedPath = join(piDir, "automode.json");
+		writeFileSync(localPath, JSON.stringify({
+			autoMode: {
+				enabled: false,
+				classifierModel: "project/trusted-marker",
+				allow: ["project trusted allow"],
+				soft_deny: ["project trusted soft deny"],
+				hard_deny: ["project trusted hard deny"],
+			},
+		}));
+		writeFileSync(sharedPath, JSON.stringify({
+			permissions: {
+				deny: ["bash(project-trusted-command *)"],
+				ask: ["write(project-trusted-path *)"],
+			},
+		}));
+
+		const untrusted = loadEffectiveConfigWithDiagnostics(dir, false);
+		assert.notEqual(untrusted.config.classifierModel, "project/trusted-marker");
+		assert.equal(untrusted.config.allow.includes("project trusted allow"), false);
+		assert.equal(untrusted.config.softDeny.includes("project trusted soft deny"), false);
+		assert.equal(untrusted.config.hardDeny.includes("project trusted hard deny"), false);
+		assert.equal(
+			untrusted.config.permissionDeny.some((pattern) => pattern.raw === "bash(project-trusted-command *)"),
+			false,
+		);
+		assert.equal(
+			untrusted.config.permissionAsk.some((pattern) => pattern.raw === "write(project-trusted-path *)"),
+			false,
+		);
+		assert.equal(
+			untrusted.diagnostics.includes(`${localPath}: ignored because project is not trusted`),
+			true,
+		);
+		assert.equal(
+			untrusted.diagnostics.includes(`${sharedPath}: ignored because project is not trusted`),
+			true,
+		);
+
+		const trusted = loadEffectiveConfigWithDiagnostics(dir, true);
+		assert.equal(trusted.config.enabled, false);
+		assert.equal(trusted.config.classifierModel, "project/trusted-marker");
+		assert.equal(trusted.config.allow.includes("project trusted allow"), true);
+		assert.equal(trusted.config.softDeny.includes("project trusted soft deny"), true);
+		assert.equal(trusted.config.hardDeny.includes("project trusted hard deny"), true);
+		assert.equal(
+			trusted.config.permissionDeny.some((pattern) => pattern.raw === "bash(project-trusted-command *)"),
+			true,
+		);
+		assert.equal(
+			trusted.config.permissionAsk.some((pattern) => pattern.raw === "write(project-trusted-path *)"),
+			true,
+		);
+		assert.equal(
+			trusted.diagnostics.some((line) => line.includes("ignored because project is not trusted")),
+			false,
+		);
+	} finally {
+		if (previousInlineSettings === undefined) {
+			delete process.env.PI_AUTOMODE_SETTINGS_JSON;
+		} else {
+			process.env.PI_AUTOMODE_SETTINGS_JSON = previousInlineSettings;
+		}
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("extension gates initial and reloaded project config on current trust", async () => {
+	const fake = createFakePi();
+	const loads: Array<{ cwd: string; projectTrusted: boolean }> = [];
+	createPiAutomode({
+		loadConfig: (cwd, projectTrusted) => {
+			loads.push({ cwd, projectTrusted });
+			return baseConfig({ enabled: !projectTrusted });
+		},
+	})(fake.pi);
+
+	const untrustedCtx = createFakeCtx(fake.entries, {
+		isProjectTrusted: () => false,
+	});
+	const initialOutput = await fake.tools.get("automode_inspect")?.execute(
+		"call-initial-config",
+		{ action: "config" },
+		undefined,
+		undefined,
+		untrustedCtx,
+	);
+	assert.equal(initialOutput.details.config.enabled, true);
+	assert.deepEqual(loads, [{ cwd: process.cwd(), projectTrusted: false }]);
+
+	await fake.emit("session_start", { type: "session_start" }, untrustedCtx);
+	await fake.commands.get("automode")?.handler("reload", untrustedCtx);
+	assert.deepEqual(loads.map((load) => load.projectTrusted), [false, false, false]);
+
+	const trustedCtx = createFakeCtx(fake.entries, {
+		isProjectTrusted: () => true,
+	});
+	await fake.emit("session_start", { type: "session_start" }, trustedCtx);
+	await fake.commands.get("automode")?.handler("reload", trustedCtx);
+	assert.deepEqual(loads.map((load) => load.projectTrusted), [false, false, false, true, true]);
+
+	const trustedOutput = await fake.tools.get("automode_inspect")?.execute(
+		"call-trusted-config",
+		{ action: "config" },
+		undefined,
+		undefined,
+		trustedCtx,
+	);
+	assert.equal(trustedOutput.details.config.enabled, false);
 });
 
 test("project shared Pi settings can add permissions but cannot weaken autoMode", () => {

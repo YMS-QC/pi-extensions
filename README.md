@@ -86,10 +86,12 @@ The extension follows Claude Code's documented config model where Pi can support
 It reads `autoMode` from Pi-owned config only:
 
 - `~/.pi/agent/automode.json`
-- `.pi/automode.local.json`
+- `.pi/automode.local.json` for trusted projects
 - `PI_AUTOMODE_SETTINGS_JSON`
 
-It deliberately does not read `autoMode` from shared project `.pi/automode.json`, because a checked-in repo should not be able to weaken auto-mode rules. Shared project config may still contribute `permissions.deny` and `permissions.ask`.
+It does not read any project config until Pi trusts the project. For an untrusted project, it ignores `.pi/automode.local.json` and `.pi/automode.json`. `/automode config` reports a diagnostic for each ignored file that exists.
+
+It deliberately does not read `autoMode` from shared project `.pi/automode.json`, because a checked-in repo should not be able to weaken auto-mode rules. For a trusted project, shared project config may contribute `permissions.deny` and `permissions.ask`.
 
 To disable pi-automode for the current project, create or edit `.pi/automode.local.json`:
 
@@ -101,9 +103,9 @@ To disable pi-automode for the current project, create or edit `.pi/automode.loc
 }
 ```
 
-This is project-local and should not be committed. Shared project `.pi/automode.json` cannot disable auto-mode.
+This is project-local, applies only after Pi trusts the project, and should not be committed. Shared project `.pi/automode.json` cannot disable auto-mode.
 
-Set a global default classifier model in `~/.pi/agent/automode.json`; override it per project in `.pi/automode.local.json`.
+Set a global default classifier model in `~/.pi/agent/automode.json`; override it for a trusted project in `.pi/automode.local.json`.
 
 `classifierReasoningLevel` optionally requests `low`, `medium`, `high`, `xhigh`, or `max` reasoning for both classifier stages. If the key is absent, pi-automode sends no reasoning preference and leaves the choice to the server. Pi AI clamps unsupported values to the nearest level supported by the selected model; a non-reasoning model resolves to `off`. `low` matches Codex Auto Review's reasoning effort and the practical default when an explicit value is needed. Higher levels can consume the existing 512/1200-token stage limits before producing visible output, which causes the classifier to fail closed. Raise `fastClassifierMaxTokens` (default 512, integer ≥ 16) if you run a reasoning model whose fast-stage budget is truncated before it emits the required `0`/`1` digit.
 

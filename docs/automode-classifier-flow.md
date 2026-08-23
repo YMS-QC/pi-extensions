@@ -75,16 +75,20 @@ flowchart TD
 
 ## Config loading
 
-Config is loaded on `session_start` and can be reloaded with `/automode reload`.
+Global and inline config is loaded during extension initialization. Project config is loaded on `session_start`. The effective config can be reloaded with `/automode reload`.
 
 The effective config combines these sources:
 
 - `~/.pi/agent/automode.json`
-- `.pi/automode.local.json`
+- `.pi/automode.local.json` for trusted projects
 - `PI_AUTOMODE_SETTINGS_JSON`
-- shared `.pi/automode.json`, but only for `permissions.deny` and `permissions.ask`
+- shared `.pi/automode.json` for trusted projects, but only for `permissions.deny` and `permissions.ask`
 
-Shared project `.pi/automode.json` cannot change `autoMode` rules. That is deliberate: a checked-in repo must not be able to weaken auto-mode. It may still add Pi permission rules.
+Before `session_start`, pi-automode loads only global and inline config. On `session_start` and `/automode reload`, it reads project config only when `ctx.isProjectTrusted()` returns `true`.
+
+For an untrusted project, pi-automode ignores both project files. `/automode config` reports a diagnostic for each ignored file that exists.
+
+Shared project `.pi/automode.json` cannot change `autoMode` rules. That is deliberate: a checked-in repo must not be able to weaken auto-mode. For a trusted project, it may add Pi permission rules.
 
 To disable pi-automode for the current project, set `autoMode.enabled` to `false` in `.pi/automode.local.json`:
 
@@ -96,7 +100,7 @@ To disable pi-automode for the current project, set `autoMode.enabled` to `false
 }
 ```
 
-This affects only that project-local config. Shared project `.pi/automode.json` cannot disable auto-mode.
+This affects only that trusted project-local config. Shared project `.pi/automode.json` cannot disable auto-mode.
 
 List settings such as `allow`, `soft_deny`, `hard_deny`, `environment`, and `protectedPaths` support `$defaults`. Omitting `$defaults` replaces the built-ins for that section only. See [Defaults and rule-list behavior](defaults.md).
 
