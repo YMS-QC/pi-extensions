@@ -255,7 +255,10 @@ export interface TelegramMenuActionRuntimeDeps<
     chatId: number,
     replyToMessageId: number,
     text: string,
-    options?: { target?: { chatId: number; threadId?: number } },
+    options?: {
+      target?: { chatId: number; threadId?: number };
+      parseMode?: "HTML";
+    },
   ) => Promise<unknown>;
   sectionRegistry?: TelegramSectionRegistry;
   isVoiceReplyActive?: () => boolean;
@@ -798,8 +801,8 @@ export function createTelegramMenuActionRuntime<
           await deps.sendTextReply(
             chatId,
             replyToMessageId,
-            "Cannot open status while Pi is busy. Send /abort, /next, or /stop.",
-            { target: { chatId, threadId } },
+            "<b>⏳ Cannot open status while Pi is busy. Send /abort, /next, or /stop.</b>",
+            { target: { chatId, threadId }, parseMode: "HTML" },
           );
         },
         getModelMenuState: () => deps.getModelMenuState(chatId, ctx, threadId),
@@ -835,16 +838,16 @@ export function createTelegramMenuActionRuntime<
           await deps.sendTextReply(
             chatId,
             replyToMessageId,
-            "Cannot switch model while Pi is busy. Send /abort, /next, or /stop.",
-            { target: { chatId, threadId } },
+            "<b>⏳ Cannot switch model while Pi is busy. Send /abort, /next, or /stop.</b>",
+            { target: { chatId, threadId }, parseMode: "HTML" },
           );
         },
         sendNoModelsMessage: async () => {
           await deps.sendTextReply(
             chatId,
             replyToMessageId,
-            "No available models with configured auth.",
-            { target: { chatId, threadId } },
+            "<b>🚫 No available models with configured auth.</b>",
+            { target: { chatId, threadId }, parseMode: "HTML" },
           );
         },
         getModelMenuState: () => deps.getModelMenuState(chatId, ctx, threadId),

@@ -40,6 +40,7 @@ import {
   createTelegramQueueHandoff,
   createTelegramQueueHandoffPayload,
   createTelegramQueueHandoffStagingRuntime,
+  createTelegramQueueItemCountGetter,
   createTelegramQueueMutationController,
   createTelegramQueueStore,
   createTelegramSessionLifecycleHooks,
@@ -891,6 +892,66 @@ test("Queue mutation controller binds queue accessors to runtime mutations", () 
   ]);
 });
 
+test("Queue clear retains live items when durable discard fails", () => {
+  const item = createQueueTestPromptTurn();
+  let queuedItems: TelegramQueueItem<string>[] = [item];
+  assert.throws(
+    () =>
+      clearTelegramQueueItemsRuntime({
+        ctx: "ctx",
+        getQueuedItems: () => queuedItems,
+        setQueuedItems: (items) => {
+          queuedItems = items;
+        },
+        onItemsDiscarded: () => {
+          throw new Error("journal publication failed");
+        },
+        updateStatus: () => {},
+      }),
+    /journal publication failed/,
+  );
+  assert.deepEqual(queuedItems, [item]);
+});
+
+test("Queue Skip preserves durable receipts while the item is waiting", () => {
+  const receipt = createTelegramQueueAdmissionReceipt({
+    queueKind: "prompt",
+    scope: "profile-a:bot-a",
+    sourceUpdateIds: [7],
+  })!;
+  const item = createQueueTestPromptTurn({
+    sourceMessageIds: [7],
+    admissionReceipts: [receipt],
+  });
+  let queuedItems: TelegramQueueItem<string>[] = [item];
+  const discarded: TelegramQueueItem<string>[][] = [];
+  const controller = createTelegramQueueMutationController<string>({
+    getQueuedItems: () => queuedItems,
+    setQueuedItems: (items) => {
+      queuedItems = items;
+    },
+    onItemsDiscarded: (items) => discarded.push([...items]),
+    updateStatus: () => {},
+  });
+
+  assert.equal(
+    controller.applyReactionByMessageId(
+      7,
+      { kind: "suppressed", emoji: "👎" },
+      "ctx",
+    ),
+    true,
+  );
+  assert.equal(discarded.length, 0);
+  assert.deepEqual(queuedItems[0]?.admissionReceipts, [receipt]);
+  assert.equal(
+    queuedItems[0]?.kind === "prompt"
+      ? queuedItems[0].reactionSuppressionEmoji
+      : undefined,
+    "👎",
+  );
+});
+
 test("Queue mutation controller does not publish exact receipt replays", () => {
   const receipt = createTelegramQueueAdmissionReceipt({
     queueKind: "prompt",
@@ -1327,19 +1388,26 @@ test("Queued status formatting keeps the terminal status bar compact", () => {
     historyText: "default history",
     statusSummary: "default",
   });
+  const skippedPrompt: TelegramQueueItem = createQueueTestPromptTurn({
+    replyToMessageId: 2,
+    sourceMessageIds: [13],
+    queueOrder: 6,
+    laneOrder: 6,
+    reactionSuppressionEmoji: "👎",
+    historyText: "skipped history",
+  });
   const controlItem: TelegramQueueItem = createQueueTestControlItem({
     replyToMessageId: 3,
-    queueOrder: 6,
+    queueOrder: 7,
     statusSummary: "⚡ status",
   });
+  const items = [controlItem, priorityPrompt, skippedPrompt, defaultPrompt];
+  assert.equal(formatQueuedTelegramItemsStatus(items), " +3");
   assert.equal(
-    formatQueuedTelegramItemsStatus([
-      controlItem,
-      priorityPrompt,
-      defaultPrompt,
-    ]),
-    " +3",
+    createTelegramQueueItemCountGetter({ getQueuedItems: () => items })(),
+    3,
   );
+  assert.equal(formatQueuedTelegramItemsStatus([skippedPrompt]), "");
 });
 
 test("Queue enqueue planning folds queued prompts into history when requested", () => {
@@ -3655,6 +3723,9 @@ test("Session runtime helper runs shutdown side effects in order", async () => {
     unbindDeferredDispatchContext: () => {
       events.push("unbind");
     },
+    discardQueuedItems: () => {
+      events.push("discard");
+    },
     applyState: (state) => {
       events.push(`state:${state.queuedTelegramItems.length}`);
     },
@@ -3681,6 +3752,7 @@ test("Session runtime helper runs shutdown side effects in order", async () => {
   assert.deepEqual(events, [
     "unbind",
     "polling",
+    "discard",
     "state:0",
     "media",
     "menus",
@@ -4539,6 +4611,10 @@ test("Queue dispatch retains reaction-suppressed prompts until their turn, then 
       queuedItems = items;
     },
     canDispatch: () => canDispatch,
+    onPromptSkipped: (item) => {
+      events.push(`skip:${item.statusSummary}`);
+      return true;
+    },
     updateStatus: () => events.push("status"),
     sendTextReply: async () => undefined,
     onPromptDispatchStart: () => events.push("start"),
@@ -4558,13 +4634,112 @@ test("Queue dispatch retains reaction-suppressed prompts until their turn, then 
 
   canDispatch = true;
   controller.dispatchNext("ctx");
-  assert.deepEqual(events, ["status", "start", "send:text"]);
+  assert.deepEqual(events, [
+    "status",
+    "skip:priority-suppressed",
+    "start",
+    "send:text",
+  ]);
   assert.deepEqual(
     queuedItems.map((item) => item.statusSummary),
     ["ready"],
   );
   controller.dispatchNext("ctx");
-  assert.deepEqual(events, ["status", "start", "send:text", "status"]);
+  assert.deepEqual(events, [
+    "status",
+    "skip:priority-suppressed",
+    "start",
+    "send:text",
+    "status",
+  ]);
+});
+
+test("Queue dispatch retains a skipped head when durable settlement fails", () => {
+  const events: string[] = [];
+  let queuedItems: TelegramQueueItem<string>[] = [
+    createQueueTestPromptTurn({ reactionSuppressionEmoji: "👎" }),
+  ];
+  const controller = createTelegramQueueDispatchController<string>({
+    getQueuedItems: () => queuedItems,
+    setQueuedItems: (items) => {
+      queuedItems = items;
+      events.push(`items:${items.length}`);
+    },
+    canDispatch: () => true,
+    onPromptSkipped: () => false,
+    updateStatus: (_ctx, error) => events.push(error ?? "status"),
+    sendTextReply: async () => undefined,
+    onPromptDispatchStart: () => events.push("start"),
+    sendUserMessage: () => events.push("send"),
+    onPromptDispatchFailure: () => events.push("failure"),
+  });
+
+  controller.dispatchNext("ctx");
+  assert.equal(queuedItems.length, 1);
+  assert.deepEqual(events, [
+    "Telegram skipped prompt could not be settled durably.",
+  ]);
+});
+
+test("Queue dispatch removes each settled Skip before a later Skip fails", () => {
+  const first = createQueueTestPromptTurn({
+    replyToMessageId: 1,
+    statusSummary: "first",
+    reactionSuppressionEmoji: "👎",
+  });
+  const second = createQueueTestPromptTurn({
+    replyToMessageId: 2,
+    statusSummary: "second",
+    reactionSuppressionEmoji: "👎",
+  });
+  let queuedItems: TelegramQueueItem<string>[] = [first, second];
+  const controller = createTelegramQueueDispatchController<string>({
+    getQueuedItems: () => queuedItems,
+    setQueuedItems: (items) => {
+      queuedItems = items;
+    },
+    canDispatch: () => true,
+    onPromptSkipped: (item) => item.statusSummary === "first",
+    updateStatus: () => {},
+    sendTextReply: async () => undefined,
+    onPromptDispatchStart: () => {},
+    sendUserMessage: () => {},
+    onPromptDispatchFailure: () => {},
+  });
+
+  controller.dispatchNext("ctx");
+  assert.deepEqual(queuedItems, [second]);
+});
+
+test("Queue dispatch contains thrown Skip settlement failures", () => {
+  const item = createQueueTestPromptTurn({ reactionSuppressionEmoji: "👎" });
+  let queuedItems: TelegramQueueItem<string>[] = [item];
+  const events: string[] = [];
+  const controller = createTelegramQueueDispatchController<string>({
+    getQueuedItems: () => queuedItems,
+    setQueuedItems: (items) => {
+      queuedItems = items;
+    },
+    canDispatch: () => true,
+    onPromptSkipped: () => {
+      throw new Error("journal publication failed");
+    },
+    updateStatus: (_ctx, error) => events.push(error ?? "status"),
+    sendTextReply: async () => undefined,
+    onPromptDispatchStart: () => {},
+    sendUserMessage: () => {},
+    onPromptDispatchFailure: () => {},
+    recordRuntimeEvent: (_category, error) => {
+      events.push(error instanceof Error ? error.message : String(error));
+    },
+  });
+
+  assert.doesNotThrow(() => controller.dispatchNext("ctx"));
+  assert.deepEqual(queuedItems, [item]);
+  assert.deepEqual(events, [
+    "journal publication failed",
+    "Telegram skipped prompt could not be settled durably.",
+  ]);
 });
 
 test("Queue dispatch clears a suppressed final item without a model turn", () => {

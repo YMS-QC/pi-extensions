@@ -82,7 +82,6 @@ test("Public package subpaths expose the stable extension API", async () => {
     "computeVoicePromptContribution",
     "computeVoiceTurnFlags",
     "getTelegramVoiceReplyMode",
-    "getTelegramVoiceSendTranscript",
     "isVoiceTurn",
     "registerTelegramVoiceSynthesisProvider",
     "registerTelegramVoiceTranscriptionProvider",

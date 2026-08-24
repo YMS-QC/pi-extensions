@@ -2,6 +2,25 @@
 
 > Each release keeps at most 8 outcome records of at most 512 characters.
 
+## 0.39.1: Compaction Failure Formatting Hotfix
+
+- `Compaction Failure Formatting`: Preserves the HTML parse mode when a confirmed `/compact` callback reports asynchronous failure, preventing bold standalone failure headings from appearing as literal `<b>…</b>` markup in Telegram.
+
+## 0.39.0: Session-Owned Queue Lifecycle
+
+- `Queue Counters`: Excludes Skip-marked prompts immediately from the shared executable queue count used by the Pi status bar and Telegram main menu while preserving physical queue position, deferred drop semantics, and reversible Keep behavior.
+- `Skip Settlement`: Preserves durable receipts while a skipped prompt waits, then settles them atomically when that prompt reaches dispatch before dropping it without inference; settlement failure retains the head instead of creating replay ambiguity.
+- `Session-Owned Queue`: Graceful shutdown discards all remaining queue receipts before clearing memory, while startup atomically discards receipts whose former process is proven dead instead of replaying them; replacement and unrelated sessions therefore start without inherited work.
+- `Consistent Information Headings`: Standardizes standalone progress, success, empty, busy, unavailable, cancellation, and failure notices as fully bold emoji-led headings, while callback alerts retain equivalent plain text and automatic compaction waits for the preceding final answer before announcing its start.
+- `Queue Menu`: Keeps skipped prompts visible in place with their physical ordinal struck through in list and detail views, so deferred removal is legible without renumbering or moving later work.
+- `Agent Context`: Routes connected and Telegram-turn guidance across `telegram-bridge`, `generated-control-surface`, and `generative-apps` by activation role, asks the agent to load only missing Skill instructions, and removes Telegram tool context while transport is unavailable.
+- `Bot API Reference`: Updates the vendored Telegram Bot API reference and lookup Skill through Bot API 10.3 while retaining the 10.0–10.3 freshness history and validated symbol, anchor, and line indexes.
+
+## 0.38.0: Coherent Voice Reply Policy
+
+- `Voice Reply Policy`: Renames the default user-facing `hidden` mode to `manual` while retaining `hidden` as a read-only configuration and callback compatibility alias. `manual`, `mirror`, and `always` remain the complete policy set: explicit `telegram_voice`, modality mirroring, or automatic voice replacement.
+- `Voice Provider Contract`: Removes the redundant `voice.sendTranscript` configuration, `getTelegramVoiceSendTranscript()` public helper, provider-returned `transcriptText`, and voice-caption path. Synthesis providers now return only an OGG/Opus path or `undefined`; text-plus-voice remains an explicit agent composition rather than a parallel automatic policy.
+
 ## 0.37.2: Follower Recovery Delivery Hotfix
 
 - `Follower Recovery Delivery`: Holds follower Bot API calls behind a bounded registration wait when heartbeat recovery temporarily clears local authority, then sends once with the restored exact generation. Calls still fail closed if registration is not restored, and acknowledgement ambiguity remains non-retryable.

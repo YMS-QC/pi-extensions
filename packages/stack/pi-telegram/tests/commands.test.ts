@@ -951,7 +951,7 @@ test("Command target runtime binds chat reply targets to command ports", async (
     "execute",
     "status:7:11:ctx:42",
     "model:7:11:ctx:42",
-    "reply:7:11:Settings menu is unavailable.:plain:42",
+    "reply:7:11:<b>🚫 Settings menu is unavailable.</b>:HTML:42",
     "reply:7:11:hello:HTML:42",
   ]);
 });
@@ -1074,17 +1074,17 @@ test("Command helpers run stop command side effects", async () => {
     "clear-queue:2",
     "fold:false",
     "status",
-    "reply:No active turn. Cleared 2 queued turns.",
+    "reply:<b>💤 No active turn. Cleared 2 queued turns.</b>",
     "clear",
     "clear-queue:1",
     "fold:false",
     "abort",
     "status",
-    "reply:Aborted current turn. Cleared 1 queued turn.",
+    "reply:<b>⏹️ Aborted current turn. Cleared 1 queued turn.</b>",
   ]);
 });
 
-test("Next command requests HTML rendering for an empty queue reply", async () => {
+test("Next command renders an emphasized empty queue notice", async () => {
   const replies: Array<{ text: string; parseMode?: "HTML" }> = [];
   await handleTelegramNextCommand({
     hasAbortHandler: () => false,
@@ -1101,7 +1101,39 @@ test("Next command requests HTML rendering for an empty queue reply", async () =
   });
 
   assert.deepEqual(replies, [
-    { text: "<b>Queue is empty.</b>", parseMode: "HTML" },
+    { text: "<b>⌛ Queue is empty.</b>", parseMode: "HTML" },
+  ]);
+});
+
+test("Next command reports an aborted active turn before dispatch", async () => {
+  const replies: Array<{ text: string; parseMode?: "HTML" }> = [];
+  let aborted = false;
+  let dispatched = false;
+  await handleTelegramNextCommand({
+    hasAbortHandler: () => true,
+    isIdle: () => false,
+    hasQueuedItems: () => true,
+    clearPendingModelSwitch: () => {},
+    abortCurrentTurn: () => {
+      aborted = true;
+    },
+    dispatchNextQueuedTurn: () => {
+      dispatched = true;
+    },
+    clearFoldForDispatch: () => {},
+    updateStatus: () => {},
+    sendTextReply: async (text, options) => {
+      replies.push({ text, parseMode: options?.parseMode });
+    },
+  });
+
+  assert.equal(aborted, true);
+  assert.equal(dispatched, false);
+  assert.deepEqual(replies, [
+    {
+      text: "<b>⏩ Aborted! Dispatching next queued turn.</b>",
+      parseMode: "HTML",
+    },
   ]);
 });
 
@@ -1138,12 +1170,12 @@ test("Command helpers scope abort history preservation to Telegram-owned turns",
     "fold:true",
     "abort",
     "status",
-    "reply:Aborted current turn.",
+    "reply:<b>⏹️ Aborted current turn.</b>",
     "clear",
     "fold:false",
     "abort",
     "status",
-    "reply:Aborted current turn.",
+    "reply:<b>⏹️ Aborted current turn.</b>",
   ]);
 });
 
@@ -1205,17 +1237,17 @@ test("Command helpers guard and complete compact command flow", async () => {
   });
   complete?.();
   assert.deepEqual(events, [
-    "reply:Cannot compact while Pi or the Telegram queue is busy. Wait for queued turns to finish or send /abort first.",
+    "reply:<b>⏳ Cannot compact while Pi or the Telegram queue is busy. Wait for queued turns to finish or send /abort first.</b>",
     "set:true",
     "status",
     "typing:start",
     "compact",
-    "reply:🗜 Compaction started.",
+    "reply:<b>🗜 Compaction started.</b>",
     "typing:stop",
     "set:false",
     "status",
     "dispatch",
-    "reply:✅ Compaction completed.",
+    "reply:<b>✅ Compaction completed.</b>",
   ]);
 });
 
@@ -1293,7 +1325,7 @@ test("Command helpers open compact confirmation and handle callbacks", async () 
   );
   assert.equal(cancelled, true);
   assert.deepEqual(events, [
-    "42:77:plain:Compaction cancelled.",
+    "42:77:html:<b>🚫 Compaction cancelled.</b>",
     "[]",
     "answer:cb-cancel",
   ]);
@@ -1322,7 +1354,7 @@ test("Command helpers open compact confirmation and handle callbacks", async () 
   );
   assert.equal(confirmed, true);
   assert.deepEqual(events, [
-    "42:77:plain:🗜 Compaction started.",
+    "42:77:html:<b>🗜 Compaction started.</b>",
     "[]",
     "answer:cb-confirm",
     "run:ctx:42:77:42:123",
@@ -1373,12 +1405,12 @@ test("Command helpers defer compact-complete queue dispatch", async () => {
     "status",
     "typing:start",
     "compact",
-    "reply:🗜 Compaction started.",
+    "reply:<b>🗜 Compaction started.</b>",
     "typing:stop",
     "set:false",
     "status",
     "defer",
-    "reply:✅ Compaction completed.",
+    "reply:<b>✅ Compaction completed.</b>",
   ]);
   deferredDispatch?.();
   assert.deepEqual(events.at(-1), "dispatch");
@@ -1438,7 +1470,7 @@ test("Command helpers report compact errors", async () => {
     },
     dispatchNextQueuedTelegramTurn: () => {},
     compact: () => {
-      throw new Error("sync boom");
+      throw new Error("sync boom!");
     },
     startTypingLoop: () => {
       events.push("throw-typing:start");
@@ -1456,21 +1488,21 @@ test("Command helpers report compact errors", async () => {
     "status",
     "typing:start",
     "compact",
-    "reply:🗜 Compaction started.",
+    "reply:<b>🗜 Compaction started.</b>",
     "typing:stop",
     "set:false",
     "status",
     "dispatch",
     "event:compact:boom",
-    "reply:Compaction failed: boom",
+    "reply:<b>⚠️ Compaction failed! boom.</b>",
     "throw-set:true",
     "throw-status",
     "throw-typing:start",
     "throw-typing:stop",
     "throw-set:false",
     "throw-status",
-    "event:compact:sync boom",
-    "reply:Compaction failed: sync boom",
+    "event:compact:sync boom!",
+    "reply:<b>⚠️ Compaction failed! sync boom!</b>",
   ]);
 });
 
@@ -1765,18 +1797,18 @@ test("Command runtime routes commands through runtime ports", async () => {
     "status",
     "typing:start:42:42:123",
     "compact:start",
-    "reply:99:🗜 Compaction started.",
+    "reply:99:<b>🗜 Compaction started.</b>",
     "typing:stop",
     "compact:false",
     "status",
     "dispatch",
-    "reply:99:✅ Compaction completed.",
+    "reply:99:<b>✅ Compaction completed.</b>",
     "clear-switch",
     "clear-queue",
     "fold:false",
     "abort",
     "status",
-    "reply:99:Aborted current turn.",
+    "reply:99:<b>⏹️ Aborted current turn.</b>",
   ]);
 });
 

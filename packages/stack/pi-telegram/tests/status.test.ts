@@ -726,6 +726,36 @@ test("Bridge status runtime stays active while tools run after queue changes", (
   );
 });
 
+test("Bridge status runtime excludes skipped items from queued processing", () => {
+  const events: string[] = [];
+  const runtime = createTelegramBridgeStatusRuntime({
+    getConfig: () => ({ botToken: "token", allowedUserId: 7 }),
+    isPollingActive: () => true,
+    getActiveSourceMessageIds: () => undefined,
+    hasActiveTurn: () => false,
+    hasDispatchPending: () => false,
+    isCompactionInProgress: () => false,
+    getActiveToolExecutions: () => 0,
+    hasPendingModelSwitch: () => false,
+    getQueuedItems: () => [{ queueLane: "default" as const }],
+    getQueuedItemCount: () => 0,
+    formatQueuedStatus: () => "",
+    getRecentRuntimeEvents: () => [],
+  });
+  runtime.updateStatus({
+    ui: {
+      theme: {
+        fg: (token: string, text: string) => `<${token}>${text}</${token}>`,
+      },
+      setStatus: (key: string, text: string) => events.push(`${key}:${text}`),
+    },
+  });
+  assert.equal(
+    events[0],
+    "telegram:<accent>telegram</accent> <success>connected</success>",
+  );
+});
+
 test("Bridge status runtime builds status state from live ports", () => {
   const events: string[] = [];
   const runtime = createTelegramBridgeStatusRuntime({

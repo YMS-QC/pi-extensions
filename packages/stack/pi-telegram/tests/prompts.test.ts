@@ -82,7 +82,23 @@ test("Prompt helpers keep local prompts on compact safety guidance only", () => 
   assert.ok(typeof result === "string");
   assert.match(result, /Telegram session connected/);
   assert.match(result, /connectivity alone is not user intent/);
-  assert.match(result, /`telegram-bridge` Skill/);
+  assert.match(result, /`telegram-bridge`/);
+  assert.match(result, /`generated-control-surface`/);
+  assert.match(result, /`generative-apps`/);
+  assert.match(result, /bundled Skills in routing order/);
+  assert.match(result, /`telegram-bridge` for the transport and turn protocol/);
+  assert.match(
+    result,
+    /`generated-control-surface` when contextual controls materially shorten feedback/,
+  );
+  assert.match(
+    result,
+    /`generative-apps` when the interaction warrants a reusable deterministic app/,
+  );
+  assert.match(
+    result,
+    /Load a Skill only if its instructions are not already present in the current context/,
+  );
   assert.doesNotMatch(result, /telegram_help/);
   assert.doesNotMatch(result, /telegram_attach/);
   assert.doesNotMatch(result, /telegram_message/);
@@ -135,7 +151,11 @@ test("Prompt helpers add full Telegram-turn guidance for Telegram prompts", () =
     defaultSystemPrompt,
     /The current user message came from Telegram/,
   );
-  assert.match(defaultSystemPrompt, /Load and follow the `telegram-bridge` Skill/);
+  assert.match(
+    defaultSystemPrompt,
+    /Follow the applicable bundled Telegram Skills in routing order/,
+  );
+  assert.match(defaultSystemPrompt, /load only missing instructions/);
   assert.doesNotMatch(defaultSystemPrompt, /telegram_help/);
   assert.doesNotMatch(defaultSystemPrompt, /mobile Telegram/);
   assert.doesNotMatch(defaultSystemPrompt, /\$\.\.\.\$.*\$\$\.\.\.\$\$/);

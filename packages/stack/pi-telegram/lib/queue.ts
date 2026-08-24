@@ -427,12 +427,22 @@ export function createTelegramTransportStampedQueueStore<TContext>(
   };
 }
 
+export function isTelegramQueueItemSkipped<TContext = unknown>(
+  item: TelegramQueueItem<TContext>,
+): boolean {
+  return item.kind === "prompt" && Boolean(item.reactionSuppressionEmoji);
+}
+
+export function countExecutableTelegramQueueItems<TContext = unknown>(
+  items: readonly TelegramQueueItem<TContext>[],
+): number {
+  return items.filter((item) => !isTelegramQueueItemSkipped(item)).length;
+}
+
 export function createTelegramQueueItemCountGetter<TContext = unknown>(
   store: Pick<TelegramQueueStore<TContext>, "getQueuedItems">,
 ): () => number {
-  return () => {
-    return store.getQueuedItems().length;
-  };
+  return () => countExecutableTelegramQueueItems(store.getQueuedItems());
 }
 
 export function createTelegramActiveTurnStore<
@@ -993,7 +1003,8 @@ export function consumeDispatchedTelegramPrompt<TContext = unknown>(
 export function formatQueuedTelegramItemsStatus<TContext = unknown>(
   items: TelegramQueueItem<TContext>[],
 ): string {
-  return items.length === 0 ? "" : ` +${items.length}`;
+  const count = countExecutableTelegramQueueItems(items);
+  return count === 0 ? "" : ` +${count}`;
 }
 
 export function truncateTelegramQueueSummary(
@@ -2062,6 +2073,7 @@ export interface TelegramSessionStartRuntimeDeps<TContext, TModel = unknown> {
 export interface TelegramSessionShutdownRuntimeDeps<TQueueItem> {
   isSessionActive?: () => boolean;
   unbindDeferredDispatchContext?: () => void;
+  discardQueuedItems?: () => void;
   applyState: (state: TelegramSessionShutdownState<TQueueItem>) => void;
   clearPendingMediaGroups: () => void;
   clearModelMenuState: () => void;
@@ -2090,6 +2102,7 @@ export interface TelegramSessionLifecycleHookRuntimeDeps<
   updateStatus: (ctx: TContext) => void;
   isSessionActive?: (ctx: TContext) => boolean;
   unbindDeferredDispatchContext?: () => void;
+  discardQueuedItems?: (ctx: TContext) => void;
   applySessionShutdownState: (
     state: TelegramSessionShutdownState<TQueueItem>,
   ) => void;
@@ -2286,6 +2299,7 @@ export async function shutdownTelegramSessionRuntime<TQueueItem>(
   deps.unbindDeferredDispatchContext?.();
   await deps.stopPolling();
   if (deps.isSessionActive?.() === false) return;
+  deps.discardQueuedItems?.();
   deps.applyState(buildTelegramSessionShutdownState<TQueueItem>());
   deps.clearPendingMediaGroups();
   deps.clearModelMenuState();
@@ -2339,6 +2353,7 @@ export function createTelegramSessionLifecycleRuntime<
     updateStatus: deps.updateStatus,
     isSessionActive: deps.isSessionActive,
     unbindDeferredDispatchContext: deps.unbindDeferredDispatchContext,
+    discardQueuedItems: deps.discardQueuedItems,
     applySessionShutdownState: stateApplier.applyShutdownState,
     clearPendingMediaGroups: deps.clearPendingMediaGroups,
     clearModelMenuState: deps.clearModelMenuState,
@@ -2387,6 +2402,10 @@ export function createTelegramSessionLifecycleHooks<
           isSessionActive: () =>
             ctx === undefined ? true : (deps.isSessionActive?.(ctx) ?? true),
           unbindDeferredDispatchContext: deps.unbindDeferredDispatchContext,
+          discardQueuedItems:
+            ctx === undefined || !deps.discardQueuedItems
+              ? undefined
+              : () => deps.discardQueuedItems!(ctx),
           applyState: deps.applySessionShutdownState,
           clearPendingMediaGroups: deps.clearPendingMediaGroups,
           clearModelMenuState: deps.clearModelMenuState,
@@ -2476,14 +2495,8 @@ export function clearTelegramQueueItemsRuntime<TContext>(
   const removedItems = deps.getQueuedItems();
   const removedCount = removedItems.length;
   if (removedCount === 0) return 0;
+  deps.onItemsDiscarded?.(removedItems, deps.ctx);
   deps.setQueuedItems([]);
-  try {
-    deps.onItemsDiscarded?.(removedItems, deps.ctx);
-  } catch (error) {
-    deps.recordRuntimeEvent?.("queue", error, {
-      phase: "discard-receipt-settlement",
-    });
-  }
   updateTelegramQueueStatusRuntime(deps);
   return removedCount;
 }
@@ -2877,6 +2890,7 @@ export interface TelegramQueueDispatchControllerDeps<
     item: PendingTelegramControlItem<TContext>,
     ctx: TContext,
   ) => void;
+  onPromptSkipped?: (item: PendingTelegramTurn, ctx: TContext) => boolean;
 }
 
 export interface TelegramQueueDispatchController<TContext = unknown> {
@@ -2940,6 +2954,7 @@ export function createTelegramQueueDispatchRuntime<TContext = unknown>(
       deps.hasPendingInboundQueueMutationForItem,
     isQueueItemAdmissionReady: deps.isQueueItemAdmissionReady,
     onControlSettled: deps.onControlSettled,
+    onPromptSkipped: deps.onPromptSkipped,
     recordRuntimeEvent: deps.recordRuntimeEvent,
   });
 }
@@ -3007,7 +3022,29 @@ export function createTelegramQueueDispatchController<TContext = unknown>(
             deps.updateStatus(ctx);
             return;
           }
+          try {
+            if (deps.onPromptSkipped && !deps.onPromptSkipped(candidate, ctx)) {
+              deps.updateStatus(
+                ctx,
+                "Telegram skipped prompt could not be settled durably.",
+              );
+              return;
+            }
+          } catch (error) {
+            deps.recordRuntimeEvent?.("dispatch", error, {
+              phase: "skip-receipt-settlement",
+            });
+            deps.updateStatus(
+              ctx,
+              "Telegram skipped prompt could not be settled durably.",
+            );
+            return;
+          }
           nextActiveIndex += 1;
+          deps.setQueuedItems([
+            ...activeItems.slice(nextActiveIndex),
+            ...protectedInactiveItems,
+          ]);
         }
       }
       const dispatchableItems = activeItems.slice(nextActiveIndex);
@@ -3031,7 +3068,7 @@ export function createTelegramQueueDispatchController<TContext = unknown>(
         dispatchableItems,
         canDispatch,
       );
-      if (nextActiveIndex > 0 || dispatchPlan.kind !== "none") {
+      if (dispatchPlan.kind !== "none") {
         deps.setQueuedItems([
           ...dispatchPlan.remainingItems,
           ...protectedInactiveItems,

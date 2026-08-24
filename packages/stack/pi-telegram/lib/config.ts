@@ -118,9 +118,8 @@ export interface TelegramConfig {
   /** @deprecated use assistant.rendering */
   assistantRendering?: TelegramAssistantRenderingMode;
   voice?: {
-    replyMode?: "hidden" | "mirror" | "always";
-    /** Whether to attach the provider's transcriptText as caption on voice messages */
-    sendTranscript?: boolean;
+    /** `hidden` is a read-only compatibility alias for the former manual mode. */
+    replyMode?: "manual" | "hidden" | "mirror" | "always";
   };
   time?: TelegramTimeConfig;
   threads?: {
@@ -845,10 +844,10 @@ export function createTelegramActivityVerbositySetter(
 
 export function createTelegramVoiceReplyModeGetter(
   configStore: Pick<TelegramConfigStore, "get">,
-): () => "hidden" | "mirror" | "always" {
+): () => "manual" | "mirror" | "always" {
   return () => {
     const mode = configStore.get().voice?.replyMode;
-    return mode === "mirror" || mode === "always" ? mode : "hidden";
+    return mode === "mirror" || mode === "always" ? mode : "manual";
   };
 }
 
@@ -863,11 +862,15 @@ export function createTelegramVoiceReplyModeConfiguredChecker(
 
 export function createTelegramVoiceReplyModeSetter(
   configStore: TelegramMutableConfigStore,
-): (replyMode: "hidden" | "mirror" | "always" | undefined) => Promise<void> {
+): (replyMode: "manual" | "hidden" | "mirror" | "always" | undefined) => Promise<void> {
   return async (replyMode) => {
     await loadLatestTelegramConfig(configStore);
     const current = configStore.get();
-    if (replyMode === undefined || replyMode === "hidden") {
+    if (
+      replyMode === undefined ||
+      replyMode === "manual" ||
+      replyMode === "hidden"
+    ) {
       const { replyMode: _replyMode, ...remainingVoice } = current.voice ?? {};
       const next = { ...current };
       if (Object.keys(remainingVoice).length > 0) next.voice = remainingVoice;

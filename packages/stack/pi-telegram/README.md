@@ -130,7 +130,7 @@ Enable the optional capabilities the bridge needs in the [@BotFather](https://t.
 | Inbound files | Download inbound files to the Pi agent temp directory with size limits. | Screenshots, PDFs, datasets, and artifacts enter Pi as inspectable local files. |
 | Outbound artifacts | Return generated files through `telegram_attach` during active turns or explicit direct delivery. | Agents send real artifacts as files, not pasted blobs. |
 | Voice input | Route audio through configured command-template handlers, programmatic handlers, or STT providers. | Voice notes become usable prompt context. |
-| Voice output | Choose `hidden`, `mirror`, or `always`; active automatic turns carry one compact `[voice] delivery: automatic voice` line, while explicit `telegram_voice` remains available. | Voice policy stays dynamic and model-legible without duplicating the full action contract in every prompt. |
+| Voice output | Choose `manual`, `mirror`, or `always`; active automatic turns carry one compact `[voice] delivery: automatic voice` line, while explicit `telegram_voice` remains available. | Voice policy stays dynamic and model-legible without duplicating the full action contract in every prompt. |
 | Buttons | Turn top-level `telegram_button` comments into inline buttons. | Assistant-authored choices become native Telegram interactions. |
 | Generative Apps | Install or explicitly replace a reviewed `.mjs` application whose generated JSON button view may mix direct `app::method` actions with ordinary model prompts. | Repeated games, controls, tutors, and adapters compile routine interaction without losing selective model interpretation, explanation, or adaptation. |
 | Callback routing | Route known callbacks to the owner extension and unknown callbacks back into Pi. | Companion extensions can build UI without polling Telegram themselves. |
@@ -199,7 +199,7 @@ Queue policy:
 - One prompt is one queue object with exactly one current lane and one current position; it never reserves a shadow place in the other lane.
 - Priority and Normal are separate FIFO lanes; Priority dispatches first.
 - Moving `Normal → Priority` removes the prompt from Normal and places it at the Priority tail. Moving `Priority → Normal` removes it from Priority and places it at the Normal tail; no former position is restored.
-- Keep/Skip never changes lane position. Skip remains reversible while waiting and drops the prompt without a model turn only when dispatch reaches it.
+- Keep/Skip never changes lane position. Skip preserves durable authority while waiting so Keep remains reversible, then settles that authority and drops the prompt without a model turn when dispatch reaches it. Skipped prompts stay visible at their physical queue position with a struck-through ordinal, but are excluded immediately from the executable queue count shown in both the Pi status bar and Telegram main menu. Graceful session shutdown discards all remaining queued authority, so a new session starts empty.
 - Reactions control two independent dimensions; changing one category preserves the other:
   - `Positive`: `👍`, `⚡️`, `❤️`, `🕊`, `🔥` — controls Priority.
   - `Negative`: `👎`, `👻`, `💔`, `💩`, `🗑` — controls Skip.
@@ -218,7 +218,7 @@ Inbound files land under `<agent-dir>/tmp/telegram` and default to a 50 MiB limi
 
 ### Voice And Media
 
-Voice notes, audio, images, PDFs, and other media can pass through configured inbound handlers, programmatic handlers, or registered STT providers. Outbound voice can use configured `outboundHandlers` or registered TTS providers; `pi-telegram` owns reply policy and Telegram transport, while providers own synthesis. Configure provider-neutral local/API pipelines and ordered fallbacks through [`telegram.json` command templates](./docs/voice.md#choose-an-integration-path). The default `hidden` reply mode still supports intentional voice delivery through explicit `telegram_voice` actions; `mirror` and `always` add automatic voice policy. Explicit actions accept either a JSON object or compact double-quoted attributes, with equivalent `text` and `value` payload keys and one colon-free action marker.
+Voice notes, audio, images, PDFs, and other media can pass through configured inbound handlers, programmatic handlers, or registered STT providers. Outbound voice can use configured `outboundHandlers` or registered TTS providers; `pi-telegram` owns reply policy and Telegram transport, while providers own synthesis. Configure provider-neutral local/API pipelines and ordered fallbacks through [`telegram.json` command templates](./docs/voice.md#choose-an-integration-path). The default `manual` reply mode still supports intentional voice delivery through explicit `telegram_voice` actions; `mirror` and `always` add automatic voice policy. Explicit actions accept either a JSON object or compact double-quoted attributes, with equivalent `text` and `value` payload keys and one colon-free action marker.
 
 ### Buttons And Callbacks
 

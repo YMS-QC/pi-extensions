@@ -1000,11 +1000,11 @@ test("Lifecycle binding routes native typing, previews, and normalized activity"
     "activity:tool-start:read",
     "activity:compact-start:unknown",
     "typing:42:9",
-    "send:🗜 Compaction started.",
+    "send:**🗜 Compaction started.**",
     "activity:compact-end:unknown",
-    "send:✅ Compaction completed.",
+    "send:**✅ Compaction completed.**",
     "activity:compact-start:unknown",
     "typing:42:8",
-    "send:🗜 Compaction started.",
+    "send:**🗜 Compaction started.**",
   ]);
 });

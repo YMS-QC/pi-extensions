@@ -41,18 +41,18 @@ afterEach(() => {
 
 // --- Policy Resolution ---
 
-test("voice reply modes expose only hidden, mirror, and always", () => {
-  assert.deepEqual(TELEGRAM_VOICE_REPLY_MODES, ["hidden", "mirror", "always"]);
+test("voice reply modes expose only manual, mirror, and always", () => {
+  assert.deepEqual(TELEGRAM_VOICE_REPLY_MODES, ["manual", "mirror", "always"]);
 });
 
-test("getTelegramVoiceReplyMode returns 'hidden' by default", () => {
-  assert.equal(getTelegramVoiceReplyMode(), "hidden");
-  assert.equal(getTelegramVoiceReplyMode(undefined), "hidden");
-  assert.equal(getTelegramVoiceReplyMode({}), "hidden");
-  assert.equal(getTelegramVoiceReplyMode({ voice: {} }), "hidden");
+test("getTelegramVoiceReplyMode returns 'manual' by default", () => {
+  assert.equal(getTelegramVoiceReplyMode(), "manual");
+  assert.equal(getTelegramVoiceReplyMode(undefined), "manual");
+  assert.equal(getTelegramVoiceReplyMode({}), "manual");
+  assert.equal(getTelegramVoiceReplyMode({ voice: {} }), "manual");
 });
 
-test("getTelegramVoiceReplyMode reads valid mode from config", () => {
+test("getTelegramVoiceReplyMode reads current modes and legacy hidden", () => {
   assert.equal(
     getTelegramVoiceReplyMode({ voice: { replyMode: "mirror" } }),
     "mirror",
@@ -63,22 +63,22 @@ test("getTelegramVoiceReplyMode reads valid mode from config", () => {
   );
   assert.equal(
     getTelegramVoiceReplyMode({ voice: { replyMode: "hidden" } }),
-    "hidden",
+    "manual",
   );
   assert.equal(
     getTelegramVoiceReplyMode({ voice: { replyMode: "manual" } }),
-    "hidden",
+    "manual",
   );
 });
 
 test("getTelegramVoiceReplyMode ignores invalid config values", () => {
   assert.equal(
     getTelegramVoiceReplyMode({ voice: { replyMode: "invalid" as any } }),
-    "hidden",
+    "manual",
   );
   assert.equal(
     getTelegramVoiceReplyMode({ voice: { replyMode: "foo" as any } }),
-    "hidden",
+    "manual",
   );
 });
 
@@ -90,7 +90,7 @@ test("getTelegramVoiceReplyMode ignores provider policy without config", () => {
     { id: "test-provider-1" },
   );
 
-  assert.equal(getTelegramVoiceReplyMode({}), "hidden");
+  assert.equal(getTelegramVoiceReplyMode({}), "manual");
 });
 
 test("getTelegramVoiceReplyMode reads config even when provider returns invalid policy", () => {
@@ -105,7 +105,7 @@ test("getTelegramVoiceReplyMode reads config even when provider returns invalid 
   assert.equal(result, "mirror");
 });
 
-test("getTelegramVoiceReplyMode defaults to hidden despite provider policies", () => {
+test("getTelegramVoiceReplyMode defaults to manual despite provider policies", () => {
   registerTelegramVoiceSynthesisProvider(
     {
       getVoicePolicy: () => ({ replyMode: "mirror" }),
@@ -119,7 +119,7 @@ test("getTelegramVoiceReplyMode defaults to hidden despite provider policies", (
     { id: "always-provider" },
   );
 
-  assert.equal(getTelegramVoiceReplyMode(), "hidden");
+  assert.equal(getTelegramVoiceReplyMode(), "manual");
 });
 
 // --- Turn Tagging Helpers ---
@@ -140,7 +140,7 @@ test("computeVoiceTurnFlags works for all modes", () => {
     voiceReplyRequired: true,
   });
 
-  assert.deepEqual(computeVoiceTurnFlags("hidden", true), {
+  assert.deepEqual(computeVoiceTurnFlags("manual", true), {
     voiceReplyPreferred: false,
     voiceReplyRequired: false,
   });

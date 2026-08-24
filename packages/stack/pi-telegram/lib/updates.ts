@@ -4583,11 +4583,11 @@ export function createTelegramUpdateAdmissionLifecycleRuntime<TContext>(
         try {
           deps.recordRuntimeEvent?.(
             "inbound-worker",
-            "Recovered queued authority from a confirmed-dead process.",
+            "Discarded session-owned queue authority from a confirmed-dead process.",
             {
-              phase: "dead-queue-owner-recovery",
+              phase: "dead-queue-owner-cleanup",
               receiptId,
-              recoveredUpdateCount: result.recoveredUpdateIds.length,
+              removedUpdateCount: result.recoveredUpdateIds.length,
             },
           );
         } catch {

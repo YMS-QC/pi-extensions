@@ -14,11 +14,11 @@ export const TELEGRAM_DISCONNECTED_CONTEXT_MESSAGE =
 
 const LOCAL_SYSTEM_PROMPT_SUFFIX = `
 
-${TELEGRAM_CONNECTED_CONTEXT_MESSAGE} Load the \`telegram-bridge\` Skill for Telegram-originated turns or explicit requests involving Telegram delivery, actions, Threaded Mode, or diagnosis. Do not use Telegram-specific features from unrelated local/TUI prompts.`;
+${TELEGRAM_CONNECTED_CONTEXT_MESSAGE} For Telegram work, consult bundled Skills in routing order: \`telegram-bridge\` for the transport and turn protocol, \`generated-control-surface\` when contextual controls materially shorten feedback, then \`generative-apps\` when the interaction warrants a reusable deterministic app. Load a Skill only if its instructions are not already present in the current context. Do not use Telegram-specific features from unrelated local/TUI prompts.`;
 
 const TELEGRAM_TURN_SYSTEM_PROMPT_SUFFIX = `
 
-Telegram turn note: Load and follow the \`telegram-bridge\` Skill.`;
+Telegram turn note: Follow the applicable bundled Telegram Skills in routing order; load only missing instructions.`;
 
 export const TELEGRAM_ATTACH_PROMPT_SNIPPET =
   "Queue files for the active Telegram reply; outside Telegram turns, send files directly to Telegram.";

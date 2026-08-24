@@ -119,14 +119,13 @@ import { registerTelegramVoiceSynthesisProvider } from "@llblab/pi-telegram/voic
 
 const dispose = registerTelegramVoiceSynthesisProvider(
   async (text, options) => {
-    const audioPath = await synthesizeToOggOpus(text, options);
-    return { audioPath, transcriptText: text };
+    return await synthesizeToOggOpus(text, options);
   },
   { id: "my-extension/tts" },
 );
 ```
 
-Synthesis providers receive the extracted `telegram_voice` text plus optional `lang`/`rate` hints. Stable registrations pass a durable `id`; omitted ids remain a compatibility path for older providers. Providers own translation, TTS, speech rewriting, transcript choice, and OGG/Opus conversion. The bridge validates that the returned file ends in `.ogg` or `.opus`, sends it through Telegram `sendVoice`, and falls back to planned text if delivery fails before any visible text was delivered. Providers run after configured and programmatic voice handlers in the priority chain above.
+Synthesis providers receive the extracted `telegram_voice` text plus optional `lang`/`rate` hints. Stable registrations pass a durable `id`; omitted ids remain a compatibility path for older providers. Providers own translation, TTS, speech rewriting, and OGG/Opus conversion. The bridge validates that the returned file ends in `.ogg` or `.opus`, sends it through Telegram `sendVoice`, and falls back to planned text if delivery fails before any visible text was delivered. Providers run after configured and programmatic voice handlers in the priority chain above.
 
 ## Voice Markup
 

@@ -1803,7 +1803,7 @@ test("Queue menu keeps main-menu navigation on top", async () => {
   ]);
   assert.deepEqual(markups[3]?.inline_keyboard[1], [
     { text: "⚫️ Priority", callback_data: "queue:prio-set:1:10:priority" },
-    { text: "🟣 Normal", callback_data: "queue:prio-set:1:10:normal" },
+    { text: "🔵 Normal", callback_data: "queue:prio-set:1:10:normal" },
   ]);
   assert.deepEqual(markups[3]?.inline_keyboard[2], [
     { text: "🟢 Keep", callback_data: "queue:skip-set:1:10:keep" },
@@ -1811,7 +1811,7 @@ test("Queue menu keeps main-menu navigation on top", async () => {
   ]);
   assert.equal(
     markups[4]?.inline_keyboard[2]?.[0]?.text,
-    "1. 👎 queued <prompt>",
+    "1̵ . 👎 queued <prompt>",
   );
   assert.deepEqual(markups[5]?.inline_keyboard, [
     [{ text: "⬆️ Main menu", callback_data: "menu:back" }],
@@ -1982,7 +1982,7 @@ test("Queue item Keep and Skip selectors share deferred-removal state", async ()
       : undefined,
     "👎",
   );
-  assert.equal(texts[0], "<b>1.</b> 👎\n<pre>[telegram] keep or skip</pre>");
+  assert.equal(texts[0], "<s>1</s>. 👎\n<pre>[telegram] keep or skip</pre>");
   assert.deepEqual(markups[0]?.inline_keyboard[2], [
     { text: "⚫️ Keep", callback_data: "queue:skip-set:1:10:keep" },
     { text: "🔴 Skip", callback_data: "queue:skip-set:1:10:skip" },
@@ -2293,7 +2293,7 @@ test("Section callback actions preserve callback thread target", async () => {
 
 test("Settings menu labels proactive push with state text", () => {
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(true, false, "hidden", "hidden")
+    buildTelegramSettingsMenuReplyMarkup(true, false, "manual", "hidden")
       .inline_keyboard[5],
     [
       {
@@ -2303,7 +2303,7 @@ test("Settings menu labels proactive push with state text", () => {
     ],
   );
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(false, false, "hidden", "hidden")
+    buildTelegramSettingsMenuReplyMarkup(false, false, "manual", "hidden")
       .inline_keyboard[5],
     [
       {
@@ -2316,7 +2316,7 @@ test("Settings menu labels proactive push with state text", () => {
 
 test("Settings menu exposes time injection mode selection", () => {
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(false, false, "hidden", "hidden")
+    buildTelegramSettingsMenuReplyMarkup(false, false, "manual", "hidden")
       .inline_keyboard[6],
     [
       {
@@ -2326,7 +2326,7 @@ test("Settings menu exposes time injection mode selection", () => {
     ],
   );
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(false, false, "hidden", "interval")
+    buildTelegramSettingsMenuReplyMarkup(false, false, "manual", "interval")
       .inline_keyboard[6],
     [
       {
@@ -2357,8 +2357,8 @@ test("Settings menu exposes time injection mode selection", () => {
 
 test("Settings menu marks voice mode selection with model-style dot", () => {
   assert.deepEqual(
-    buildVoiceReplyModeSettingsReplyMarkup("hidden", false).inline_keyboard[1],
-    [{ text: "🟢 hidden", callback_data: "settings:set:voice-reply:hidden" }],
+    buildVoiceReplyModeSettingsReplyMarkup("manual", false).inline_keyboard[1],
+    [{ text: "🟢 manual", callback_data: "settings:set:voice-reply:manual" }],
   );
   assert.deepEqual(
     buildVoiceReplyModeSettingsReplyMarkup("mirror").inline_keyboard[2],
@@ -2368,14 +2368,14 @@ test("Settings menu marks voice mode selection with model-style dot", () => {
     buildTelegramSettingsMenuReplyMarkup(
       false,
       false,
-      "hidden",
+      "manual",
       "hidden",
       undefined,
       false,
     ).inline_keyboard[3],
     [
       {
-        text: "👄 Voice reply: hidden",
+        text: "👄 Voice reply: manual",
         callback_data: "settings:open:voice-reply",
       },
     ],
@@ -2393,7 +2393,7 @@ test("Settings menu marks voice mode selection with model-style dot", () => {
 });
 
 test("Settings menu rehydrates expired state before persisting and rendering voice mode", async () => {
-  let mode: "hidden" | "mirror" | "always" | undefined;
+  let mode: "manual" | "mirror" | "always" | undefined;
   let configured = false;
   const events: string[] = [];
   const runtime = createTelegramSettingsMenuRuntime({
@@ -2425,7 +2425,7 @@ test("Settings menu rehydrates expired state before persisting and rendering voi
     getAssistantRenderingMode: () => "rich" as const,
     getActivityVerbosity: () => "quiet" as const,
     getTimeInjectionMode: () => "hidden",
-    getVoiceReplyMode: () => mode ?? "hidden",
+    getVoiceReplyMode: () => mode ?? "manual",
     isVoiceReplyModeConfigured: () => configured,
     isAutomaticThreadCleanupEnabled: () => true,
     setProactivePushEnabled: async () => {},
@@ -2473,8 +2473,8 @@ test("Settings submenu headings include current values", () => {
     /^<b>🕒 Time injection mode:<\/b> <code>interval<\/code>/,
   );
   assert.match(
-    buildVoiceReplyModeSettingsText("hidden", false),
-    /^<b>👄 Voice reply mode:<\/b> <code>hidden<\/code>/,
+    buildVoiceReplyModeSettingsText("manual", false),
+    /^<b>👄 Voice reply mode:<\/b> <code>manual<\/code>/,
   );
 });
 
