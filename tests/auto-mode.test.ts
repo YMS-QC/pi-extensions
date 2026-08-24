@@ -1134,6 +1134,30 @@ test("Bash analysis parses literal shell wrapper scripts", () => {
 	);
 });
 
+test("Bash analysis exposes the effective command behind transparent dispatch", () => {
+	const analysis = analyzeBash("env -- MODE=test command -p /bin/rm -rf -- /root");
+	assert.equal(analysis.errors.length, 0);
+	assert.deepEqual(analysis.commands[0]?.effectiveCommand, {
+		name: "rm",
+		args: ["-rf", "--", "/root"],
+		argTexts: ["-rf", "--", "/root"],
+		argTildeExpansions: [false, false, false],
+		unresolvedTransparentDispatch: false,
+	});
+});
+
+test("Bash analysis does not trust unsupported env dispatch options", () => {
+	const analysis = analyzeBash(`env --split-string='rm -rf /' echo safe`);
+	assert.equal(analysis.errors.length, 0);
+	assert.deepEqual(analysis.commands[0]?.effectiveCommand, {
+		name: undefined,
+		args: [],
+		argTexts: [],
+		argTildeExpansions: [],
+		unresolvedTransparentDispatch: true,
+	});
+});
+
 test("Bash analysis keeps wrapper-local source ranges for nested commands", () => {
 	const analysis = analyzeBash(
 		`bash -c 'echo "$(tee .pi/automode.local.json)"'`,
@@ -1328,6 +1352,51 @@ test("AST hard-deny checks inspect literal shells behind transparent dispatch wr
 	}
 });
 
+test("AST hard-deny checks inspect commands behind transparent dispatch wrappers", () => {
+	for (const command of [
+		"command rm -rf /",
+		"command -p /bin/rm -rf /",
+		"exec rm -rf /",
+		"exec -a worker /bin/rm -rf /",
+		"env rm -rf /",
+		"env -- MODE=test rm -rf /",
+		"env 1=x rm -rf /",
+		"env -i MODE=test /bin/rm -rf /",
+		"env MODE=test command rm -rf /",
+	]) {
+		assert.match(
+			deterministicHardDeny("bash", { command }, process.cwd()) ?? "",
+			/irreversible deletion/,
+			command,
+		);
+	}
+});
+
+test("AST hard-deny parses rm options and operands around the option delimiter", () => {
+	const cwd = mkdtempSync(join(os.tmpdir(), "pi-automode-rm-options-"));
+	try {
+		symlinkSync("/", join(cwd, "-root"));
+		assert.match(
+			deterministicHardDeny(
+				"bash",
+				{ command: "rm -rf -- -root/etc" },
+				cwd,
+			) ?? "",
+			/irreversible deletion/,
+		);
+		assert.equal(
+			deterministicHardDeny(
+				"bash",
+				{ command: "rm -- --recursive /" },
+				cwd,
+			),
+			undefined,
+		);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test("AST hard-deny checks normalize absolute executable paths", () => {
 	assert.match(
 		deterministicHardDeny("bash", { command: "/bin/rm -rf /" }, process.cwd()) ?? "",
@@ -1342,6 +1411,65 @@ test("AST hard-deny checks normalize absolute executable paths", () => {
 		/TLS/,
 	);
 });
+
+test("AST hard-deny checks protect recursive rm variants and system roots", () => {
+	for (const command of [
+		"rm -Rf /",
+		"rm --recurs /",
+		"rm -rf ~",
+		"rm -rf /home",
+		"rm -rf /proc",
+		"rm -rf /root",
+		"rm -rf /run",
+		"rm -rf /System",
+		"rm -rf /Library",
+		"rm -rf ~root",
+		`rm -rf ~root/"child"`,
+	]) {
+		assert.match(
+			deterministicHardDeny("bash", { command }, process.cwd()) ?? "",
+			/irreversible deletion/,
+			command,
+		);
+	}
+});
+
+test("AST hard-deny checks leave literal tildes and application roots to review", () => {
+	for (const command of [
+		`rm -rf "~"`,
+		"rm -rf \\~",
+		`rm -rf ~"root"`,
+		"rm -- /",
+		"rm -rf /opt/app",
+		"rm -rf /srv/app",
+		"git push",
+	]) {
+		assert.equal(
+			deterministicHardDeny("bash", { command }, process.cwd()),
+			undefined,
+			command,
+		);
+	}
+});
+
+test(
+	"AST hard-deny checks canonicalize case aliases on case-insensitive macOS volumes",
+	{ skip: process.platform !== "darwin" || !existsSync("/system") },
+	() => {
+		const commands = ["rm -rf /system", "rm -rf /library"];
+		const lowerHome = os.homedir().toLowerCase();
+		if (lowerHome !== os.homedir() && existsSync(lowerHome)) {
+			commands.push(`rm -rf ${lowerHome}`);
+		}
+		for (const command of commands) {
+			assert.match(
+				deterministicHardDeny("bash", { command }, process.cwd()) ?? "",
+				/irreversible deletion/,
+				command,
+			);
+		}
+	},
+);
 
 test("AST hard-deny checks fail closed on malformed Bash input", () => {
 	assert.match(
@@ -1388,7 +1516,16 @@ test("isRootHomeOrSystemPath exempts home subtree but keeps home root and system
 	const stdHome = "/home/jdoe";
 	assert.equal(isRootHomeOrSystemPath(stdHome, stdHome), true);
 	assert.equal(isRootHomeOrSystemPath(`${stdHome}/src/pkg`, stdHome), false);
+	assert.equal(isRootHomeOrSystemPath("/home", stdHome), true);
+	assert.equal(isRootHomeOrSystemPath("/home/other-user", stdHome), true);
+	assert.equal(isRootHomeOrSystemPath("/proc/1", stdHome), true);
+	assert.equal(isRootHomeOrSystemPath("/root/.ssh", stdHome), true);
+	assert.equal(isRootHomeOrSystemPath("/run/service", stdHome), true);
+	assert.equal(isRootHomeOrSystemPath("/System/Library", stdHome), true);
+	assert.equal(isRootHomeOrSystemPath("/Library/LaunchDaemons", stdHome), true);
 	assert.equal(isRootHomeOrSystemPath("/etc/hosts", stdHome), true);
+	assert.equal(isRootHomeOrSystemPath("/opt/app", stdHome), false);
+	assert.equal(isRootHomeOrSystemPath("/srv/app", stdHome), false);
 });
 
 test("writeGlobalClassifierModel preserves global automode settings", () => {
@@ -3064,6 +3201,8 @@ test("Bash permission allow rejects dynamic executable structure", async () => {
 		'bash -c "$SCRIPT"',
 		'eval "$SCRIPT"',
 		'env bash -c "$SCRIPT"',
+		'env -- "$COMMAND" -rf /',
+		`env --split-string='rm -rf /' echo safe`,
 	]) {
 		const result = await harness.emit("tool_call", {
 			toolName: "bash",
@@ -3072,7 +3211,7 @@ test("Bash permission allow rejects dynamic executable structure", async () => {
 		assert.equal(result.block, true, command);
 		assert.match(result.reason ?? "", /dynamic Bash structure/, command);
 	}
-	assert.equal(harness.classifierCalls, 4);
+	assert.equal(harness.classifierCalls, 6);
 });
 
 test("the tool hook analyzes each Bash input once", async () => {
@@ -3278,6 +3417,31 @@ test("deterministic hard-deny wins over permissions.allow", async () => {
 
 	assert.equal(result.block, true);
 	assert.match(result.reason ?? "", /safety-control/);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("transparent command wrappers remain hard-denied before permissions.allow", async () => {
+	const pattern = parseToolPattern("bash(*)");
+	assert.ok(pattern);
+	const harness = await setupHookTest({
+		config: baseConfig({ permissionAllow: [pattern] }),
+	});
+
+	for (const command of [
+		"command rm -rf /",
+		"exec rm -rf /",
+		"env rm -rf /",
+		"env -- MODE=test rm -rf /",
+		"env 1=x rm -rf /",
+	]) {
+		const result = await harness.emit("tool_call", {
+			toolName: "bash",
+			input: { command },
+		}, harness.ctx) as { block?: boolean; reason?: string };
+
+		assert.equal(result.block, true, command);
+		assert.match(result.reason ?? "", /irreversible deletion/, command);
+	}
 	assert.equal(harness.classifierCalls, 0);
 });
 

@@ -1,8 +1,10 @@
+import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   analyzeBash,
   type BashAnalysis,
   type BashCommandAnalysis,
+  type EffectiveCommand,
 } from "./bash.ts";
 import { HOME } from "./constants.ts";
 import {
@@ -15,10 +17,64 @@ import {
 
 function isRecursiveRmArg(arg: string): boolean {
   return (
-    arg === "--recursive" ||
-    /^-[A-Za-z]*r[A-Za-z]*f?[A-Za-z]*$/.test(arg) ||
-    /^-[A-Za-z]*f[A-Za-z]*r[A-Za-z]*$/.test(arg)
+    (arg.length > 2 && arg.startsWith("--") && "--recursive".startsWith(arg)) ||
+    /^-[A-Za-z]*r[A-Za-z]*f?[A-Za-z]*$/i.test(arg) ||
+    /^-[A-Za-z]*f[A-Za-z]*r[A-Za-z]*$/i.test(arg)
   );
+}
+
+export type RmInvocation = {
+  recursive: boolean;
+  operands: Array<{ value: string; text: string; tildeExpansion: boolean }>;
+};
+
+export function parseRmInvocation(command: EffectiveCommand): RmInvocation {
+  let recursive = false;
+  let optionsEnded = false;
+  const operands: RmInvocation["operands"] = [];
+
+  for (const [index, value] of command.args.entries()) {
+    const text = command.argTexts[index] ?? value;
+    const tildeExpansion = command.argTildeExpansions[index] ?? false;
+    if (!optionsEnded && value === "--") {
+      optionsEnded = true;
+      continue;
+    }
+    if (!optionsEnded && value !== "-" && value.startsWith("-")) {
+      if (isRecursiveRmArg(value)) recursive = true;
+      continue;
+    }
+    operands.push({ value, text, tildeExpansion });
+  }
+
+  return { recursive, operands };
+}
+
+function isUnresolvedUserHomeToken(
+  shellText: string,
+  tildeExpansion: boolean,
+): boolean {
+  return tildeExpansion && shellText !== "~" && !shellText.startsWith("~/");
+}
+
+function isSameExistingPath(left: string, right: string): boolean {
+  try {
+    const leftStat = statSync(left);
+    const rightStat = statSync(right);
+    return leftStat.dev === rightStat.dev && leftStat.ino === rightStat.ino;
+  } catch {
+    return false;
+  }
+}
+
+function matchesPathRoot(path: string, root: string): boolean {
+  if (path === root || path.startsWith(`${root}/`)) return true;
+  const lowerPath = path.toLowerCase();
+  const lowerRoot = root.toLowerCase();
+  if (lowerPath !== lowerRoot && !lowerPath.startsWith(`${lowerRoot}/`)) {
+    return false;
+  }
+  return isSameExistingPath(path.slice(0, root.length), root);
 }
 
 /**
@@ -38,19 +94,25 @@ export function isRootHomeOrSystemPath(path: string, home: string): boolean {
     "/boot",
     "/dev",
     "/etc",
+    "/home",
     "/lib",
     "/lib64",
+    "/Library",
     "/private",
+    "/proc",
+    "/root",
+    "/run",
     "/sbin",
     "/sys",
+    "/System",
     "/usr",
     "/var",
   ];
-  if (path.startsWith(`${home}/`)) return false;
+  if (matchesPathRoot(path, home) && path.length > home.length) return false;
   return (
     path === "/" ||
-    path === home ||
-    systemRoots.some((root) => path === root || path.startsWith(`${root}/`))
+    matchesPathRoot(path, home) ||
+    systemRoots.some((root) => matchesPathRoot(path, root))
   );
 }
 
@@ -78,9 +140,10 @@ function segmentHardDeny(
     }
   }
 
-  const name = segment.name;
+  const command = segment.effectiveCommand;
+  const name = command.name;
   if (!name) return undefined;
-  const args = segment.args;
+  const args = command.args;
   const lowerArgs = args.map((arg) => arg.toLowerCase());
 
   if (
@@ -135,18 +198,32 @@ function segmentHardDeny(
     return "platform security weakening is hard-denied";
   }
 
-  if (name === "rm" && args.some(isRecursiveRmArg)) {
-    for (const arg of args.filter((arg) => !arg.startsWith("-"))) {
-      const path = shellPathTokenToPath(arg, cwd);
-      if (path && isRootHomeOrSystemPath(path, HOME)) {
-        return "irreversible deletion of home/root/system paths is hard-denied";
+  if (name === "rm") {
+    const rm = parseRmInvocation(command);
+    if (rm.recursive) {
+      for (const { value: arg, text: shellText, tildeExpansion } of rm.operands) {
+        if (isUnresolvedUserHomeToken(shellText, tildeExpansion)) {
+          return "irreversible deletion of a user-home expansion is hard-denied";
+        }
+        const path = shellPathTokenToPath(arg, cwd, shellText);
+        const policyPath = path ? (resolvePathForPolicy(path) ?? path) : undefined;
+        const policyHome = resolvePathForPolicy(HOME) ?? HOME;
+        if (policyPath && isRootHomeOrSystemPath(policyPath, policyHome)) {
+          return "irreversible deletion of home/root/system paths is hard-denied";
+        }
       }
     }
   }
 
   if (name === "find" && lowerArgs.includes("-delete")) {
     const root = shellPathTokenToPath(args[0] ?? "", cwd);
-    if (root && isRootHomeOrSystemPath(root, HOME) && root !== HOME) {
+    const policyRoot = root ? (resolvePathForPolicy(root) ?? root) : undefined;
+    const policyHome = resolvePathForPolicy(HOME) ?? HOME;
+    if (
+      policyRoot &&
+      isRootHomeOrSystemPath(policyRoot, policyHome) &&
+      policyRoot !== policyHome
+    ) {
       return "system-wide delete is hard-denied";
     }
   }

@@ -25,12 +25,22 @@ export type BashRedirectAnalysis = {
   heredoc: boolean;
 };
 
+export type EffectiveCommand = {
+  name?: string;
+  args: string[];
+  argTexts: string[];
+  argTildeExpansions: boolean[];
+  unresolvedTransparentDispatch: boolean;
+};
+
 export type BashCommandAnalysis = {
   raw: string;
   text: string;
   name?: string;
   words: string[];
   args: string[];
+  argTexts: string[];
+  effectiveCommand: EffectiveCommand;
   redirects: BashRedirectAnalysis[];
   redirectTargets: string[];
   dynamic: boolean;
@@ -77,6 +87,15 @@ function wordIsStatic(word: Word): boolean {
   return parts.every(partIsStatic);
 }
 
+function wordHasTildeExpansion(word: Word): boolean {
+  if (!word.text.startsWith("~")) return false;
+  for (const character of word.text.slice(1)) {
+    if (character === "/") return true;
+    if (["\\", "'", '"', "$", "`"].includes(character)) return false;
+  }
+  return true;
+}
+
 function partIsStatic(part: WordPart): boolean {
   switch (part.type) {
     case "Literal":
@@ -108,7 +127,7 @@ type CommandInvocation = {
   unresolvedTransparentDispatch: boolean;
 };
 
-function transparentCommandInvocation(
+function unwrapTransparentCommandOnce(
   name: string | undefined,
   argumentWords: Word[],
 ): CommandInvocation {
@@ -161,36 +180,36 @@ function transparentCommandInvocation(
       }
     }
 
-    if (name === "env" && !optionsEnded) {
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(value)) {
-        index += 1;
-        continue;
-      }
-      if (
-        value === "-i" ||
-        value === "--ignore-environment" ||
-        value === "-0" ||
-        value === "--null" ||
-        value === "-v" ||
-        value === "--debug"
-      ) {
-        index += 1;
-        continue;
-      }
-      if (["-u", "--unset", "-C", "--chdir"].includes(value)) {
-        const optionValue = argumentWords[index + 1];
-        if (!optionValue || !wordIsStatic(optionValue)) {
-          return { argumentWords: [], unresolvedTransparentDispatch: true };
+    if (name === "env") {
+      if (!optionsEnded && value.startsWith("-")) {
+        if (
+          value === "-i" ||
+          value === "--ignore-environment" ||
+          value === "-0" ||
+          value === "--null" ||
+          value === "-v" ||
+          value === "--debug"
+        ) {
+          index += 1;
+          continue;
         }
-        index += 2;
-        continue;
+        if (["-u", "--unset", "-C", "--chdir"].includes(value)) {
+          const optionValue = argumentWords[index + 1];
+          if (!optionValue || !wordIsStatic(optionValue)) {
+            return { argumentWords: [], unresolvedTransparentDispatch: true };
+          }
+          index += 2;
+          continue;
+        }
+        if (value.startsWith("--unset=") || value.startsWith("--chdir=")) {
+          index += 1;
+          continue;
+        }
+        return { argumentWords: [], unresolvedTransparentDispatch: true };
       }
-      if (value.startsWith("--unset=") || value.startsWith("--chdir=")) {
+      if (/^[^=]+=/.test(value)) {
         index += 1;
         continue;
-      }
-      if (value.startsWith("-")) {
-        return { argumentWords: [], unresolvedTransparentDispatch: true };
       }
     }
 
@@ -204,17 +223,39 @@ function transparentCommandInvocation(
   return { argumentWords: [], unresolvedTransparentDispatch: true };
 }
 
+function effectiveCommandInvocation(
+  name: string | undefined,
+  argumentWords: Word[],
+): CommandInvocation {
+  let invocation: CommandInvocation = {
+    name,
+    argumentWords,
+    unresolvedTransparentDispatch: false,
+  };
+  for (let depth = 0; depth < MAX_NESTED_SHELL_DEPTH; depth += 1) {
+    const next = unwrapTransparentCommandOnce(
+      invocation.name,
+      invocation.argumentWords,
+    );
+    if (next.unresolvedTransparentDispatch) return next;
+    if (
+      next.name === invocation.name &&
+      next.argumentWords === invocation.argumentWords
+    ) {
+      return next;
+    }
+    invocation = next;
+  }
+  return { argumentWords: [], unresolvedTransparentDispatch: true };
+}
+
 type NestedShell = {
   name?: string;
   source?: string;
   hasScriptArgument: boolean;
 };
 
-function nestedShell(
-  name: string | undefined,
-  argumentWords: Word[],
-): NestedShell | undefined {
-  const invocation = transparentCommandInvocation(name, argumentWords);
+function nestedShell(invocation: CommandInvocation): NestedShell | undefined {
   if (invocation.unresolvedTransparentDispatch) {
     return { hasScriptArgument: true };
   }
@@ -491,7 +532,8 @@ export function analyzeBash(
           .map((redirect) => redirect.target)
           .filter((target): target is string => !!target);
         const normalizedName = commandName(node.name?.value);
-        const wrapper = nestedShell(normalizedName, node.suffix);
+        const invocation = effectiveCommandInvocation(normalizedName, node.suffix);
+        const wrapper = nestedShell(invocation);
         const wrapperSource = wrapper?.source;
         analysis.commands.push({
           raw: nodeSource.slice(node.pos, node.end),
@@ -499,6 +541,16 @@ export function analyzeBash(
           name: normalizedName,
           words: values,
           args: node.suffix.map((word) => word.value),
+          argTexts: node.suffix.map((word) => word.text),
+          effectiveCommand: {
+            name: invocation.name,
+            args: invocation.argumentWords.map((word) => word.value),
+            argTexts: invocation.argumentWords.map((word) => word.text),
+            argTildeExpansions:
+              invocation.argumentWords.map(wordHasTildeExpansion),
+            unresolvedTransparentDispatch:
+              invocation.unresolvedTransparentDispatch,
+          },
           redirects,
           redirectTargets,
           dynamic: commandWords.some((word) => !wordIsStatic(word)),

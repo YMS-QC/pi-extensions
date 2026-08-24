@@ -8,6 +8,10 @@ All notable changes to this project are documented in this file.
 
 - **Bash AST analysis** — Replace handwritten shell parsing with `unbash`. Permission and hard-deny checks now inspect command structure, nested commands, wrappers, redirects, and malformed input. Bash allow rules require complete structural coverage and fail closed when analysis is unsafe. (#26)
 
+## Bug fixes
+
+- **Recursive deletion hard-deny** — Detect uppercase flags and GNU abbreviations for recursive `rm`, including commands behind `command`, `exec`, and `env`. Parse the `--` delimiter and shell tilde expansion. Protect Linux and macOS system roots without blocking active-home subdirectories, `/opt`, or `/srv`. (#23)
+
 ## [1.12.0] - 2026-08-23
 
 ## New features
