@@ -13,6 +13,7 @@ import {
   defaultClassifyAction,
   serializeClassifierAction,
 } from "./classifier.ts";
+import { analyzeBash, type BashAnalysis } from "./bash.ts";
 import {
   AUTO_MODE_GUIDANCE,
   DEFAULT_ALLOW,
@@ -37,8 +38,10 @@ import {
 import { formatModelSpec, parseModelSpec } from "./model.ts";
 import { promptForClassifierModel } from "./model-selector.ts";
 import {
+  matchesAllowedToolPatterns,
   matchesDeniedPath,
   matchesToolPattern,
+  matchingBashCommandText,
   recursiveSearchMayReachDeniedPath,
 } from "./permissions.ts";
 import {
@@ -67,11 +70,15 @@ import type {
   DenialRecord,
   EffectiveConfig,
 } from "./types.ts";
-import { safeJson } from "./utils.ts";
+import { safeJson, truncateMiddle } from "./utils.ts";
 
 const INSPECT_TOOL = "automode_inspect";
 const INSPECTION_ACTIONS = ["status", "config", "defaults", "denials"] as const;
 type InspectionAction = (typeof INSPECTION_ACTIONS)[number];
+
+function matchedCommandSummary(command: string | undefined): string | undefined {
+  return command ? truncateMiddle(command, 500) : undefined;
+}
 
 function canonicalPath(path: string): string {
   try {
@@ -108,6 +115,8 @@ export type PiAutomodeOptions = {
   logRoot?: string;
   /** Override the observability log clock in tests. */
   now?: () => Date;
+  /** Override Bash analysis in tests. Runtime code uses unbash. */
+  analyzeBash?: typeof analyzeBash;
 };
 
 type LogCtx = {
@@ -227,6 +236,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           `classifier denied: ${state.classifierDenied}`,
           `permissions.deny rules: ${cfg.permissionDeny.length}`,
           `permissions.ask rules: ${cfg.permissionAsk.length}`,
+          `permissions.allow rules: ${cfg.permissionAllow.length}`,
           `environment entries: ${cfg.environment.length}`,
           `allow entries: ${cfg.allow.length}`,
           `soft_deny entries: ${cfg.softDeny.length}`,
@@ -385,6 +395,27 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       const isOwnedInspection = event.toolName === INSPECT_TOOL &&
         ownsInspectionTool();
       const input = event.input as Record<string, unknown>;
+      let bashAnalysis: BashAnalysis | undefined;
+      if (event.toolName === "bash") {
+        const source = typeof input.command === "string" ? input.command : "";
+        try {
+          bashAnalysis = (options.analyzeBash ?? analyzeBash)(source);
+        } catch (error) {
+          bashAnalysis = {
+            source,
+            commands: [],
+            redirects: [],
+            redirectTargets: [],
+            structure: [],
+            allowStructureSafe: false,
+            errors: [{
+              message: `Bash analysis failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            }],
+          };
+        }
+      }
       const summary = actionSummary(event.toolName, input);
       if (!isOwnedInspection) state.checkedActions += 1;
       const logCtx: LogCtx = {
@@ -404,12 +435,26 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       };
 
       for (const pattern of cfg.permissionDeny) {
-        if (matchesToolPattern(pattern, event.toolName, input, ctx.cwd)) {
+        if (
+          matchesToolPattern(
+            pattern,
+            event.toolName,
+            input,
+            ctx.cwd,
+            "match",
+            bashAnalysis,
+          )
+        ) {
+          const matchedCommand = matchedCommandSummary(
+            matchingBashCommandText(pattern, bashAnalysis),
+          );
           if (isOwnedInspection) state.checkedActions += 1;
           return block(ctx, {
             timestamp: Date.now(),
             toolName: event.toolName,
-            reason: `Blocked by permissions.deny: ${pattern.raw}`,
+            reason: `Blocked by permissions.deny: ${pattern.raw}${
+              matchedCommand ? `; matched command: ${matchedCommand}` : ""
+            }`,
             action: summary,
             kind: "permissions.deny",
           }, logCtx);
@@ -418,16 +463,30 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
 
       let askRequiresClassifier = false;
       for (const pattern of cfg.permissionAsk) {
-        if (!matchesToolPattern(pattern, event.toolName, input, ctx.cwd)) {
+        if (
+          !matchesToolPattern(
+            pattern,
+            event.toolName,
+            input,
+            ctx.cwd,
+            "match",
+            bashAnalysis,
+          )
+        ) {
           continue;
         }
         if (!ctx.hasUI) {
+          const matchedCommand = matchedCommandSummary(
+            matchingBashCommandText(pattern, bashAnalysis),
+          );
           if (isOwnedInspection) state.checkedActions += 1;
           return block(ctx, {
             timestamp: Date.now(),
             toolName: event.toolName,
             reason:
-              `Matched permissions.ask (${pattern.raw}) but no UI is available`,
+              `Matched permissions.ask (${pattern.raw})${
+                matchedCommand ? ` for command: ${matchedCommand}` : ""
+              } but no UI is available`,
             action: summary,
             kind: "permissions.ask",
           }, logCtx);
@@ -438,11 +497,16 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           { signal: ctx.signal },
         );
         if (!allowed) {
+          const matchedCommand = matchedCommandSummary(
+            matchingBashCommandText(pattern, bashAnalysis),
+          );
           if (isOwnedInspection) state.checkedActions += 1;
           return block(ctx, {
             timestamp: Date.now(),
             toolName: event.toolName,
-            reason: `Declined permissions.ask: ${pattern.raw}`,
+            reason: `Declined permissions.ask: ${pattern.raw}${
+              matchedCommand ? `; matched command: ${matchedCommand}` : ""
+            }`,
             action: summary,
             kind: "permissions.ask",
           }, logCtx);
@@ -454,6 +518,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         event.toolName,
         input,
         ctx.cwd,
+        bashAnalysis,
       );
       if (deterministicReason) {
         if (isOwnedInspection) state.checkedActions += 1;
@@ -564,20 +629,18 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       // Deterministic allow tier. It runs after every deterministic denial.
       // Accepted ask rules skip this tier and always reach the classifier.
       if (!askRequiresClassifier) {
-        for (const pattern of cfg.permissionAllow) {
-          if (
-            !matchesToolPattern(
-              pattern,
-              event.toolName,
-              input,
-              ctx.cwd,
-              "no-match",
-            )
-          ) {
-            continue;
-          }
+        if (
+          matchesAllowedToolPatterns(
+            cfg.permissionAllow,
+            event.toolName,
+            input,
+            ctx.cwd,
+            bashAnalysis,
+          )
+        ) {
           // A protected-path write/edit is never covered by permissions.allow;
           // it stays on the classifier path (same rule as the inside-CWD tier).
+          let protectedWrite = false;
           if (event.toolName === "write" || event.toolName === "edit") {
             const inputPath = extractInputPath(event.toolName, input);
             const resolved = inputPath === undefined
@@ -588,17 +651,19 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
               resolved !== undefined &&
               isProtectedPath(resolved, ctx.cwd, cfg.protectedPaths)
             ) {
-              break;
+              protectedWrite = true;
             }
           }
-          return allow(
-            ctx,
-            "permissions.allow",
-            `Allowed by permissions.allow: ${pattern.raw}`,
-            event.toolName,
-            summary,
-            logCtx,
-          );
+          if (!protectedWrite) {
+            return allow(
+              ctx,
+              "permissions.allow",
+              "Allowed by permissions.allow",
+              event.toolName,
+              summary,
+              logCtx,
+            );
+          }
         }
       }
 

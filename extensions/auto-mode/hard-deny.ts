@@ -1,4 +1,9 @@
 import { resolve } from "node:path";
+import {
+  analyzeBash,
+  type BashAnalysis,
+  type BashCommandAnalysis,
+} from "./bash.ts";
 import { HOME } from "./constants.ts";
 import {
   isProfileOrAuthorizedKeysPath,
@@ -7,146 +12,6 @@ import {
   resolvePathForPolicy,
   shellPathTokenToPath,
 } from "./paths.ts";
-
-type ShellSegment = {
-  text: string;
-  words: string[];
-  redirectTargets: string[];
-};
-
-function splitShellSegments(command: string): string[] {
-  const segments: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | "`" | undefined;
-  let escaped = false;
-
-  for (let i = 0; i < command.length; i += 1) {
-    const char = command[i] ?? "";
-    const next = command[i + 1] ?? "";
-    if (escaped) {
-      current += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\" && quote !== "'") {
-      current += char;
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      current += char;
-      if (char === quote) quote = undefined;
-      continue;
-    }
-    if (char === "'" || char === '"' || char === "`") {
-      quote = char;
-      current += char;
-      continue;
-    }
-    if (
-      char === ";" ||
-      char === "\n" ||
-      char === "|" ||
-      (char === "&" && next === "&") ||
-      (char === "|" && next === "|")
-    ) {
-      if (current.trim()) segments.push(current.trim());
-      current = "";
-      if ((char === "&" && next === "&") || (char === "|" && next === "|")) {
-        i += 1;
-      }
-      continue;
-    }
-    current += char;
-  }
-  if (current.trim()) segments.push(current.trim());
-  return segments;
-}
-
-function tokenizeShellSegment(text: string): string[] {
-  const tokens: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | "`" | undefined;
-  let escaped = false;
-
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i] ?? "";
-    if (escaped) {
-      current += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\" && quote !== "'") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (char === quote) quote = undefined;
-      else current += char;
-      continue;
-    }
-    if (char === "'" || char === '"' || char === "`") {
-      quote = char;
-      continue;
-    }
-    if (/\s/.test(char)) {
-      if (current) tokens.push(current);
-      current = "";
-      continue;
-    }
-    if (char === ">" || char === "<") {
-      let op = char;
-      if (/^\d+$/.test(current)) {
-        op = current + char;
-      } else if (current) {
-        tokens.push(current);
-      }
-      if (text[i + 1] === ">" || text[i + 1] === "&") {
-        op += text[i + 1];
-        i += 1;
-      }
-      tokens.push(op);
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-  if (current) tokens.push(current);
-  return tokens;
-}
-
-function parseShell(command: string): ShellSegment[] {
-  return splitShellSegments(command).map((text) => {
-    const tokens = tokenizeShellSegment(text);
-    const words: string[] = [];
-    const redirectTargets: string[] = [];
-    for (let i = 0; i < tokens.length; i += 1) {
-      const token = tokens[i] ?? "";
-      if (/^(?:\d?>|\d?>>|>|>>|&>|<)$/.test(token)) {
-        const target = tokens[i + 1];
-        if (target) redirectTargets.push(target);
-        i += 1;
-        continue;
-      }
-      const attachedRedirect = token.match(/^(?:\d?>|\d?>>|>|>>|&>)(.+)$/);
-      if (attachedRedirect?.[1]) {
-        redirectTargets.push(attachedRedirect[1]);
-        continue;
-      }
-      words.push(token);
-    }
-    return { text, words, redirectTargets };
-  });
-}
-
-function commandName(words: string[]): string | undefined {
-  return words.find((word) => !/^\w+=/.test(word));
-}
-
-function commandArgs(words: string[]): string[] {
-  const index = words.findIndex((word) => !/^\w+=/.test(word));
-  return index >= 0 ? words.slice(index + 1) : [];
-}
 
 function isRecursiveRmArg(arg: string): boolean {
   return (
@@ -190,7 +55,7 @@ export function isRootHomeOrSystemPath(path: string, home: string): boolean {
 }
 
 function segmentHardDeny(
-  segment: ShellSegment,
+  segment: BashCommandAnalysis,
   cwd: string,
 ): string | undefined {
   for (const target of segment.redirectTargets) {
@@ -213,9 +78,9 @@ function segmentHardDeny(
     }
   }
 
-  const name = commandName(segment.words);
+  const name = segment.name;
   if (!name) return undefined;
-  const args = commandArgs(segment.words);
+  const args = segment.args;
   const lowerArgs = args.map((arg) => arg.toLowerCase());
 
   if (
@@ -320,7 +185,7 @@ function segmentHardDeny(
       "sed",
     ].includes(name) &&
     /\.pi\/automode|\.pi\/extensions|pi-automode|auto-mode\.json/i.test(
-      segment.text,
+      segment.raw,
     )
   ) {
     return "auto-mode or permission safety-control modification is hard-denied";
@@ -332,14 +197,14 @@ function segmentHardDeny(
 /**
  * Deterministic deny checks for actions too risky to delegate to the classifier.
  *
- * Bash checks use a small shell lexer instead of only regexes. It is not a full
- * POSIX shell implementation, but it handles quotes, redirects, pipes, `&&`, and
- * `;` well enough to avoid the common "safe prefix hides risky suffix" bypass.
+ * Bash checks use the shared unbash AST analysis. The hook passes one analysis
+ * through every enforcement stage so nested commands are not reparsed.
  */
 export function deterministicHardDeny(
   toolName: string,
   input: Record<string, unknown>,
   cwd: string,
+  bashAnalysis?: BashAnalysis,
 ): string | undefined {
   if (toolName === "write" || toolName === "edit") {
     const path = resolveInputPath(cwd, input.path);
@@ -355,7 +220,20 @@ export function deterministicHardDeny(
 
   if (toolName !== "bash") return undefined;
   const command = typeof input.command === "string" ? input.command : "";
-  for (const segment of parseShell(command)) {
+  const analysis = bashAnalysis ?? analyzeBash(command);
+  if (analysis.errors.length > 0) {
+    return `Bash input could not be parsed safely: ${analysis.errors[0]?.message ?? "unknown parser error"}`;
+  }
+  for (const target of analysis.redirectTargets) {
+    const path = shellPathTokenToPath(target, cwd);
+    if (!path) continue;
+    const profileReason = isProfileOrAuthorizedKeysPath(path);
+    if (profileReason) return profileReason;
+    if (isSafetyControlPath(path, cwd)) {
+      return "auto-mode or permission safety-control modification is hard-denied";
+    }
+  }
+  for (const segment of analysis.commands) {
     const reason = segmentHardDeny(segment, cwd);
     if (reason) return reason;
   }
