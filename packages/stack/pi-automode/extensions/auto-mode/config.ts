@@ -4,6 +4,7 @@ import {
   DEFAULT_ALLOW,
   DEFAULT_ALLOW_INSIDE_WORKING_DIRECTORY,
   DEFAULT_BASH_FAST_PATH_PATTERNS,
+  DEFAULT_CLASSIFIER_TIMEOUT_MS,
   DEFAULT_CLASSIFY_READ_ONLY_TOOLS,
   DEFAULT_DECISION_CACHE_CONFIG,
   DEFAULT_DENIED_PATHS,
@@ -20,7 +21,10 @@ import {
   PI_PROJECT_LOCAL_SETTINGS,
   PI_PROJECT_SHARED_SETTINGS,
 } from "./constants.ts";
-import { parseToolPattern } from "./permissions.ts";
+import {
+  MAX_WILDCARD_PATTERN_LENGTH,
+  parseToolPattern,
+} from "./permissions.ts";
 import type {
   AutoModeSettings,
   ClassifierReasoningLevel,
@@ -108,6 +112,7 @@ export function validateSettingsFile(
         "enabled",
         "classifierModel",
         "classifierReasoningLevel",
+        "classifierTimeoutMs",
         "classifyReadOnlyTools",
         "fastClassifierMaxTokens",
         "allowInsideWorkingDirectory",
@@ -150,6 +155,15 @@ export function validateSettingsFile(
       ) {
         diagnostics.push(
           `${source}: autoMode.classifierReasoningLevel must be one of low, medium, high, xhigh, max`,
+        );
+      }
+      if (
+        hasOwn(autoMode, "classifierTimeoutMs") &&
+        (!Number.isInteger(autoMode.classifierTimeoutMs) ||
+          (autoMode.classifierTimeoutMs as number) < 1000)
+      ) {
+        diagnostics.push(
+          `${source}: autoMode.classifierTimeoutMs must be an integer of at least 1000`,
         );
       }
       if (
@@ -243,11 +257,11 @@ export function validateSettingsFile(
     } else {
       const permissions = settings.permissions as Record<string, unknown>;
       for (const key of Object.keys(permissions)) {
-        if (key !== "deny" && key !== "ask") {
+        if (key !== "deny" && key !== "ask" && key !== "allow") {
           diagnostics.push(`${source}: unknown permissions key ${key}`);
         }
       }
-      for (const key of ["deny", "ask"] as const) {
+      for (const key of ["deny", "ask", "allow"] as const) {
         const value = permissions[key];
         if (value === undefined) continue;
         if (!Array.isArray(value)) {
@@ -261,6 +275,10 @@ export function validateSettingsFile(
             diagnostics.push(
               `${source}: permissions.${key}[${index}] must be a tool pattern string`,
             );
+          } else if (entry.length > MAX_WILDCARD_PATTERN_LENGTH) {
+            diagnostics.push(
+              `${source}: permissions.${key}[${index}] must be at most ${MAX_WILDCARD_PATTERN_LENGTH} characters`,
+            );
           }
         }
       }
@@ -273,28 +291,36 @@ export function validateSettingsFile(
 type RuleAccumulator = {
   defaults: string[];
   includeDefaults: boolean;
-  seen: boolean;
   entries: string[];
 };
 
 function createRuleAccumulator(defaults: string[]): RuleAccumulator {
-  return { defaults, includeDefaults: true, seen: false, entries: [] };
+  return { defaults, includeDefaults: true, entries: [] };
 }
 
-function applyRuleSetting(accumulator: RuleAccumulator, value: unknown): void {
+function applyRuleSetting(
+  accumulator: RuleAccumulator,
+  value: unknown,
+  acceptEntry: (entry: string) => boolean = () => true,
+): void {
   const entries = stringArray(value);
   if (!entries) return;
-  accumulator.seen = true;
-  accumulator.includeDefaults = entries.includes("$defaults");
+  // Any entry that stringArray or acceptEntry drops marks the list malformed.
+  // Fail conservative: keep defaults rather than replace them with a partial list.
+  let malformed = Array.isArray(value) && value.length !== entries.length;
   for (const entry of entries) {
-    if (entry !== "$defaults") accumulator.entries.push(entry);
+    if (entry === "$defaults") continue;
+    if (acceptEntry(entry)) {
+      accumulator.entries.push(entry);
+    } else {
+      malformed = true;
+    }
   }
+  accumulator.includeDefaults = entries.includes("$defaults") || malformed;
 }
 
 function finalizeRuleSetting(accumulator: RuleAccumulator): string[] {
-  const base = accumulator.includeDefaults || !accumulator.seen
-    ? accumulator.defaults
-    : [];
+  const base = accumulator.includeDefaults ? accumulator.defaults : [];
   return [...new Set([...base, ...accumulator.entries])];
 }
 
@@ -324,8 +350,8 @@ function mergeLog(
 ): LogConfig {
   if (!patch) return base;
   return {
-    enabled: patch.enabled ?? base.enabled,
-    classifierIo: patch.classifierIo ?? base.classifierIo,
+    enabled: typeof patch.enabled === "boolean" ? patch.enabled : base.enabled,
+    classifierIo: typeof patch.classifierIo === "boolean" ? patch.classifierIo : base.classifierIo,
   };
 }
 
@@ -374,6 +400,12 @@ function validateDeniedPathsSetting(
     if (typeof entry !== "string" || entry.trim() === "") {
       diagnostics.push(
         `${source}: deniedPaths[${index}] must be a non-empty path pattern`,
+      );
+      continue;
+    }
+    if (entry.length > MAX_WILDCARD_PATTERN_LENGTH) {
+      diagnostics.push(
+        `${source}: deniedPaths[${index}] must be at most ${MAX_WILDCARD_PATTERN_LENGTH} characters`,
       );
       continue;
     }
@@ -431,6 +463,10 @@ function validFastClassifierBudget(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 16;
 }
 
+function validClassifierTimeout(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 1000;
+}
+
 function applyAutoModeScalars(
   base: EffectiveConfig,
   settings: AutoModeSettings | undefined,
@@ -438,22 +474,28 @@ function applyAutoModeScalars(
   if (!settings) return base;
   return {
     ...base,
-    enabled: settings.enabled ?? base.enabled,
+    enabled: typeof settings.enabled === "boolean" ? settings.enabled : base.enabled,
     classifierModel: settings.classifierModel ?? base.classifierModel,
     classifierReasoningLevel: isClassifierReasoningLevel(
         settings.classifierReasoningLevel,
       )
       ? settings.classifierReasoningLevel
       : base.classifierReasoningLevel,
-    classifyReadOnlyTools: settings.classifyReadOnlyTools ??
-      base.classifyReadOnlyTools,
+    classifyReadOnlyTools: typeof settings.classifyReadOnlyTools === "boolean"
+      ? settings.classifyReadOnlyTools
+      : base.classifyReadOnlyTools,
     allowInsideWorkingDirectory:
-      settings.allowInsideWorkingDirectory ?? base.allowInsideWorkingDirectory,
+      typeof settings.allowInsideWorkingDirectory === "boolean"
+        ? settings.allowInsideWorkingDirectory
+        : base.allowInsideWorkingDirectory,
     fastClassifierMaxTokens: validFastClassifierBudget(
         settings.fastClassifierMaxTokens,
       )
       ? settings.fastClassifierMaxTokens
       : base.fastClassifierMaxTokens,
+    classifierTimeoutMs: validClassifierTimeout(settings.classifierTimeoutMs)
+      ? settings.classifierTimeoutMs
+      : base.classifierTimeoutMs,
     maxUserTranscriptTokens: validTranscriptBudget(
         settings.maxUserTranscriptTokens,
       )
@@ -478,11 +520,12 @@ function applyAutoModeScalars(
 function appendPermissionPatterns(
   target: ToolPattern[],
   settings: SettingsFile | undefined,
-  key: "deny" | "ask",
+  key: "deny" | "ask" | "allow",
 ): void {
   const values = stringArray(settings?.permissions?.[key]);
   if (!values) return;
   for (const value of values) {
+    if (value.length > MAX_WILDCARD_PATTERN_LENGTH) continue;
     const pattern = parseToolPattern(value);
     if (pattern) target.push(pattern);
   }
@@ -510,8 +553,9 @@ function appendBashFastPathPatterns(
  * Merge settings with Claude Code-style precedence using Pi-owned config files.
  *
  * Important details:
- * - shared project `.pi/automode.json` contributes `permissions.*` but not `autoMode`,
- *   so a checked-in repo cannot weaken classifier rules;
+ * - shared project `.pi/automode.json` contributes `permissions.deny` and
+ *   `permissions.ask` but not `permissions.allow` or `autoMode`, so checked-in
+ *   config can only add permission barriers;
  * - global, project-local, and inline `autoMode` settings combine additively across scopes;
  * - omitting `$defaults` in any scope for a rule list means "replace built-ins" for that list.
  */
@@ -524,6 +568,7 @@ export function buildEffectiveConfigFromSources(
     allowInsideWorkingDirectory: DEFAULT_ALLOW_INSIDE_WORKING_DIRECTORY,
     deniedPaths: [...DEFAULT_DENIED_PATHS],
     fastClassifierMaxTokens: DEFAULT_FAST_CLASSIFIER_MAX_TOKENS,
+    classifierTimeoutMs: DEFAULT_CLASSIFIER_TIMEOUT_MS,
     maxUserTranscriptTokens: DEFAULT_MAX_USER_TRANSCRIPT_TOKENS,
     maxToolTranscriptTokens: DEFAULT_MAX_TOOL_TRANSCRIPT_TOKENS,
     environment: [...DEFAULT_ENVIRONMENT],
@@ -536,6 +581,7 @@ export function buildEffectiveConfigFromSources(
     bashFastPath: DEFAULT_BASH_FAST_PATH_PATTERNS.map((entry) =>
       parseToolPattern(entry)
     ).filter((pattern): pattern is ToolPattern => pattern !== undefined),
+    permissionAllow: [],
     log: { ...DEFAULT_LOG_CONFIG },
     notifications: DEFAULT_NOTIFICATION_LEVEL,
     decisionCache: { ...DEFAULT_DECISION_CACHE_CONFIG },
@@ -563,7 +609,11 @@ export function buildEffectiveConfigFromSources(
     applyRuleSetting(environment, settings.autoMode?.environment);
     applyRuleSetting(allow, settings.autoMode?.allow);
     applyRuleSetting(protectedPaths, settings.autoMode?.protectedPaths);
-    applyRuleSetting(deniedPaths, settings.autoMode?.deniedPaths);
+    applyRuleSetting(
+      deniedPaths,
+      settings.autoMode?.deniedPaths,
+      (entry) => entry.length <= MAX_WILDCARD_PATTERN_LENGTH,
+    );
     applyRuleSetting(
       softDeny,
       settings.autoMode?.soft_deny ?? settings.autoMode?.softDeny,
@@ -596,6 +646,15 @@ export function buildEffectiveConfigFromSources(
     appendPermissionPatterns(config.permissionDeny, settings, "deny");
     appendPermissionPatterns(config.permissionAsk, settings, "ask");
   }
+  for (
+    const settings of [
+      ...globalSettings,
+      ...projectLocalSettings,
+      ...inlineSettings,
+    ]
+  ) {
+    appendPermissionPatterns(config.permissionAllow, settings, "allow");
+  }
 
   return config;
 }
@@ -612,9 +671,22 @@ function loadedSettingsDiagnostics(
   return files.flatMap((file) => file?.diagnostics ?? []);
 }
 
-/** Load config from disk and environment variables, including diagnostics for `/automode config`. */
+function ignoredSharedAllowDiagnostics(
+  files: Array<LoadedSettingsFile | undefined>,
+): string[] {
+  return files.flatMap((file) => {
+    const permissions = file?.settings?.permissions;
+    if (!file || !permissions || !hasOwn(permissions, "allow")) return [];
+    return [
+      `${file.path}: permissions.allow is ignored in shared project config. Use a user-owned config source instead`,
+    ];
+  });
+}
+
+/** Load config from disk and environment variables, including diagnostics for `/automode config`. Project files require explicit trust. */
 export function loadEffectiveConfigWithDiagnostics(
   cwd: string,
+  projectTrusted = false,
 ): ConfigLoadResult {
   const inlineSettings: SettingsFile[] = [];
   const diagnostics: string[] = [];
@@ -637,17 +709,35 @@ export function loadEffectiveConfigWithDiagnostics(
   }
 
   const globalFiles = PI_GLOBAL_SETTINGS.map(readSettingsFile);
-  const projectLocalFiles = PI_PROJECT_LOCAL_SETTINGS.map((file) =>
-    readSettingsFile(resolve(cwd, file))
+  const projectLocalPaths = PI_PROJECT_LOCAL_SETTINGS.map((file) =>
+    resolve(cwd, file)
   );
-  const projectSharedFiles = PI_PROJECT_SHARED_SETTINGS.map((file) =>
-    readSettingsFile(resolve(cwd, file))
+  const projectSharedPaths = PI_PROJECT_SHARED_SETTINGS.map((file) =>
+    resolve(cwd, file)
   );
+  const projectLocalFiles = projectTrusted
+    ? projectLocalPaths.map(readSettingsFile)
+    : [];
+  const projectSharedFiles = projectTrusted
+    ? projectSharedPaths.map(readSettingsFile)
+    : [];
+  if (!projectTrusted) {
+    for (
+      const path of [...projectLocalPaths, ...projectSharedPaths].filter(
+        existsSync,
+      )
+    ) {
+      diagnostics.push(`${path}: ignored because project is not trusted`);
+    }
+  }
   const fileDiagnostics = loadedSettingsDiagnostics([
     ...globalFiles,
     ...projectLocalFiles,
     ...projectSharedFiles,
   ]);
+  const sharedAllowDiagnostics = ignoredSharedAllowDiagnostics(
+    projectSharedFiles,
+  );
 
   return {
     config: buildEffectiveConfigFromSources({
@@ -656,13 +746,20 @@ export function loadEffectiveConfigWithDiagnostics(
       projectSharedSettings: loadedSettingsToSettings(projectSharedFiles),
       inlineSettings,
     }),
-    diagnostics: [...fileDiagnostics, ...diagnostics],
+    diagnostics: [
+      ...fileDiagnostics,
+      ...sharedAllowDiagnostics,
+      ...diagnostics,
+    ],
   };
 }
 
 /** Load config from disk and environment variables. Exported for tests and diagnostics. */
-export function loadEffectiveConfig(cwd: string): EffectiveConfig {
-  return loadEffectiveConfigWithDiagnostics(cwd).config;
+export function loadEffectiveConfig(
+  cwd: string,
+  projectTrusted = false,
+): EffectiveConfig {
+  return loadEffectiveConfigWithDiagnostics(cwd, projectTrusted).config;
 }
 
 function readWritableSettingsFile(path: string): SettingsFile {

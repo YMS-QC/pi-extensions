@@ -6,19 +6,23 @@ This document describes how `pi-automode` decides whether an agent tool call can
 
 For each Pi `tool_call` event, the extension does this:
 
-1. Load the effective auto-mode config for the current session.
-2. Ignore the call if auto-mode is disabled.
-3. Block immediately if the agent turn was cancelled.
-4. Check `permissions.deny` rules.
-5. Check `permissions.ask` rules and ask the user when needed.
-6. Run deterministic hard-deny checks.
-7. Run the path gate: `deniedPaths` matches block locally; with `allowInsideWorkingDirectory`, in-tree non-protected file access is allowed without a classifier call.
-8. Allow read-only built-in tools without a classifier call, unless `classifyReadOnlyTools` routes them through the classifier.
-9. Send every remaining action, including all writes and edits, through a one-token conservative filter.
-10. Run structured classifier review only when the filter requests it, then allow or block.
-11. Persist state and update the UI status/denial history.
+1. Load the effective auto-mode configuration for the current session.
+2. If auto mode is disabled, ignore the call.
+3. If the agent turn was cancelled, block the call.
+4. Block a matching `permissions.deny` rule.
+5. If a `permissions.ask` rule matches, ask the user.
+6. If the user declines or no UI is available, block the call.
+7. Mark an accepted ask call for required classifier review.
+8. Run deterministic hard-deny checks.
+9. If no accepted ask rule requires review, let the extension-owned `automode_inspect` tool run locally.
+10. Run path-deny checks, including recursive search scopes and symlink aliases.
+11. If an ask rule was accepted, skip all deterministic allow tiers.
+12. Otherwise, apply the inside-working-directory, `permissions.allow`, and read-only tiers in that order.
+13. Send every remaining action through a one-token conservative filter.
+14. If the filter requests review, run structured classifier review.
+15. Persist state and update the UI status and denial history.
 
-The default posture is fail-closed. If the classifier cannot be resolved, has no API key, errors, or returns an invalid stage response, the action is blocked.
+The default posture is fail-closed. If model resolution, authentication, a classifier call, or response parsing fails, pi-automode blocks the action.
 
 ## Diagram
 
@@ -27,11 +31,9 @@ flowchart TD
   A[Pi emits tool_call] --> B[Build effective config]
   B --> C{Auto-mode enabled?}
   C -- no --> Z[Let tool run]
-  C -- yes --> D{ctx.signal aborted?}
+  C -- yes --> D{Agent turn cancelled?}
   D -- yes --> X[Block: cancelled]
-  D -- no --> E[Summarize action]
-
-  E --> F{Matches permissions.deny?}
+  D -- no --> F{Matches permissions.deny?}
   F -- yes --> F1[Block locally]
   F -- no --> G{Matches permissions.ask?}
 
@@ -39,51 +41,66 @@ flowchart TD
   H -- no --> H1[Block locally]
   H -- yes --> I[Ask user]
   I -- declined --> I1[Block locally]
-  I -- allowed --> J[Continue]
-  G -- no --> J
+  I -- accepted --> J[Require classifier review]
+  G -- no --> J0[Continue normally]
 
   J --> K{Deterministic hard-deny?}
+  J0 --> K
   K -- yes --> K1[Block locally]
-  K -- no --> K2{Path gate: deniedPaths match or in-tree allow tier?}
+  K -- no --> E{Extension-owned automode_inspect?}
+  E -- yes --> E2{Classifier required by ask?}
+  E2 -- no --> E1[Allow without state or log changes]
+  E2 -- yes --> N[Run one-token filter]
+  E -- no --> K2{Path denied or recursive scope unsafe?}
 
-  K2 -- denied --> K1[Block locally]
-  K2 -- in-tree, non-protected --> L1[Allow locally]
-  K2 -- no match or tier off --> L{Read-only built-in tool?}
-
-  L -- yes --> L1[Allow locally]
-  L -- no --> N[Run one-token filter]
+  K2 -- yes --> K1
+  K2 -- no --> K3{Classifier required by ask?}
+  K3 -- yes --> N
+  K3 -- no --> K4{Inside-CWD allow tier?}
+  K4 -- yes, non-protected --> L1[Allow locally]
+  K4 -- no or protected --> K5{Matches permissions.allow?}
+  K5 -- yes, non-protected --> L1
+  K5 -- no or protected --> L{Read-only built-in fast path?}
+  L -- yes --> L1
+  L -- no --> N
 
   N --> O{Exact safe token?}
   O -- yes --> Q[Allow tool]
-  O -- malformed/error --> O1[Block: fail closed]
+  O -- malformed or error --> O1[Block: fail closed]
   O -- review --> P[Run structured review]
   P --> P1{Valid allow decision?}
   P1 -- yes --> Q
-  P1 -- no/error --> R[Block with classifier reason]
+  P1 -- no or error --> R[Block with classifier reason]
 
-  X --> S[Persist state + update UI]
+  X --> S[Persist state and update UI]
   F1 --> S
   H1 --> S
   I1 --> S
   K1 --> S
   O1 --> S
   R --> S
-  L1 --> T[Persist allow state + update UI]
+  L1 --> T[Persist allow state and update UI]
   Q --> T
 ```
 
-## Config loading
+## Configuration loading
 
-Config is loaded on `session_start` and can be reloaded with `/automode reload`.
+Pi-automode loads global and inline configuration during extension initialization. It loads project configuration on `session_start`. `/automode reload` reloads the effective configuration.
 
-The effective config combines these sources:
+The effective configuration combines these sources:
 
 - `~/.pi/agent/automode.json`
-- `.pi/automode.local.json`
+- `.pi/automode.local.json` for trusted projects
 - `PI_AUTOMODE_SETTINGS_JSON`
-- shared `.pi/automode.json`, but only for `permissions.deny` and `permissions.ask`
+- shared `.pi/automode.json` for trusted projects, but only for `permissions.deny` and `permissions.ask`
 
-Shared project `.pi/automode.json` cannot change `autoMode` rules. That is deliberate: a checked-in repo must not be able to weaken auto-mode. It may still add Pi permission rules.
+Before `session_start`, pi-automode loads only global and inline configuration. If `ctx.isProjectTrusted()` returns `true`, it reads project configuration during `session_start` and `/automode reload`.
+
+For an untrusted project, pi-automode ignores both project files. `/automode config` reports each ignored file that exists.
+
+Shared `.pi/automode.json` cannot change `autoMode` rules or add `permissions.allow`. A checked-in file must not reduce classifier coverage. If shared configuration contains `permissions.allow`, `/automode config` reports a diagnostic.
+
+Deny and ask patterns use this source order: global, shared project, project-local, inline. Allow patterns use this source order: global, project-local, inline.
 
 To disable pi-automode for the current project, set `autoMode.enabled` to `false` in `.pi/automode.local.json`:
 
@@ -95,28 +112,28 @@ To disable pi-automode for the current project, set `autoMode.enabled` to `false
 }
 ```
 
-This affects only that project-local config. Shared project `.pi/automode.json` cannot disable auto-mode.
+This affects only the trusted project-local configuration. Shared project `.pi/automode.json` cannot disable auto mode.
 
-List settings such as `allow`, `soft_deny`, `hard_deny`, `environment`, and `protectedPaths` support `$defaults`. Omitting `$defaults` replaces the built-ins for that section only. See [Defaults and rule-list behavior](defaults.md).
+List fields such as `allow`, `soft_deny`, `hard_deny`, `environment`, and `protectedPaths` support `$defaults`. Omitting `$defaults` replaces the built-ins for that section only. See [Defaults and rule-list behavior](defaults.md).
 
 ## Context captured before classification
 
-On `before_agent_start`, the extension appends `AUTO_MODE_GUIDANCE` to the main agent's system prompt. This reminds the main agent that auto-mode is active and tells it not to bypass or weaken the controls.
+On `before_agent_start`, the extension appends `AUTO_MODE_GUIDANCE` to the system prompt. This text states that auto mode is active. It also prohibits bypasses or weaker controls.
 
-The same hook also extracts loaded context files from Pi's `systemPromptOptions.contextFiles`. That extracted text becomes `loadedContext`, which is later sent to the classifier. Each context file is formatted as:
+The same hook extracts context files from Pi's `systemPromptOptions.contextFiles`. The extracted text becomes `loadedContext`. Pi-automode formats each context file as follows:
 
 ```text
 # path/to/file
 <truncated content>
 ```
 
-Each file's content is truncated in the middle to 4000 characters.
+Pi-automode truncates the middle of each file to 4000 UTF-16 code units.
 
 ## Local checks before the classifier
 
 ### `permissions.deny`
 
-`permissions.deny` is checked first. A matching rule blocks immediately. The classifier is not consulted.
+Pi-automode checks `permissions.deny` first. A matching rule blocks immediately. Pi-automode does not call the classifier.
 
 Example rule:
 
@@ -124,37 +141,69 @@ Example rule:
 "bash(git push --force*)"
 ```
 
-Permission patterns are scoped to the Pi tool and its primary argument. For `bash`, the primary argument is `input.command`. For file tools such as `read`, `write`, and `edit`, it is the resolved path normalized for matching.
+Permission patterns apply to a Pi tool and its primary argument. `bash` uses `input.command`. `read`, `write`, `edit`, `find`, and `ls` use the normalized resolved `input.path`.
+
+`grep` uses `input.pattern`. If the applicable argument is absent, the matcher uses the serialized input object.
+
+The `*` wildcard matches zero or more characters, including newlines and path separators. Matching is case-insensitive and uses a bounded linear-time algorithm. A configured pattern can contain at most 4,096 UTF-16 code units. A primary argument can contain at most 1,048,576 UTF-16 code units. A longer argument conservatively matches a scoped deny or ask rule.
 
 ### `permissions.ask`
 
 `permissions.ask` runs after `permissions.deny`.
 
-If a rule matches and no UI is available, the action is blocked. If UI is available, the user sees a confirmation dialog with the matched rule and the action summary.
+If a rule matches without an available UI, pi-automode blocks the action. If a UI is available, pi-automode shows a confirmation dialog.
 
-Approving that dialog does not run the tool directly. It only lets the action continue to the normal auto-mode checks, including deterministic hard-deny checks and classifier review.
+The dialog contains the matched rule and the action summary.
+
+Approving that dialog does not run the tool directly. Deterministic denial checks continue first. After these checks pass, the classifier reviews the call. The call cannot use `allowInsideWorkingDirectory`, `permissions.allow`, or the read-only fast path.
+
+### `permissions.allow`
+
+`permissions.allow` is a deterministic allow tier. It uses the same patterns as `deny` and `ask`. Thus, it covers built-in, MCP, and extension tools:
+
+```json
+"permissions": { "allow": ["bash(git status*)", "example-extension-tool"] }
+```
+
+The matcher understands primary arguments for `bash`, the file tools, and `grep`. It uses the serialized input object for other tools.
+
+Use a bare tool name for an MCP or extension tool. An argument pattern compares against the serialized input object.
+
+A match skips only the classifier call. The tier cannot override permission denials, hard-deny checks, path denials, or protected-path controls. An accepted ask rule also disables this tier for the current call.
+
+Pi-automode reads allow entries from global, trusted project-local, and inline configuration. It ignores allow entries in shared project configuration and reports a diagnostic.
+
+A configured pattern can contain at most 4,096 UTF-16 code units. An input can contain at most 1,048,576 UTF-16 code units for allow matching. A longer input returns no match and continues to classifier review. Deny and ask matching uses the opposite overflow result so these rules fail closed.
+
+The default list is empty. Thus, behavior does not change without explicit user configuration. Decision logs use `kind: permissions.allow`.
+
+`/automode status` reports the rule count. `/automode config` shows the resolved patterns.
+
+[ADR-001](adr/ADR-001-permission-precedence-and-trust-boundaries.md) records the precedence and trust-boundary rationale.
 
 ### Deterministic hard-deny checks
 
-Some actions are too risky to leave to the classifier. These are blocked locally, before any classifier call.
+Some actions are too risky to leave to the classifier. Pi-automode blocks these actions before classifier review.
 
-Current deterministic blocks include:
+Current deterministic blocks include these actions:
 
-- writes to shell profile files;
-- writes to `~/.ssh/authorized_keys`;
-- edits to auto-mode or Pi permission safety-control files;
-- TLS or certificate verification weakening;
-- persistence changes such as cron jobs, launch agents, and system service enablement;
-- dangerous recursive deletes of root, home, or system paths;
-- selected system or SSH permission mutations.
+- writes to shell profile files
+- writes to `~/.ssh/authorized_keys`
+- edits to auto-mode or Pi permission safety-control files
+- weaker TLS or certificate verification
+- persistence changes such as cron jobs, launch agents, and system service enablement
+- dangerous recursive deletes of root, home, or system paths
+- selected system or SSH permission mutations
 
-The `bash` checks use a small shell lexer. It handles quotes, redirects, pipes, `&&`, `||`, and `;` well enough to catch common "safe prefix, risky suffix" patterns.
+The `bash` checks use a small shell lexer. It handles quotes, redirects, pipes, `&&`, `||`, and `;`. This catches common "safe prefix, risky suffix" patterns.
 
-Recursive-delete checks treat `/`, the user's home root, and top-level system roots as hard-denied, but exempt the home *subtree*: subpaths of the user's home are user data, not system paths. On distros where `HOME` lives under `/var` (e.g. Fedora Silverblue with `/var/home/<user>`), `rm -rf` on home subpaths is therefore not hard-denied as a system-path delete, while `rm -rf ~` stays blocked.
+Recursive-delete checks hard-deny `/`, the user home root, and top-level system roots. They exempt subpaths of the user home because these paths contain user data.
+
+Some distributions store `HOME` under `/var`. Fedora Silverblue uses `/var/home/<user>`, for example. Pi-automode does not treat `rm -rf` on this home subtree as a system-path delete. It still blocks `rm -rf ~`.
 
 ### Read-only bypass and the path gate
 
-Read-only built-in tools are allowed without classifier review after the checks above pass, unless `classifyReadOnlyTools: true` routes them through the classifier instead.
+Pi-automode allows read-only built-in tools after the prior checks and the `permissions.allow` tier. `classifyReadOnlyTools: true` sends them to the classifier instead.
 
 The read-only tool set is:
 
@@ -162,13 +211,25 @@ The read-only tool set is:
 read, grep, find, ls
 ```
 
-Reads to protected paths are still allowed.
+Pi-automode still allows reads to protected paths.
 
-Two opt-in settings change the deterministic tier. `deniedPaths` blocks matching file-tool paths locally, before the classifier and any fast path. `allowInsideWorkingDirectory: true` allows file access inside the working directory without a classifier call — writes and edits included — while out-of-tree file access is routed to the classifier (reads included). Writes and edits to protected in-tree paths are exempt from the silent-allow tier and still reach the classifier. In the default configuration (both settings off), every write and edit is classifier-reviewed, whether or not its target is protected.
+Two optional fields change the deterministic tier. `deniedPaths` blocks matching file-tool paths before classifier review or an allow tier.
+
+`allowInsideWorkingDirectory: true` allows file access inside the working directory without classifier review. This access includes writes and edits. Pi-automode sends all out-of-tree file access to the classifier, including reads.
+
+Protected in-tree writes and edits do not use the local allow tier. They still reach the classifier.
+
+By default, both fields are off and `permissions.allow` is empty. Thus, every write and edit reaches the classifier.
 
 ## Protected paths
 
-The protected-path configuration identifies safety-sensitive targets such as `.git`, `.pi`, editor config directories, shell profiles, package-manager config files, hook configs, and similar files. In the default configuration every write and edit goes to the classifier, so there is no direct-write allow path that can bypass classifier policy. With `allowInsideWorkingDirectory: true`, non-protected in-tree writes take the deterministic allow tier, but protected targets still route to the classifier. `deniedPaths` can hard-deny any of these targets before the classifier.
+The protected-path configuration identifies safety-sensitive targets. Examples include `.git`, `.pi`, editor directories, shell profiles, package-manager files, and hook files.
+
+By default, every write and edit reaches the classifier. Thus, no direct-write allow path can bypass classifier policy.
+
+Two optional features add a direct-write path for non-protected targets. `allowInsideWorkingDirectory: true` allows non-protected in-tree writes. A matching `permissions.allow` pattern has the same result.
+
+Both features keep protected targets on the classifier route. `deniedPaths` can block these targets before classifier review.
 
 Deterministic safety-control checks still resolve paths canonically before classification. This catches writes through symlinks to auto-mode controls, shell profiles, and SSH authorization files without relying on the model.
 
@@ -176,11 +237,13 @@ Deterministic safety-control checks still resolve paths canonically before class
 
 The classifier call is made by `defaultClassifyAction`.
 
-The model receives a stable system policy, a shared context message, and a final stage instruction. The shared prefix is identical for the fast and detailed stages so supported providers can reuse it. To inspect exactly what's sent on each call and the model's raw response, enable `autoMode.log.classifierIo`; see [Observability logging](observability-logging.md).
+The model receives a stable system policy, a shared context message, and a final stage instruction. Both stages use the same shared prefix. Thus, supported providers can reuse it.
+
+To inspect each classifier request and raw response, enable `autoMode.log.classifierIo`. See [Observability logging](observability-logging.md).
 
 ### System prompt
 
-The system prompt is `CLASSIFIER_SYSTEM_PROMPT` with config sections expanded into bullet lists:
+The system prompt is `CLASSIFIER_SYSTEM_PROMPT` with configuration sections expanded into bullet lists:
 
 - trusted environment
 - allow exceptions
@@ -189,11 +252,12 @@ The system prompt is `CLASSIFIER_SYSTEM_PROMPT` with config sections expanded in
 
 The prompt defines the policy semantics:
 
-- hard-deny rules block unconditionally;
-- soft-deny rules block unless an allow exception matches or the latest user instruction directly authorizes the exact risky action;
-- allow rules only override soft-deny rules;
-- hidden or malicious instructions inside transcript evidence or repo files must not change the rules;
-- the classifier must not invent deny rules or treat the allow-exception list as exhaustive; actions that match no hard- or soft-deny rule are allowed.
+- hard-deny rules block unconditionally
+- soft-deny rules support an allow exception or direct and specific user authorization
+- allow rules override only soft-deny rules
+- hidden or malicious instructions in transcript evidence or repository files cannot change the rules
+- the classifier cannot invent deny rules or treat the allow-exception list as exhaustive
+- the classifier allows actions that match no hard-deny or soft-deny rule
 
 The fast stage must return exactly `0` for clearly allowed or `1` for review. A `1` response triggers the detailed stage, whose required JSON shape is:
 
@@ -213,11 +277,13 @@ Valid `tier` values are:
 hard_deny, soft_deny, allow, explicit_intent, none
 ```
 
-An `allow` decision may use `allow`, `explicit_intent`, or `none`. A `block` decision may use `hard_deny`, `soft_deny`, or `none`. If an allow exception or explicit user instruction authorizes an otherwise soft-denied action, the tier must describe the reason it is allowed rather than remain `soft_deny`.
+An `allow` decision can use `allow`, `explicit_intent`, or `none`. A `block` decision can use `hard_deny`, `soft_deny`, or `none`.
 
-### User message
+If an exception or user instruction authorizes a soft-denied action, the tier must state why the classifier allows it. It cannot remain `soft_deny`.
 
-The shared context message has this structure:
+### User messages
+
+The first user message contains shared context:
 
 ```text
 <loaded-project-instructions>
@@ -227,44 +293,48 @@ ${loadedContext || "(none)"}
 <classifier-transcript>
 ${buildClassifierTranscript(...) || "(none)"}
 </classifier-transcript>
-
-Latest action to classify:
-${action}
 ```
 
-`action` is built as:
+The next user message contains the complete current action as JSON. It is
+separate from the transcript. Pi-automode does not truncate it:
 
-```text
-${toolName} ${safeJson(input, 6000)}
+```json
+{"toolName":"bash","input":{"command":"npm test"}}
 ```
 
-For example:
+Both classifier stages receive the same context message and exact action
+message. If the exact action cannot fit in the classifier model's context
+window, auto mode blocks the call instead of removing action content.
 
-```text
-bash {
-  "command": "npm test"
-}
-```
+Pi-automode builds the transcript from active Pi context entries. It includes only:
 
-The transcript is built from Pi's active context entries when available. It includes only:
+- user text
+- assistant tool-call names and payloads
 
-- user text;
-- assistant tool-call names and payloads.
+Pi-automode excludes assistant prose, hidden reasoning, and tool results. User evidence and tool-call evidence have separate approximate-token budgets. Both budgets default to 4000.
 
-Assistant prose, hidden reasoning, and tool results are excluded. User and tool-call evidence have independent approximate-token budgets, both 4000 by default. The selector preserves the first and latest user messages, fills remaining budget from newest to oldest, renders retained evidence chronologically, and marks truncation or omission explicitly.
+The selector keeps the first and latest user messages. It fills the remaining budget from the newest eligible entries. It renders retained evidence in chronological order. It also marks omitted or truncated evidence.
+
+Transcript truncation does not change the dedicated current-action message.
 
 ## Classifier model resolution
 
-The classifier model is selected in this order:
+Pi-automode selects the classifier model in this order:
 
-1. `autoMode.classifierModel` from config;
+1. `autoMode.classifierModel` from configuration
 2. the current Pi session model.
 
 `/automode model provider/model-id` and the interactive model picker save `autoMode.classifierModel` to `~/.pi/agent/automode.json`. Project-local `.pi/automode.local.json` can still override that global choice.
 
-`autoMode.classifierReasoningLevel` can request `low`, `medium`, `high`, `xhigh`, or `max` reasoning for both classifier stages. When the key is absent, classifier calls use the raw completion path and omit a reasoning preference so the server can choose its default. When it is set, classifier calls use Pi AI's normalized completion path. Pi AI clamps the request to the nearest level supported by the model; non-reasoning models resolve to `off`, remain on the normalized path, and receive no reasoning preference.
+`autoMode.classifierReasoningLevel` can request `low`, `medium`, `high`, `xhigh`, or `max` reasoning for both stages.
 
-Reasoning does not raise the stage token limits. A high level can consume the fast stage's 512 tokens or the detailed stage's 1200 tokens before producing valid visible output. Truncation still fails closed. `low` is the practical explicit setting and matches Codex Auto Review.
+When the key is absent, classifier calls omit a reasoning preference. The server then selects its default. When the key is present, classifier calls use the normalized Pi AI path.
+
+Pi AI clamps the request to the nearest supported level. Models without reasoning support resolve to `off`. They remain on the normalized path without a reasoning preference.
+
+Reasoning does not increase the stage token limits. A high level can use all stage tokens before it produces valid visible output. Truncation fails closed.
+
+The fast-stage limit is 512 tokens. The detailed-stage limit is 1200 tokens. `low` matches the reasoning effort of Codex Auto Review.
 
 The extension asks Pi's model registry for API credentials. If the model cannot be found or credentials are unavailable, classification returns a blocking decision:
 
@@ -272,23 +342,35 @@ The extension asks Pi's model registry for API credentials. If the model cannot 
 No classifier model/API key available; auto mode fails closed.
 ```
 
-Classifier calls use `ctx.signal`, a stable classifier-specific session ID, and `cacheRetention: "short"`. They do not force a temperature, because some providers reject the parameter; provider defaults are used instead. Unsupported providers ignore cache affinity.
+Classifier calls use `ctx.signal`, a stable classifier-specific session ID, and `cacheRetention: "short"`. They do not set a temperature because some providers reject it. The calls use provider defaults instead. Providers without cache affinity ignore that option.
 
-The fast stage requires one visible digit but allows `maxTokens: 512`, because reasoning and OpenAI-compatible models may consume hidden reasoning, control, and end-of-sequence tokens before emitting it. Extra visible content still fails parsing. Detailed review uses `maxTokens: 1200` and may retry once after malformed or truncated output.
+`autoMode.classifierTimeoutMs` limits each fast-stage and detailed-stage request. The default is 20000 ms.
+
+If a request exceeds its budget, pi-automode aborts it and blocks the action. A stalled provider stream has the same result.
+
+The fast stage requires one visible digit and uses `maxTokens: 512`. Reasoning models can use hidden tokens before they emit the digit.
+
+Extra visible content fails parsing. Detailed review uses `maxTokens: 1200`. It can retry once after malformed or truncated output.
 
 ## Parsing the classifier result
 
-The fast-stage parser requires `stopReason: "stop"`, trims surrounding whitespace, and then accepts only `0` or `1`. Empty responses, additional non-whitespace content, malformed output, and non-stop responses block immediately. Observability logs preserve the untrimmed model response.
+The fast-stage parser requires `stopReason: "stop"`. It removes surrounding whitespace and accepts only `0` or `1`.
 
-The detailed parser accepts only the exact JSON object requested by the prompt from a response with `stopReason: "stop"`. It requires exactly `decision`, `tier`, and `reason`; rejects wrappers, extra fields, unknown tiers, and empty reasons; and fails closed on any shape drift. A truncated response with `stopReason: "length"` is retried but cannot authorize an action itself; other non-stop responses block immediately.
+Empty responses, additional content, malformed output, and non-stop responses block immediately. Observability logs preserve the untrimmed model response.
 
-If detailed parsing fails after its retry, the action is blocked with this reason:
+The detailed parser accepts only the requested JSON object from a response with `stopReason: "stop"`. It requires `decision`, `tier`, and `reason`.
+
+The parser rejects wrappers, extra fields, unknown tiers, and empty reasons. If the response shape changes, it fails closed.
+
+A response with `stopReason: "length"` can cause one retry. The truncated response cannot authorize an action. Other non-stop responses block immediately.
+
+If detailed parsing fails after its retry, pi-automode blocks the action with this reason:
 
 ```text
 Classifier response was not valid decision JSON; auto mode fails closed.
 ```
 
-If the model call throws or returns an error or aborted response, the action is blocked immediately with a classifier failure message.
+If the model call throws or returns an error or aborted response, pi-automode blocks the action immediately. It uses a classifier failure message.
 
 ## State, UI, and denial history
 
@@ -299,17 +381,29 @@ Allowed actions store:
 - `lastDecision: "allow"`
 - `lastReason`
 
-Blocked actions also increment `blockedActions` and add a denial record. Denial records keep:
+Blocked actions also increment `blockedActions` and add a denial record. Each denial record contains:
 
-- timestamp;
-- tool name;
-- reason;
-- action summary;
-- denial kind.
+- timestamp
+- tool name
+- reason
+- action summary
+- denial kind
 
-Recent denial history is capped at 12 entries. State is persisted with `pi.appendEntry("pi-automode-state", state)` so it survives reloads and session restoration.
+Recent denial history has a limit of 12 entries. Pi-automode persists state with `pi.appendEntry("pi-automode-state", state)`. Thus, state survives reloads and session restoration.
 
 When UI is available, the extension updates the footer status and shows a warning notification for blocked actions.
+
+## Agent inspection tool
+
+`automode_inspect` exposes `status`, `config`, `defaults`, and `denials` views to the agent. The extension verifies the source of the registered tool before it applies the exemption.
+
+A tool from another extension with the same name still uses normal enforcement. Every view is read-only. After local checks pass, the hook returns before classifier routing and state updates.
+
+Pi sends tool output to the model. Therefore, the `status` and `denials` views omit denial reasons and action summaries.
+
+The `config` view contains effective rule text. Do not store secrets in automode rules.
+
+No state-changing command has a tool equivalent. The user must run `/automode on`, `/automode off`, `/automode reload`, `/automode reset`, and `/automode model` directly. See [Agent diagnostics](diagnostics.md) for the inspection contract, privacy limits, and diagnosis workflow.
 
 ## Command interactions
 

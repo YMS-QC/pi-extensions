@@ -2,7 +2,7 @@
 
 ## `$defaults`
 
-`$defaults` expands to this plugin's built-in entries for the section where it appears. It is section-local: `$defaults` in `allow` means the built-in allow rules, not the built-in hard-deny rules.
+`$defaults` expands to the built-in entries for its section. It is section-local. In `allow`, it means the built-in allow rules, not the built-in hard-deny rules.
 
 ### `environment`
 
@@ -14,7 +14,7 @@
 - trusted cloud buckets: none configured
 - key internal services: none configured
 
-Add your own entries when the classifier should know about trusted company infrastructure:
+If the classifier needs information about trusted company infrastructure, add entries such as these:
 
 ```json
 {
@@ -46,17 +46,40 @@ These are exceptions to `soft_deny`, not to `hard_deny`.
 
 ### `protectedPaths`
 
-`$defaults` expands to safety-sensitive paths. In the default configuration every `write` and `edit` call goes to the classifier, so `protectedPaths` does not change whether a model call occurs; it remains part of the resolved configuration for compatibility and inspection. With `allowInsideWorkingDirectory: true`, non-protected in-tree file access takes the deterministic allow tier, but writes and edits to these protected paths still reach the classifier; `allow` rules cannot override a classifier hard-deny decision.
+`$defaults` expands to safety-sensitive paths. In the default configuration, every `write` and `edit` call goes to the classifier. Thus, `protectedPaths` does not change classifier routing by default. Pi-automode retains the list for compatibility and inspection.
+
+The value `allowInsideWorkingDirectory: true` sends non-protected in-tree file access to the deterministic allow tier. Writes and edits to protected paths still reach the classifier. Classifier `allow` rules cannot override a classifier hard-deny decision.
 
 Protected directories: `.git`, `.config/git`, `.vscode`, `.idea`, `.husky`, `.cargo`, `.devcontainer`, `.yarn`, `.mvn`, `.pi`.
 
-Protected files: `.gitconfig`, `.gitmodules`, `.gitignore`, `.gitattributes`, shell profiles (`.bashrc`, `.zshrc`, `.profile`, etc.), `.envrc`, package manager configs (`.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.pnp.cjs`, `bunfig.toml`, etc.), Bazel configs (`.bazelrc`, `.bazelversion`, `.bazeliskrc`), hook configs (`.pre-commit-config.yaml`, `lefthook.yml`), Gradle/Maven wrappers, `.devcontainer.json`, `.ripgreprc`, `pyrightconfig.json`, `.mcp.json`.
+Protected files include:
 
-Read-only tools (`read`, `grep`, `find`, `ls`) remain locally allowed after permission and deterministic checks. In the default configuration writes and edits always require classification, regardless of their target; with `allowInsideWorkingDirectory` enabled, only protected targets still require it.
+- Git files: `.gitconfig`, `.gitmodules`, `.gitignore`, and `.gitattributes`
+- Bash files: `.bashrc`, `.bash_profile`, `.bash_login`, `.bash_aliases`, and `.bash_logout`
+- Zsh files: `.zshrc`, `.zprofile`, `.zshenv`, `.zlogin`, and `.zlogout`
+- other shell files: `.profile` and `.envrc`
+- package-manager files: `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.pnp.cjs`, `.pnp.loader.mjs`, and `.pnpmfile.cjs`
+- Bun files: `bunfig.toml` and `.bunfig.toml`
+- Bazel files: `.bazelrc`, `.bazelversion`, and `.bazeliskrc`
+- hook files: `.pre-commit-config.yaml`, `lefthook.yml`, `lefthook.yaml`, `.lefthook.yml`, and `.lefthook.yaml`
+- wrapper files: `gradle-wrapper.properties` and `maven-wrapper.properties`
+- other control files: `.devcontainer.json`, `.ripgreprc`, `pyrightconfig.json`, and `.mcp.json`
+
+Read-only tools remain locally allowed after permission and deterministic checks. These tools are `read`, `grep`, `find`, and `ls`.
+
+In the default configuration, all writes and edits require classification. The value `allowInsideWorkingDirectory: true` allows non-protected in-tree access locally.
+
+Protected in-tree writes and edits still require classification. All out-of-tree file access also requires classification.
 
 ### `deniedPaths`
 
-`deniedPaths` is a separate opt-in list (default `[]`, no built-in entries, so `$defaults` is a no-op; it is accepted for consistency with the other rule lists) of path glob patterns that are hard-denied for the file tools (`read`, `write`, `edit`, `grep`, `find`, `ls`) before any classifier or fast-path decision. Use it for secrets and system paths that must never reach the model through the file tools; `bash` access to such paths remains classifier-governed. Patterns support `~`/`$HOME`/`${HOME}` expansion and `*` (matches any characters, including `/`). Matching checks both the typed path and its symlink-resolved form. `deniedPaths` only restricts; it never grants access.
+`deniedPaths` is an optional list of path glob patterns. The default list is empty, and it has no built-in entries. Thus, `$defaults` has no effect in this list.
+
+A matching pattern blocks a file-tool call before classifier review or an allow tier. The file tools are `read`, `write`, `edit`, `grep`, `find`, and `ls`.
+
+Use this list for secrets and system paths that file tools must not send to the model. The classifier continues to govern `bash` access.
+
+Patterns support `~`, `$HOME`, and `${HOME}` expansion. The `*` wildcard matches all characters, including `/`. Pi-automode matches the typed path and its symlink-resolved form. `deniedPaths` can only restrict access.
 
 ### `soft_deny`
 
@@ -68,7 +91,7 @@ Read-only tools (`read`, `grep`, `find`, `ls`) remain locally allowed after perm
 - deleting, truncating, or overwriting pre-existing local files unless the user named the specific target
 - mass modification/deletion in cloud storage, ticketing systems, collaboration tools, or external APIs
 - writing through remote shells such as `ssh`, `kubectl exec`, or `docker exec` on shared or production hosts
-- changing live/shared infrastructure without a preview, plan, dry-run, or review when one normally exists
+- changing shared or live infrastructure without its normal preview, plan, dry run, or review
 - killing other users' processes, cancelling shared jobs, or disrupting shared infrastructure
 - exposing local files, sockets, credentials, or internal services through a network service
 - outbound messages, purchases, bookings, subscriptions, or other real-world transactions
@@ -84,7 +107,7 @@ Soft blocks can be overridden by a matching `allow` exception or by direct, spec
 - granting admin, owner, IAM, RBAC, repository, or production access
 - exfiltrating repository contents, secrets, credentials, private keys, tokens, or internal data to untrusted places
 - scanning for credentials, tokens, private keys, or secrets beyond what the task requires
-- tampering with logs, audit trails, security monitoring, permission rules, auto-mode config, or safety-control files
+- tampering with logs, audit trails, security monitoring, permission rules, auto-mode configuration, or safety-control files
 - creating services, endpoints, workflows, or autonomous agents that execute arbitrary code without meaningful approval
 - posting or updating public/external content that is fabricated, misleading, impersonating a user, or claiming approval/action that did not happen
 
@@ -97,13 +120,25 @@ Classifier evidence has separate approximate-token budgets for user messages and
 - `maxUserTranscriptTokens`: 4000
 - `maxToolTranscriptTokens`: 4000
 
-The selector keeps the first and latest user messages as intent anchors, then fills remaining space from the newest eligible entries. Individual entries are capped, and omitted or truncated evidence is marked in the classifier transcript. Assistant prose and tool results are excluded.
+The selector keeps the first and latest user messages as intent anchors. It fills the remaining space from the newest eligible entries.
 
-These are approximate limits based on character counts, not provider-tokenizer guarantees. Override either value with an integer of at least 32 in a Pi-owned `autoMode` config. The former `maxTranscriptLines` setting is no longer supported.
+The selector limits individual entries. It marks omitted or truncated evidence in the classifier transcript. It excludes assistant prose and tool results.
+
+These limits use approximate character counts. They do not guarantee the same result as a provider tokenizer.
+
+To change a limit, set an integer of at least 32 in a Pi-owned `autoMode` configuration source. Pi-automode does not support the former `maxTranscriptLines` field.
+
+### Classifier request timeout
+
+`classifierTimeoutMs` limits each classifier request in milliseconds. The fast and detailed stages have separate budgets. The default is 20000.
+
+If a request exceeds its budget, pi-automode aborts the attempt. Then auto mode fails closed and blocks the action.
+
+To change the timeout, set an integer of at least 1000 in a Pi-owned `autoMode` configuration source.
 
 ### Replacement behavior
 
-Use `$defaults` when you want to keep the built-ins and add your own entries:
+If you want to keep the built-ins and add entries, use `$defaults`:
 
 ```json
 {
@@ -116,7 +151,7 @@ Use `$defaults` when you want to keep the built-ins and add your own entries:
 }
 ```
 
-That means: use all built-in `allow` entries, plus the staging rule.
+This configuration uses all built-in `allow` entries and the staging rule.
 
 If you omit `$defaults`, you replace the built-ins for that section:
 
@@ -130,7 +165,13 @@ If you omit `$defaults`, you replace the built-ins for that section:
 }
 ```
 
-That means: use only that one `allow` entry. The built-in `allow` entries are not used. Replacing `allow` does not replace `soft_deny`, `hard_deny`, `protectedPaths`, or `environment`.
+This configuration uses only the staging rule. It does not use the built-in `allow` entries.
 
-`$defaults` is not used in `permissions.deny` or `permissions.ask`. Those lists contain only explicit Pi tool patterns.
+Replacing `allow` does not replace `soft_deny`, `hard_deny`, `protectedPaths`, or `environment`.
+
+`permissions.deny`, `permissions.ask`, and `permissions.allow` do not support `$defaults`. These lists contain only explicit Pi tool patterns. All three lists default to `[]`.
+
+Global, project-local, and inline configuration can add all three permission lists. Shared project configuration can add only deny and ask rules.
+
+`autoMode.allow` and `permissions.allow` are different. `autoMode.allow` contains prose exceptions that the classifier weighs against soft-deny rules. `permissions.allow` contains tool patterns that skip classifier review.
 

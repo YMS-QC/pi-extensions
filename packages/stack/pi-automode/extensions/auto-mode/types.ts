@@ -53,6 +53,8 @@ export type AutoModeSettings = {
   classifyReadOnlyTools?: boolean;
   /** Override the fast-stage completion token budget (default 512). */
   fastClassifierMaxTokens?: number;
+  /** Per-request timeout for classifier completions in milliseconds (default 20000). */
+  classifierTimeoutMs?: number;
   /** When true, file tools whose resolved path is inside the working directory are allowed deterministically (no classifier), and outside-CWD file access is classified. */
   allowInsideWorkingDirectory?: boolean;
   /** Path glob patterns (file tools) that are always denied before the classifier. Supports `~` and `*` (matches any characters, including `/`). */
@@ -84,6 +86,11 @@ export type SettingsFile = {
   permissions?: {
     deny?: unknown;
     ask?: unknown;
+    /**
+     * Deterministic allow tier: matching calls skip the classifier only. Read
+     * from user-owned config sources, never shared project config.
+     */
+    allow?: unknown;
   };
 };
 
@@ -105,6 +112,7 @@ export type EffectiveConfig = {
   classifierReasoningLevel?: ClassifierReasoningLevel;
   classifyReadOnlyTools: boolean;
   fastClassifierMaxTokens: number;
+  classifierTimeoutMs: number;
   allowInsideWorkingDirectory: boolean;
   deniedPaths: string[];
   notifications: NotificationLevel;
@@ -119,6 +127,7 @@ export type EffectiveConfig = {
   hardDeny: string[];
   permissionDeny: ToolPattern[];
   permissionAsk: ToolPattern[];
+  permissionAllow: ToolPattern[];
   log: LogConfig;
 };
 
@@ -153,6 +162,7 @@ export type DenialRecord = {
 /** Denial kind plus the deterministic allow fast paths, used for decision log entries. */
 export type DecisionKind =
   | DenialRecord["kind"]
+  | "permissions.allow"
   | "read-only"
   | "inside-working-directory"
   | "bash-fast-path";
@@ -187,6 +197,7 @@ export type ClassifierIo = {
   prompt: {
     system: string;
     context: string;
+    action: string;
     fastInstruction: string;
     detailedInstruction: string;
   };

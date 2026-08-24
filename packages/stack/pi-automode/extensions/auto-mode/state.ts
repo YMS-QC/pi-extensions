@@ -37,6 +37,7 @@ export function statusText(
     `classifier denied: ${state.classifierDenied}`,
     `permissions.deny rules: ${config.permissionDeny.length}`,
     `permissions.ask rules: ${config.permissionAsk.length}`,
+    `permissions.allow rules: ${config.permissionAllow.length}`,
     `environment entries: ${config.environment.length}`,
     `allow entries: ${config.allow.length}`,
     `soft_deny entries: ${config.softDeny.length}`,

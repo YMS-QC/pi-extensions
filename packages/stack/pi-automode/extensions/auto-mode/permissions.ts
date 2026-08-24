@@ -2,8 +2,30 @@ import type { ToolPattern } from "./types.ts";
 import {
   expandHomePattern,
   normalizePathForMatch,
-  resolveInputPath,
+  resolvePathForPolicy,
+  resolveToolInputPath,
 } from "./paths.ts";
+
+export const MAX_WILDCARD_PATTERN_LENGTH = 4096;
+export const MAX_WILDCARD_INPUT_LENGTH = 1024 * 1024;
+
+/** Preserve the previous non-Unicode RegExp `/i` case-equivalence rules. */
+function canonicalizeCase(value: string): string {
+  let canonical = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index] ?? "";
+    const uppercase = character.toUpperCase();
+    if (
+      uppercase.length !== 1 ||
+      (character.charCodeAt(0) >= 128 && uppercase.charCodeAt(0) < 128)
+    ) {
+      canonical += character;
+    } else {
+      canonical += uppercase;
+    }
+  }
+  return canonical;
+}
 
 function normalizeToolName(name: string): string {
   const lower = name.trim().replace(/^@/, "").toLowerCase();
@@ -40,11 +62,108 @@ export function parseToolPattern(value: unknown): ToolPattern | undefined {
   };
 }
 
-function wildcardToRegExp(pattern: string): RegExp {
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*/g, ".*");
-  return new RegExp(`^${escaped}$`, "i");
+function literalPrefixTable(value: string): number[] {
+  const table = new Array<number>(value.length).fill(0);
+  let prefixLength = 0;
+  for (let index = 1; index < value.length; index += 1) {
+    while (
+      prefixLength > 0 && value[index] !== value[prefixLength]
+    ) {
+      prefixLength = table[prefixLength - 1] ?? 0;
+    }
+    if (value[index] === value[prefixLength]) prefixLength += 1;
+    table[index] = prefixLength;
+  }
+  return table;
+}
+
+function findLiteral(
+  value: string,
+  literal: string,
+  start: number,
+  end: number,
+): number {
+  const prefixTable = literalPrefixTable(literal);
+  let matched = 0;
+  for (let index = start; index < end; index += 1) {
+    while (matched > 0 && value[index] !== literal[matched]) {
+      matched = prefixTable[matched - 1] ?? 0;
+    }
+    if (value[index] === literal[matched]) matched += 1;
+    if (matched === literal.length) return index - literal.length + 1;
+  }
+  return -1;
+}
+
+export type WildcardOverflowPolicy = "match" | "no-match";
+
+/**
+ * Match a case-insensitive `*` wildcard pattern in linear time.
+ *
+ * `*` matches zero or more characters, including newlines and path separators.
+ * Denial callers use `match` for over-limit values so they fail closed. Allow
+ * callers use `no-match` so an oversized input cannot broaden an allow rule.
+ */
+export function matchesWildcardPattern(
+  pattern: string,
+  value: string,
+  overflowPolicy: WildcardOverflowPolicy = "match",
+): boolean {
+  if (
+    pattern.length > MAX_WILDCARD_PATTERN_LENGTH ||
+    value.length > MAX_WILDCARD_INPUT_LENGTH
+  ) {
+    return overflowPolicy === "match";
+  }
+
+  const normalizedPattern = canonicalizeCase(pattern);
+  const normalizedValue = canonicalizeCase(value);
+  if (!normalizedPattern.includes("*")) {
+    return normalizedPattern === normalizedValue;
+  }
+
+  const startsWithWildcard = normalizedPattern.startsWith("*");
+  const endsWithWildcard = normalizedPattern.endsWith("*");
+  const literals = normalizedPattern.split("*").filter(Boolean);
+  if (literals.length === 0) return true;
+
+  let literalIndex = 0;
+  let valueIndex = 0;
+  let lastLiteralIndex = literals.length;
+
+  if (!startsWithWildcard) {
+    const prefix = literals[0] ?? "";
+    if (!normalizedValue.startsWith(prefix)) return false;
+    valueIndex = prefix.length;
+    literalIndex = 1;
+  }
+
+  let searchEnd = normalizedValue.length;
+  if (!endsWithWildcard) {
+    const suffix = literals[literals.length - 1] ?? "";
+    searchEnd -= suffix.length;
+    if (
+      searchEnd < valueIndex ||
+      !normalizedValue.endsWith(suffix)
+    ) {
+      return false;
+    }
+    lastLiteralIndex -= 1;
+  }
+
+  for (; literalIndex < lastLiteralIndex; literalIndex += 1) {
+    const literal = literals[literalIndex] ?? "";
+    const found = findLiteral(
+      normalizedValue,
+      literal,
+      valueIndex,
+      searchEnd,
+    );
+    if (found < 0) return false;
+    valueIndex = found + literal.length;
+  }
+
+  return true;
 }
 
 function getPrimaryArgument(
@@ -60,7 +179,7 @@ function getPrimaryArgument(
     typeof input.path === "string"
   ) {
     return normalizePathForMatch(
-      resolveInputPath(cwd, input.path) ?? input.path,
+      resolveToolInputPath(toolName, cwd, input.path) ?? input.path,
       cwd,
     );
   }
@@ -72,7 +191,7 @@ function getPrimaryArgument(
     typeof input.path === "string"
   ) {
     return normalizePathForMatch(
-      resolveInputPath(cwd, input.path) ?? input.path,
+      resolveToolInputPath(toolName, cwd, input.path) ?? input.path,
       cwd,
     );
   }
@@ -89,10 +208,80 @@ export function matchesDeniedPath(
   resolvedPath: string,
   deniedPaths: string[],
 ): boolean {
-  const normalized = resolvedPath.replace(/\\/g, "/");
+  const normalized = resolvedPath.replace(/\\/g, "/").normalize("NFC");
+  return deniedPaths.some((pattern) =>
+    deniedPatternVariants(pattern).some((variant) =>
+      matchesWildcardPattern(variant.normalize("NFC"), normalized)
+    )
+  );
+}
+
+function deniedPatternVariants(pattern: string): string[] {
+  const expanded = expandHomePattern(pattern).replace(/\\/g, "/");
+  const wildcardIndex = expanded.indexOf("*");
+  if (wildcardIndex === -1) {
+    const canonical = resolvePathForPolicy(expanded)?.replace(/\\/g, "/");
+    return canonical && canonical !== expanded
+      ? [expanded, canonical]
+      : [expanded];
+  }
+
+  const fixedPrefix = expanded.slice(0, wildcardIndex);
+  const lastSlash = fixedPrefix.lastIndexOf("/");
+  if (lastSlash < 0) return [expanded];
+  const fixedScope = fixedPrefix.slice(0, lastSlash) || "/";
+  const canonicalScope = resolvePathForPolicy(fixedScope)?.replace(/\\/g, "/");
+  if (!canonicalScope || canonicalScope === fixedScope) return [expanded];
+  const suffix = expanded.slice(lastSlash).replace(/^\/+/, "");
+  const canonicalPattern = canonicalScope === "/"
+    ? `/${suffix}`
+    : `${withoutTrailingSlash(canonicalScope)}/${suffix}`;
+  return canonicalPattern === expanded
+    ? [expanded]
+    : [expanded, canonicalPattern];
+}
+
+function withoutTrailingSlash(path: string): string {
+  if (path === "/" || /^[A-Za-z]:\/$/.test(path)) return path;
+  return path.replace(/\/+$/, "");
+}
+
+function wildcardCanMatchDescendant(root: string, pattern: string): boolean {
+  const normalizedRoot = withoutTrailingSlash(
+    canonicalizeCase(root.replace(/\\/g, "/").normalize("NFC")),
+  );
+  const prefix = normalizedRoot === "/" || /^[A-Za-z]:\/$/.test(normalizedRoot)
+    ? normalizedRoot
+    : `${normalizedRoot}/`;
+  const normalizedPattern = canonicalizeCase(pattern.normalize("NFC"));
+  const wildcardIndex = normalizedPattern.indexOf("*");
+  if (wildcardIndex < 0) {
+    return normalizedPattern.length > prefix.length &&
+      normalizedPattern.startsWith(prefix);
+  }
+
+  const fixedPrefix = normalizedPattern.slice(0, wildcardIndex);
+  return prefix.startsWith(fixedPrefix) || fixedPrefix.startsWith(prefix);
+}
+
+/**
+ * Whether a recursive search scope can contain a path matched by `deniedPaths`.
+ *
+ * The check asks whether the wildcard pattern can match any path beginning
+ * with the search-root prefix. It does not scan the search tree.
+ */
+export function recursiveSearchMayReachDeniedPath(
+  resolvedRoot: string,
+  deniedPaths: string[],
+): boolean {
+  if (resolvedRoot.length > MAX_WILDCARD_INPUT_LENGTH) {
+    return deniedPaths.length > 0;
+  }
   return deniedPaths.some((pattern) => {
-    const expanded = expandHomePattern(pattern).replace(/\\/g, "/");
-    return wildcardToRegExp(expanded).test(normalized);
+    if (pattern.length > MAX_WILDCARD_PATTERN_LENGTH) return true;
+    return deniedPatternVariants(pattern).some((expanded) =>
+      wildcardCanMatchDescendant(resolvedRoot, expanded)
+    );
   });
 }
 
@@ -102,10 +291,11 @@ export function matchesToolPattern(
   toolName: string,
   input: Record<string, unknown>,
   cwd: string,
+  overflowPolicy: WildcardOverflowPolicy = "match",
 ): boolean {
   if (!pattern.toolName) return false;
   if (pattern.toolName !== normalizeToolName(toolName)) return false;
-  if (!pattern.argumentPattern || pattern.argumentPattern === "*") return true;
+  if (!pattern.argumentPattern) return true;
   const primary = getPrimaryArgument(toolName, input, cwd);
-  return wildcardToRegExp(pattern.argumentPattern).test(primary);
+  return matchesWildcardPattern(pattern.argumentPattern, primary, overflowPolicy);
 }

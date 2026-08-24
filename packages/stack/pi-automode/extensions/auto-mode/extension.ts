@@ -1,11 +1,17 @@
+import { realpathSync, statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   classifierReasoningForConfig,
   defaultClassifyAction,
+  serializeClassifierAction,
 } from "./classifier.ts";
 import {
   AUTO_MODE_GUIDANCE,
@@ -18,7 +24,6 @@ import {
   READ_ONLY_TOOLS,
 } from "./constants.ts";
 import {
-  loadEffectiveConfig,
   loadEffectiveConfigWithDiagnostics,
   writeGlobalClassifierModel,
 } from "./config.ts";
@@ -32,14 +37,17 @@ import {
 } from "./log.ts";
 import { formatModelSpec, parseModelSpec } from "./model.ts";
 import { promptForClassifierModel } from "./model-selector.ts";
-import { matchesDeniedPath, matchesToolPattern } from "./permissions.ts";
 import {
-  expandHomePattern,
+  matchesDeniedPath,
+  matchesToolPattern,
+  recursiveSearchMayReachDeniedPath,
+} from "./permissions.ts";
+import {
   extractInputPath,
   isInside,
   isProtectedPath,
-  resolveInputPath,
   resolvePathForPolicy,
+  resolveToolInputPath,
 } from "./paths.ts";
 import {
   actionSummary,
@@ -62,13 +70,45 @@ import type {
 } from "./types.ts";
 import { safeJson } from "./utils.ts";
 
+const INSPECT_TOOL = "automode_inspect";
+const INSPECTION_ACTIONS = ["status", "config", "defaults", "denials"] as const;
+type InspectionAction = (typeof INSPECTION_ACTIONS)[number];
+
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+const EXTENSION_PATH = canonicalPath(fileURLToPath(import.meta.url));
+const EXTENSION_ENTRY_PATH = canonicalPath(
+  resolve(dirname(EXTENSION_PATH), "../auto-mode.ts"),
+);
+
+export function modelVisibleConfigDiagnostics(
+  diagnostics: string[],
+): string[] {
+  return diagnostics.map((diagnostic) =>
+    diagnostic.replace(
+      /invalid JSON \([\s\S]*\)$/,
+      "invalid JSON (parser details omitted from model-visible output)",
+    )
+  );
+}
+
 export type PiAutomodeOptions = {
   /** Override config loading in tests. Runtime code uses Pi-owned disk settings. */
-  loadConfig?: (cwd: string) => EffectiveConfig;
+  loadConfig?: (cwd: string, projectTrusted: boolean) => EffectiveConfig;
   /** Override classifier calls in tests so unit tests never need a real LLM/API key. */
   classifyAction?: ClassifyAction;
   /** Override classifier-model persistence in tests. Runtime code writes ~/.pi/agent/automode.json. */
   saveClassifierModel?: (classifierModel: string) => void;
+  /** Override the application-owned observability log root in tests. */
+  logRoot?: string;
+  /** Override the observability log clock in tests. */
+  now?: () => Date;
 };
 
 type LogCtx = {
@@ -119,17 +159,18 @@ function logClassifierIo(decision: ClassifyResult, log: LogCtx): void {
 /** Create a Pi extension instance. Default export uses production dependencies. */
 export function createPiAutomode(options: PiAutomodeOptions = {}) {
   const loadConfigWithDiagnostics = options.loadConfig
-    ? (cwd: string): ConfigLoadResult => ({
-      config: options.loadConfig?.(cwd) ?? loadEffectiveConfig(cwd),
+    ? (cwd: string, projectTrusted: boolean): ConfigLoadResult => ({
+      config: options.loadConfig!(cwd, projectTrusted),
       diagnostics: [],
     })
     : loadEffectiveConfigWithDiagnostics;
   const classify = options.classifyAction ?? defaultClassifyAction;
   const saveClassifierModel = options.saveClassifierModel ??
     writeGlobalClassifierModel;
+  const now = options.now ?? (() => new Date());
 
   return function piAutomode(pi: ExtensionAPI) {
-    let loadResult = loadConfigWithDiagnostics(process.cwd());
+    let loadResult = loadConfigWithDiagnostics(process.cwd(), false);
     let config: EffectiveConfig = loadResult.config;
     let configDiagnostics: string[] = loadResult.diagnostics;
     const decisionCache = new DecisionCache(config.decisionCache);
@@ -147,6 +188,13 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         ...config,
         enabled: state.enabledOverride ?? config.enabled,
       };
+    }
+
+    function ownsInspectionTool(): boolean {
+      const tool = pi.getAllTools().find(({ name }) => name === INSPECT_TOOL);
+      if (!tool) return false;
+      const sourcePath = canonicalPath(tool.sourceInfo.path);
+      return sourcePath === EXTENSION_PATH || sourcePath === EXTENSION_ENTRY_PATH;
     }
 
     function persist(): void {
@@ -181,6 +229,77 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           ? ctx.ui.theme.fg("accent", text)
           : ctx.ui.theme.fg("dim", text),
       );
+    }
+
+    function inspectAutomode(
+      action: InspectionAction,
+      ctx: ExtensionContext,
+    ): unknown {
+      const cfg = effectiveConfig();
+      if (action === "status") {
+        const status = [
+          `enabled: ${cfg.enabled ? "yes" : "no"}`,
+          `classifier: ${cfg.classifierModel ?? "current session model"}`,
+          `classifier reasoning: ${cfg.classifierReasoningLevel ?? "server default"}`,
+          `checked actions: ${state.checkedActions}`,
+          `blocked actions: ${state.blockedActions}`,
+          `classifier allowed: ${state.classifierAllowed}`,
+          `classifier denied: ${state.classifierDenied}`,
+          `permissions.deny rules: ${cfg.permissionDeny.length}`,
+          `permissions.ask rules: ${cfg.permissionAsk.length}`,
+          `environment entries: ${cfg.environment.length}`,
+          `allow entries: ${cfg.allow.length}`,
+          `soft_deny entries: ${cfg.softDeny.length}`,
+          `hard_deny entries: ${cfg.hardDeny.length}`,
+          `last decision: ${state.lastDecision ?? "none"}`,
+          "last reason: omitted from model-visible inspection",
+        ].join("\n");
+        return {
+          status,
+          state: {
+            enabledOverride: state.enabledOverride,
+            lastDecision: state.lastDecision,
+            checkedActions: state.checkedActions,
+            blockedActions: state.blockedActions,
+            classifierAllowed: state.classifierAllowed,
+            classifierDenied: state.classifierDenied,
+          },
+        };
+      }
+      if (action === "config") {
+        return {
+          config: cfg,
+          logFile: resolveLogPath(
+            ctx.sessionManager.getSessionFile?.(),
+            ctx.sessionManager.getSessionDir?.() ?? "",
+            ctx.sessionManager.getSessionId?.() ?? "unknown",
+            ctx.cwd,
+            options.logRoot,
+            now(),
+          ),
+          diagnostics: modelVisibleConfigDiagnostics(configDiagnostics),
+        };
+      }
+      if (action === "defaults") {
+        return {
+          environment: DEFAULT_ENVIRONMENT,
+          allow: DEFAULT_ALLOW,
+          protectedPaths: DEFAULT_PROTECTED_PATHS,
+          soft_deny: DEFAULT_SOFT_DENY,
+          hard_deny: DEFAULT_HARD_DENY,
+        };
+      }
+      const denials = state.recentDenials.slice().reverse().map((denial) => ({
+        timestamp: denial.timestamp,
+        kind: denial.kind,
+        toolName: denial.toolName,
+      }));
+      return {
+        summary: denials.length === 0
+          ? "No recent auto-mode denials."
+          : `${denials.length} recent auto-mode denial(s). Reasons and action payloads are omitted.`,
+        denials,
+      };
     }
 
     function block(
@@ -252,7 +371,10 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
     }
 
     pi.on("session_start", (_event, ctx) => {
-      loadResult = loadConfigWithDiagnostics(ctx.cwd);
+      loadResult = loadConfigWithDiagnostics(
+        ctx.cwd,
+        ctx.isProjectTrusted(),
+      );
       config = loadResult.config;
       configDiagnostics = loadResult.diagnostics;
       decisionCache.updateConfig(config.decisionCache);
@@ -274,22 +396,30 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       // Enforcement order:
       // 1. permission deny/ask rules,
       // 2. deterministic hard-deny checks that never consult the model,
-      // 3. read-only built-in fast path (skipped when classifyReadOnlyTools is set),
-      // 4. classifier for every remaining action, fail-closed on setup/parse errors.
+      // 3. extension-owned read-only inspection tool,
+      // 4. deterministic path denials,
+      // 5. accepted ask rules force classifier review and skip all allow tiers,
+      // 6. inside-CWD, permissions.allow, and read-only allow tiers,
+      // 7. classifier for every remaining action, fail-closed on setup/parse errors.
       const cfg = effectiveConfig();
       if (!cfg.enabled) return undefined;
       if (ctx.signal?.aborted) return { block: true, reason: "Cancelled" };
 
+      const isOwnedInspection = event.toolName === INSPECT_TOOL &&
+        ownsInspectionTool();
       const input = event.input as Record<string, unknown>;
       const summary = actionSummary(event.toolName, input);
-      state.checkedActions += 1;
+      if (!isOwnedInspection) state.checkedActions += 1;
       const logCtx: LogCtx = {
         logger: createLogger({
           enabled: cfg.log.enabled,
           classifierIo: cfg.log.classifierIo,
           sessionFile: ctx.sessionManager.getSessionFile?.(),
-          sessionDir: ctx.sessionManager.getSessionDir?.() ?? ctx.cwd,
+          sessionDir: ctx.sessionManager.getSessionDir?.() ?? "",
+          sessionCwd: ctx.cwd,
           sessionId: ctx.sessionManager.getSessionId?.() ?? "unknown",
+          logRoot: options.logRoot,
+          now: now(),
         }),
         decisionId: newDecisionId(),
         classifierModel: cfg.classifierModel,
@@ -298,6 +428,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
 
       for (const pattern of cfg.permissionDeny) {
         if (matchesToolPattern(pattern, event.toolName, input, ctx.cwd)) {
+          if (isOwnedInspection) state.checkedActions += 1;
           return block(ctx, {
             timestamp: Date.now(),
             toolName: event.toolName,
@@ -308,11 +439,13 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }
       }
 
+      let askRequiresClassifier = false;
       for (const pattern of cfg.permissionAsk) {
         if (!matchesToolPattern(pattern, event.toolName, input, ctx.cwd)) {
           continue;
         }
         if (!ctx.hasUI) {
+          if (isOwnedInspection) state.checkedActions += 1;
           return block(ctx, {
             timestamp: Date.now(),
             toolName: event.toolName,
@@ -328,6 +461,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           { signal: ctx.signal },
         );
         if (!allowed) {
+          if (isOwnedInspection) state.checkedActions += 1;
           return block(ctx, {
             timestamp: Date.now(),
             toolName: event.toolName,
@@ -336,6 +470,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
             kind: "permissions.ask",
           }, logCtx);
         }
+        askRequiresClassifier = true;
       }
 
       const deterministicReason = deterministicHardDeny(
@@ -344,6 +479,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         ctx.cwd,
       );
       if (deterministicReason) {
+        if (isOwnedInspection) state.checkedActions += 1;
         return block(ctx, {
           timestamp: Date.now(),
           toolName: event.toolName,
@@ -352,6 +488,9 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           kind: "deterministic-hard-deny",
         }, logCtx);
       }
+
+      if (isOwnedInspection && !askRequiresClassifier) return undefined;
+      if (isOwnedInspection) state.checkedActions += 1;
 
       // Deterministic path gate for file tools.
       //
@@ -366,15 +505,18 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       // The gate is skipped entirely when both features are off, so the
       // default configuration costs no extra filesystem calls.
       let readOnlyFastPath =
-        !cfg.classifyReadOnlyTools && READ_ONLY_TOOLS.has(event.toolName);
+        !askRequiresClassifier &&
+        !cfg.classifyReadOnlyTools &&
+        READ_ONLY_TOOLS.has(event.toolName);
       if (
         (cfg.deniedPaths.length > 0 || cfg.allowInsideWorkingDirectory) &&
         PATH_BEARING_TOOLS.has(event.toolName)
       ) {
         const inputPath = extractInputPath(event.toolName, input);
         if (inputPath !== undefined) {
-          const expanded = expandHomePattern(inputPath);
-          const resolved = resolveInputPath(ctx.cwd, expanded) ?? expanded;
+          const resolved =
+            resolveToolInputPath(event.toolName, ctx.cwd, inputPath) ??
+            inputPath;
           const policyPath = resolvePathForPolicy(resolved) ?? resolved;
           const denied =
             cfg.deniedPaths.length > 0 &&
@@ -389,19 +531,42 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
               kind: "deterministic-path-deny",
             }, logCtx);
           }
+          let recursiveSearch =
+            event.toolName === "grep" || event.toolName === "find";
+          if (recursiveSearch) {
+            try {
+              recursiveSearch = statSync(policyPath).isDirectory();
+            } catch {
+              // A missing search root will fail in the tool. Treat it as a
+              // directory here so a denied scope cannot fail open in a race.
+            }
+          }
+          const deniedSearchScope =
+            recursiveSearch &&
+            cfg.deniedPaths.length > 0 &&
+            (recursiveSearchMayReachDeniedPath(resolved, cfg.deniedPaths) ||
+              recursiveSearchMayReachDeniedPath(
+                policyPath,
+                cfg.deniedPaths,
+              ));
+          if (deniedSearchScope) {
+            return block(ctx, {
+              timestamp: Date.now(),
+              toolName: event.toolName,
+              reason: `Search scope can contain a path denied by policy: ${policyPath}`,
+              action: summary,
+              kind: "deterministic-path-deny",
+            }, logCtx);
+          }
           if (cfg.allowInsideWorkingDirectory) {
             const policyCwd = resolvePathForPolicy(ctx.cwd) ?? ctx.cwd;
             if (isInside(policyPath, policyCwd)) {
-              // Protected in-tree writes must still reach the classifier;
-              // otherwise the allow tier bypasses the protected-path policy
-              // for sensitive repository content such as .git/hooks/*, .pi/*,
-              // .husky/*, or .gitignore.
-              if (
+              // Protected in-tree writes and accepted ask rules must still
+              // reach the classifier. They cannot use the inside-CWD tier.
+              const protectedWrite =
                 (event.toolName === "write" || event.toolName === "edit") &&
-                isProtectedPath(policyPath, policyCwd, cfg.protectedPaths)
-              ) {
-                readOnlyFastPath = false;
-              } else {
+                isProtectedPath(policyPath, policyCwd, cfg.protectedPaths);
+              if (!askRequiresClassifier && !protectedWrite) {
                 return allow(
                   ctx,
                   "inside-working-directory",
@@ -412,10 +577,51 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
                 );
               }
             }
-            // Outside the working directory: the read-only fast path must not
-            // apply; the classifier reviews this call.
+            // Outside the working directory, protected writes, and accepted
+            // ask rules must not use the read-only fast path.
             readOnlyFastPath = false;
           }
+        }
+      }
+
+      // Deterministic allow tier. It runs after every deterministic denial.
+      // Accepted ask rules skip this tier and always reach the classifier.
+      if (!askRequiresClassifier) {
+        for (const pattern of cfg.permissionAllow) {
+          if (
+            !matchesToolPattern(
+              pattern,
+              event.toolName,
+              input,
+              ctx.cwd,
+              "no-match",
+            )
+          ) {
+            continue;
+          }
+          // A protected-path write/edit is never covered by permissions.allow;
+          // it stays on the classifier path (same rule as the inside-CWD tier).
+          if (event.toolName === "write" || event.toolName === "edit") {
+            const inputPath = extractInputPath(event.toolName, input);
+            const resolved = inputPath === undefined
+              ? undefined
+              : resolveToolInputPath(event.toolName, ctx.cwd, inputPath) ??
+                inputPath;
+            if (
+              resolved !== undefined &&
+              isProtectedPath(resolved, ctx.cwd, cfg.protectedPaths)
+            ) {
+              break;
+            }
+          }
+          return allow(
+            ctx,
+            "permissions.allow",
+            `Allowed by permissions.allow: ${pattern.raw}`,
+            event.toolName,
+            summary,
+            logCtx,
+          );
         }
       }
 
@@ -492,7 +698,12 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }
       }
 
-      const decision = await classify(ctx, cfg, summary, loadedContext);
+      const decision = await classify(
+        ctx,
+        cfg,
+        serializeClassifierAction(event.toolName, input),
+        loadedContext,
+      );
       logClassifierIo(decision, logCtx);
       if (cfg.decisionCache.enabled) {
         decisionCache.set(
@@ -521,6 +732,28 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         action: summary,
         kind: "classifier",
       }, logCtx);
+    });
+
+    pi.registerTool({
+      name: INSPECT_TOOL,
+      label: "Inspect Auto Mode",
+      description:
+        "Inspect the active pi-automode status, effective config, built-in defaults, or recent denial metadata. This tool is read-only and cannot enable, disable, reload, reset, or reconfigure auto mode. Its output is sent to the current model; denial reasons and action payloads are omitted.",
+      promptSnippet:
+        "Inspect active pi-automode state and diagnostic information without changing it",
+      parameters: Type.Object({
+        action: StringEnum(INSPECTION_ACTIONS, {
+          description: "The read-only auto-mode view to return",
+        }),
+      }),
+      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+        if (signal?.aborted) throw new Error("Auto-mode inspection cancelled");
+        const result = inspectAutomode(params.action, ctx);
+        return {
+          content: [{ type: "text", text: safeJson(result, 16000) }],
+          details: result,
+        };
+      },
     });
 
     async function handleAutomodeCommand(
@@ -552,7 +785,10 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         return;
       }
       if (command === "reload") {
-        loadResult = loadConfigWithDiagnostics(ctx.cwd);
+        loadResult = loadConfigWithDiagnostics(
+          ctx.cwd,
+          ctx.isProjectTrusted(),
+        );
         config = loadResult.config;
         configDiagnostics = loadResult.diagnostics;
         persist();
@@ -601,8 +837,11 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       if (command === "config") {
         const logFile = resolveLogPath(
           ctx.sessionManager.getSessionFile?.(),
-          ctx.sessionManager.getSessionDir?.() ?? ctx.cwd,
+          ctx.sessionManager.getSessionDir?.() ?? "",
           ctx.sessionManager.getSessionId?.() ?? "unknown",
+          ctx.cwd,
+          options.logRoot,
+          now(),
         );
         notify(
           ctx,
@@ -657,7 +896,10 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           );
           return;
         }
-        loadResult = loadConfigWithDiagnostics(ctx.cwd);
+        loadResult = loadConfigWithDiagnostics(
+          ctx.cwd,
+          ctx.isProjectTrusted(),
+        );
         config = loadResult.config;
         configDiagnostics = loadResult.diagnostics;
         persist();
