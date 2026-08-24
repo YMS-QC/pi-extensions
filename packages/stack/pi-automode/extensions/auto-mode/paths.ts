@@ -248,13 +248,15 @@ export function isSafetyControlPath(path: string, cwd: string): boolean {
 export function shellPathTokenToPath(
   token: string,
   cwd: string,
+  shellText = token,
 ): string | undefined {
   let value = token.trim();
   if (!value || value === "-" || value.startsWith("&")) return undefined;
   value = value
     .replace(/^\$HOME(?=\/|$)/, HOME)
     .replace(/^\$\{HOME\}(?=\/|$)/, HOME);
-  if (value.startsWith("~/")) value = resolve(HOME, value.slice(2));
+  if (shellText === "~") value = HOME;
+  else if (shellText.startsWith("~/")) value = resolve(HOME, value.slice(2));
   return isAbsolute(value) ? resolve(value) : resolve(cwd, value);
 }
 

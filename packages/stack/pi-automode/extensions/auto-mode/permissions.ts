@@ -1,3 +1,9 @@
+import {
+  analyzeBash,
+  type BashAnalysis,
+  type BashCommandAnalysis,
+  type BashRedirectAnalysis,
+} from "./bash.ts";
 import type { ToolPattern } from "./types.ts";
 import {
   expandHomePattern,
@@ -8,6 +14,8 @@ import {
 
 export const MAX_WILDCARD_PATTERN_LENGTH = 4096;
 export const MAX_WILDCARD_INPUT_LENGTH = 1024 * 1024;
+
+const bashPatternAnalyses = new WeakMap<ToolPattern, BashAnalysis>();
 
 /** Preserve the previous non-Unicode RegExp `/i` case-equivalence rules. */
 function canonicalizeCase(value: string): string {
@@ -55,11 +63,14 @@ export function parseToolPattern(value: unknown): ToolPattern | undefined {
 
   const match = raw.match(/^@?([A-Za-z0-9_-]+)(?:\((.*)\))?$/s);
   if (!match) return { raw };
-  return {
-    raw,
-    toolName: normalizeToolName(match[1] ?? ""),
-    argumentPattern: match[2],
-  };
+  const toolName = normalizeToolName(match[1] ?? "");
+  const argumentPattern = match[2];
+  const bashPatternAnalysis = toolName === "bash" && argumentPattern
+    ? analyzeBash(argumentPattern)
+    : undefined;
+  const pattern: ToolPattern = { raw, toolName, argumentPattern };
+  if (bashPatternAnalysis) bashPatternAnalyses.set(pattern, bashPatternAnalysis);
+  return pattern;
 }
 
 function literalPrefixTable(value: string): number[] {
@@ -285,6 +296,19 @@ export function recursiveSearchMayReachDeniedPath(
   });
 }
 
+function normalizedBashArgumentPattern(pattern: ToolPattern): string {
+  const patternAnalysis = bashPatternAnalyses.get(pattern);
+  if (
+    patternAnalysis &&
+    patternAnalysis.errors.length === 0 &&
+    patternAnalysis.redirects.length === 0 &&
+    isStructurallyPlainSingleCommand(patternAnalysis)
+  ) {
+    return patternAnalysis.commands[0]?.text ?? pattern.argumentPattern ?? "";
+  }
+  return pattern.argumentPattern ?? "";
+}
+
 /** Match a scoped permission rule against a concrete tool call. */
 export function matchesToolPattern(
   pattern: ToolPattern,
@@ -292,10 +316,192 @@ export function matchesToolPattern(
   input: Record<string, unknown>,
   cwd: string,
   overflowPolicy: WildcardOverflowPolicy = "match",
+  bashAnalysis?: BashAnalysis,
 ): boolean {
   if (!pattern.toolName) return false;
   if (pattern.toolName !== normalizeToolName(toolName)) return false;
   if (!pattern.argumentPattern) return true;
+  if (toolName === "bash" && bashAnalysis) {
+    if (bashAnalysis.errors.length > 0) return overflowPolicy === "match";
+    const candidates = overflowPolicy === "match"
+      ? [bashAnalysis.source, ...bashAnalysis.commands.map((command) => command.text)]
+      : [bashAnalysis.source];
+    const argumentPattern = normalizedBashArgumentPattern(pattern);
+    return candidates.some((candidate) =>
+      matchesWildcardPattern(argumentPattern, candidate, overflowPolicy)
+    );
+  }
   const primary = getPrimaryArgument(toolName, input, cwd);
   return matchesWildcardPattern(pattern.argumentPattern, primary, overflowPolicy);
+}
+
+/** Return the normalized Bash command that matched a scoped permission rule. */
+export function matchingBashCommandText(
+  pattern: ToolPattern,
+  bashAnalysis: BashAnalysis | undefined,
+  overflowPolicy: WildcardOverflowPolicy = "match",
+): string | undefined {
+  if (!bashAnalysis || pattern.toolName !== "bash") return undefined;
+  if (bashAnalysis.errors.length > 0) return undefined;
+  if (!pattern.argumentPattern) return undefined;
+  const argumentPattern = normalizedBashArgumentPattern(pattern);
+  const command = bashAnalysis.commands.find((candidate) =>
+    matchesWildcardPattern(argumentPattern, candidate.text, overflowPolicy)
+  );
+  if (command) return command.text;
+  return matchesWildcardPattern(argumentPattern, bashAnalysis.source, overflowPolicy)
+    ? bashAnalysis.source
+    : undefined;
+}
+
+function redirectListsMatch(
+  patternRedirects: BashRedirectAnalysis[],
+  inputRedirects: BashRedirectAnalysis[],
+): boolean {
+  if (patternRedirects.length !== inputRedirects.length) return false;
+  return patternRedirects.every((pattern, index) => {
+    const input = inputRedirects[index];
+    if (!input || pattern.heredoc || input.heredoc || input.targetDynamic) {
+      return false;
+    }
+    if (
+      pattern.operator !== input.operator ||
+      pattern.fileDescriptor !== input.fileDescriptor ||
+      pattern.variableName !== input.variableName
+    ) {
+      return false;
+    }
+    if (pattern.target === undefined) return input.target === undefined;
+    if (input.target === undefined) return false;
+    return matchesWildcardPattern(pattern.target, input.target, "no-match");
+  });
+}
+
+function commandMatchesAllowPattern(
+  patternCommand: BashCommandAnalysis,
+  inputCommand: BashCommandAnalysis,
+): boolean {
+  return matchesWildcardPattern(
+    patternCommand.text,
+    inputCommand.text,
+    "no-match",
+  ) && redirectListsMatch(patternCommand.redirects, inputCommand.redirects);
+}
+
+function structuresMatch(pattern: BashAnalysis, input: BashAnalysis): boolean {
+  return pattern.structure.length === input.structure.length &&
+    pattern.structure.every((token, index) => token === input.structure[index]);
+}
+
+function allRedirectsAreCommandRedirects(analysis: BashAnalysis): boolean {
+  return analysis.redirects.length === analysis.commands.reduce(
+    (count, command) => count + command.redirects.length,
+    0,
+  );
+}
+
+function isStructurallyPlainSingleCommand(analysis: BashAnalysis): boolean {
+  if (analysis.commands.length !== 1) return false;
+  if (analysis.structure.length !== 3 + analysis.redirects.length) return false;
+  if (analysis.structure[0] !== "script:1") return false;
+  if (analysis.structure[1] !== "node:Statement:foreground:0") return false;
+  if (!/^node:Command:\d+:\d+$/.test(analysis.structure[2] ?? "")) {
+    return false;
+  }
+  return analysis.structure.slice(3).every((token) =>
+    token.startsWith("redirect:")
+  );
+}
+
+function supportsPerCommandAllowPatterns(analysis: BashAnalysis): boolean {
+  return analysis.structure.every((token) =>
+    token.startsWith("script:") ||
+    token.startsWith("node:Statement:foreground:") ||
+    token.startsWith("node:Command:") ||
+    token.startsWith("node:AndOr:") ||
+    token.startsWith("node:Pipeline:plain:plain:") ||
+    token.startsWith("redirect:")
+  );
+}
+
+/** Whether permission allow rules cover the complete tool call. */
+export function matchesAllowedToolPatterns(
+  patterns: ToolPattern[],
+  toolName: string,
+  input: Record<string, unknown>,
+  cwd: string,
+  bashAnalysis?: BashAnalysis,
+): boolean {
+  if (toolName !== "bash" || !bashAnalysis) {
+    return patterns.some((pattern) =>
+      matchesToolPattern(pattern, toolName, input, cwd, "no-match")
+    );
+  }
+  if (
+    bashAnalysis.errors.length > 0 ||
+    bashAnalysis.commands.length === 0 ||
+    !bashAnalysis.allowStructureSafe
+  ) {
+    return false;
+  }
+  if (
+    bashAnalysis.commands.some((command) =>
+      command.dynamicName || command.dynamicShellScript
+    )
+  ) {
+    return false;
+  }
+
+  for (const pattern of patterns) {
+    if (pattern.toolName !== "bash") continue;
+    const patternAnalysis = bashPatternAnalyses.get(pattern);
+    if (
+      !patternAnalysis ||
+      patternAnalysis.errors.length > 0 ||
+      !patternAnalysis.allowStructureSafe ||
+      isStructurallyPlainSingleCommand(patternAnalysis) ||
+      patternAnalysis.commands.length !== bashAnalysis.commands.length ||
+      !structuresMatch(patternAnalysis, bashAnalysis) ||
+      !redirectListsMatch(patternAnalysis.redirects, bashAnalysis.redirects)
+    ) {
+      continue;
+    }
+    if (
+      patternAnalysis.commands.every((patternCommand, index) => {
+        const inputCommand = bashAnalysis.commands[index];
+        return !!inputCommand &&
+          commandMatchesAllowPattern(patternCommand, inputCommand);
+      })
+    ) {
+      return true;
+    }
+  }
+
+  const hasBareBashPattern = patterns.some((pattern) =>
+    pattern.toolName === "bash" && !pattern.argumentPattern
+  );
+  if (
+    !hasBareBashPattern &&
+    !supportsPerCommandAllowPatterns(bashAnalysis)
+  ) {
+    return false;
+  }
+  if (!allRedirectsAreCommandRedirects(bashAnalysis)) return false;
+  return bashAnalysis.commands.every((command) =>
+    patterns.some((pattern) => {
+      if (pattern.toolName !== "bash") return false;
+      if (!pattern.argumentPattern) return command.redirects.length === 0;
+      const patternAnalysis = bashPatternAnalyses.get(pattern);
+      if (
+        !patternAnalysis ||
+        patternAnalysis.errors.length > 0 ||
+        !isStructurallyPlainSingleCommand(patternAnalysis)
+      ) {
+        return false;
+      }
+      const patternCommand = patternAnalysis.commands[0];
+      return !!patternCommand &&
+        commandMatchesAllowPattern(patternCommand, command);
+    })
+  );
 }

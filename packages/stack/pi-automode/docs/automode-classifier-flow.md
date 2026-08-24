@@ -195,7 +195,7 @@ Current deterministic blocks include these actions:
 - dangerous recursive deletes of root, home, or system paths
 - selected system or SSH permission mutations
 
-The `bash` checks use a small shell lexer. It handles quotes, redirects, pipes, `&&`, `||`, and `;`. This catches common "safe prefix, risky suffix" patterns.
+The `bash` checks use the `unbash` abstract syntax tree. They inspect chains, pipelines, compound commands, substitutions, redirects, and literal shell-wrapper scripts.
 
 Recursive-delete checks hard-deny `/`, the user home root, and top-level system roots. They exempt subpaths of the user home because these paths contain user data.
 
