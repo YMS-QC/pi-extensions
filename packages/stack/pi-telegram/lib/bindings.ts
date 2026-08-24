@@ -68,6 +68,10 @@ export function createTelegramQueueBindingRuntime<TContext>(deps: {
             ctx: TContext,
           ) => void;
           isItemReady: (item: Queue.TelegramQueueItem<TContext>) => boolean;
+          onPromptHandedOff?: (
+            item: Queue.PendingTelegramTurn,
+            ctx: TContext,
+          ) => void;
           onControlSettled: (
             item: Queue.PendingTelegramControlItem<TContext>,
             ctx: TContext,
@@ -121,6 +125,13 @@ export function createTelegramQueueBindingRuntime<TContext>(deps: {
         deps.admission.getSettlement()?.isItemReady(item) ??
         (item.admissionReceipts?.length ?? 0) === 0
       );
+    },
+    commitPromptDispatch(item, ctx) {
+      if ((item.admissionReceipts?.length ?? 0) === 0) return true;
+      const settlement = deps.admission.getSettlement();
+      if (!settlement?.onPromptHandedOff) return false;
+      settlement.onPromptHandedOff(item, ctx);
+      return !settlement.isItemReady(item);
     },
     onControlSettled(item, ctx) {
       deps.admission.getSettlement()?.onControlSettled(item, ctx);

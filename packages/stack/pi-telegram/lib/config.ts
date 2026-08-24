@@ -99,8 +99,6 @@ export interface TelegramConfig {
   botId?: number;
   /** @deprecated persisted identity belongs in profiles.default; retained for effective/legacy views */
   allowedUserId?: number;
-  /** @deprecated persisted identity belongs in profiles.default; retained for effective/legacy views */
-  lastUpdateId?: number;
   inboundHandlers?: TelegramInboundHandlerConfig[];
   attachmentHandlers?: TelegramInboundHandlerConfig[];
   outboundHandlers?: TelegramOutboundHandlerConfig[];
@@ -144,6 +142,9 @@ export interface TelegramBotProfile {
   botUsername?: string;
   botId?: number;
   allowedUserId?: number;
+}
+
+interface TelegramLegacyCursorCarrier {
   lastUpdateId?: number;
 }
 
@@ -177,6 +178,8 @@ export interface TelegramConfigStore {
   getBotToken: () => string | undefined;
   hasBotToken: () => boolean;
   getAllowedUserId: () => number | undefined;
+  getLegacyPollingCursor: () => number | undefined;
+  removeLegacyPollingCursor: () => void;
   getInboundHandlers: () => TelegramInboundHandlerConfig[] | undefined;
   getAttachmentHandlers: () => TelegramInboundHandlerConfig[] | undefined;
   getOutboundHandlers: () => TelegramOutboundHandlerConfig[] | undefined;
@@ -368,15 +371,7 @@ function mergeTelegramConfigDelta(
       continue;
     }
     if (!desiredHas) {
-      if (key !== "lastUpdateId") delete merged[key];
-      continue;
-    }
-    if (
-      key === "lastUpdateId" &&
-      typeof desiredValue === "number" &&
-      typeof merged[key] === "number"
-    ) {
-      merged[key] = Math.max(desiredValue, merged[key] as number);
+      delete merged[key];
       continue;
     }
     if (
@@ -433,6 +428,8 @@ export function getTelegramProfileFields(
 ): TelegramBotProfile | undefined {
   const token = config.botToken?.trim();
   if (!token) return undefined;
+  const legacyCursor = (config as TelegramConfig & TelegramLegacyCursorCarrier)
+    .lastUpdateId;
   return {
     botToken: token,
     ...(config.botUsername !== undefined
@@ -442,9 +439,7 @@ export function getTelegramProfileFields(
     ...(config.allowedUserId !== undefined
       ? { allowedUserId: config.allowedUserId }
       : {}),
-    ...(config.lastUpdateId !== undefined
-      ? { lastUpdateId: config.lastUpdateId }
-      : {}),
+    ...(legacyCursor !== undefined ? { lastUpdateId: legacyCursor } : {}),
   };
 }
 
@@ -456,7 +451,7 @@ function omitTelegramRootProfileFields(config: TelegramConfig): TelegramConfig {
     allowedUserId: _allowedUserId,
     lastUpdateId: _lastUpdateId,
     ...sharedConfig
-  } = config;
+  } = config as TelegramConfig & TelegramLegacyCursorCarrier;
   return sharedConfig;
 }
 
@@ -477,7 +472,8 @@ export function normalizeTelegramDefaultProfileConfig(config: TelegramConfig): {
   if (Object.hasOwn(config, "botToken") && !legacyToken) {
     throw new Error("Legacy Telegram default profile has no bot token");
   }
-  const legacyProfile: Partial<TelegramBotProfile> = {
+  const legacyProfile: Partial<TelegramBotProfile> &
+    TelegramLegacyCursorCarrier = {
     ...(legacyToken ? { botToken: legacyToken } : {}),
     ...(config.botUsername !== undefined
       ? { botUsername: config.botUsername }
@@ -486,8 +482,12 @@ export function normalizeTelegramDefaultProfileConfig(config: TelegramConfig): {
     ...(config.allowedUserId !== undefined
       ? { allowedUserId: config.allowedUserId }
       : {}),
-    ...(config.lastUpdateId !== undefined
-      ? { lastUpdateId: config.lastUpdateId }
+    ...((config as TelegramConfig & TelegramLegacyCursorCarrier)
+      .lastUpdateId !== undefined
+      ? {
+          lastUpdateId: (config as TelegramConfig & TelegramLegacyCursorCarrier)
+            .lastUpdateId,
+        }
       : {}),
   };
   if (!canonicalProfile && !legacyToken) {
@@ -609,6 +609,16 @@ export function createTelegramConfigStore(
     getBotToken: () => getEffectiveConfig().botToken,
     hasBotToken: () => !!getEffectiveConfig().botToken,
     getAllowedUserId: () => getEffectiveConfig().allowedUserId,
+    getLegacyPollingCursor: () =>
+      (getEffectiveConfig() as TelegramConfig & TelegramLegacyCursorCarrier)
+        .lastUpdateId,
+    removeLegacyPollingCursor: () => {
+      const next = {
+        ...(getEffectiveConfig() as TelegramConfig & TelegramLegacyCursorCarrier),
+      };
+      delete next.lastUpdateId;
+      setEffectiveConfig(next);
+    },
     getInboundHandlers: () => [
       ...(config.inboundHandlers ?? []),
       ...(config.attachmentHandlers ?? []),
@@ -700,27 +710,6 @@ export function createTelegramConfigStore(
       persistQueue = persist.catch(() => undefined);
       return persist;
     },
-  };
-}
-
-export function createTelegramPollingOffsetPersister(
-  configStore: Pick<TelegramConfigStore, "get" | "set" | "persist">,
-  persist: () => Promise<void> = () => configStore.persist(),
-): (pollingConfig: { lastUpdateId?: number }) => Promise<void> {
-  return async (pollingConfig) => {
-    const nextOffset = pollingConfig.lastUpdateId;
-    if (typeof nextOffset === "number") {
-      const current = configStore.get();
-      const currentOffset = current.lastUpdateId;
-      configStore.set({
-        ...current,
-        lastUpdateId:
-          typeof currentOffset === "number"
-            ? Math.max(currentOffset, nextOffset)
-            : nextOffset,
-      });
-    }
-    await persist();
   };
 }
 

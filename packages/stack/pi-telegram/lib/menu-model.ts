@@ -103,7 +103,7 @@ export interface TelegramModelMenuRuntimeOptions<
 }
 
 export interface MenuSettingsManager {
-  reload: () => Promise<void>;
+  reload?: () => Promise<void>;
   flush?: () => Promise<void>;
   getEnabledModels: () => string[] | undefined;
   setEnabledModels?: (patterns: string[] | undefined) => void;
@@ -498,7 +498,9 @@ export function createTelegramModelMenuStateBuilder<
       threadId,
       activeModel: deps.getActiveModel(ctx),
       ctx,
-      reloadSettings: () => settingsManager.reload(),
+      reloadSettings: async () => {
+        await settingsManager.reload?.();
+      },
       getConfiguredScopedModelPatterns: () =>
         settingsManager.getEnabledModels(),
     });

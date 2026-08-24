@@ -1685,6 +1685,7 @@ export interface TelegramUpdateWorkerStateSnapshot {
 }
 
 export interface TelegramUpdateWorkerJournalSnapshot {
+  acceptedThroughUpdateId?: number;
   entries: readonly {
     updateId: number;
     update: TelegramJournaledUpdate;
@@ -3669,7 +3670,10 @@ export interface TelegramUpdateAdmissionLifecycleJournalBinding {
   runtimeKey: string;
   recoveryKey: string;
   journal: TelegramUpdateWorkerJournalPort & {
-    appendBatch: (updates: readonly TelegramJournaledUpdate[]) => unknown;
+    appendBatch: (
+      updates: readonly TelegramJournaledUpdate[],
+      acceptedThroughUpdateId?: number,
+    ) => unknown;
     applyOperatorDisposition?: (
       input: TelegramUpdateJournalOperatorDispositionInput,
     ) => TelegramUpdateJournalOperatorDispositionResult;
@@ -4303,7 +4307,10 @@ export interface TelegramUpdateAdmissionLifecycleRuntime<TContext>
   onSessionStart: (ctx: TContext) => Promise<void>;
   onSessionShutdown: () => Promise<void>;
   onTransportChanged: (ctx?: TContext) => Promise<void>;
-  appendBatch: (updates: readonly TelegramJournaledUpdate[]) => unknown;
+  appendBatch: (
+    updates: readonly TelegramJournaledUpdate[],
+    acceptedThroughUpdateId?: number,
+  ) => unknown;
   discardQueueReceipt: (input: {
     queueKind: "prompt" | "control";
     receiptId: string;
@@ -4603,11 +4610,11 @@ export function createTelegramUpdateAdmissionLifecycleRuntime<TContext>(
         await stopCurrent(true);
         if (ctx !== undefined) await bind(ctx);
       }),
-    appendBatch(updates) {
+    appendBatch(updates, acceptedThroughUpdateId) {
       if (!journal || !worker) {
         throw new Error("Telegram update admission worker is not active.");
       }
-      return journal.appendBatch(updates);
+      return journal.appendBatch(updates, acceptedThroughUpdateId);
     },
     discardQueueReceipt(input) {
       if (!journal || !worker || !journal.discardQueued) {

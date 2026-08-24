@@ -54,9 +54,15 @@ Console programs are one capability source, not the defining boundary. Use the r
 
 ## Control Admission
 
-Buttons are optional, but bias toward offering them when they materially shorten a likely feedback loop. If the user can approve, reject, refine, prioritize, redirect, inspect, or choose a concrete next step faster by tapping than by composing a reply, proactively expose the smallest useful control set without waiting to be asked for buttons.
+Buttons are optional only when no candidate passes the admission test. Bias toward offering them whenever they materially shorten a likely feedback loop. If the user can approve, reject, refine, prioritize, redirect, inspect, or choose a concrete next step faster by tapping than by composing a reply, proactively expose the smallest useful control set without waiting to be asked for buttons.
 
-Zero buttons remains preferable when controls would only decorate the answer, restate visible prose, solicit generic “What next?” input, expose an unclear consequence, or save negligible effort. A button earns its place by reducing response effort, ambiguity, turnaround time, or supervision cost while preserving an ordinary typed reply as a first-class option.
+On a Telegram-originated turn, emitting controls is required when the response asks the user for one or more bounded confirmations or choices, the likely answers can be represented truthfully in 2–6 safe controls, and no secret-bearing or high-impact ambiguity blocks their formulation. This includes blocking questions such as confirming scope, version, workflow classification, approval, or the next release step. Ask in prose when explanation is necessary, but attach the controls in the same reply; the availability of free-form typing is not a reason to omit them. A high-impact operation still uses the required confirmation flow rather than a one-tap execution shortcut.
+
+Apply the same requirement at a workflow handoff even when the current user message itself was a complete correction or implementation command. Before concluding a Telegram reply, project the user's likely next intent from the active goal, recent trajectory, newly completed act, and available capabilities—not only from an explicitly pending question. Typical phase transitions include “prepare → release”, “inspect → approve”, “fix → rerun”, and “draft → send”. If one next action or a small alternative set is high-confidence, newly unblocked, truthfully expressible, and safe to request, emit 2–6 controls now instead of waiting for the user to restate the obvious next step. A narrowly completed subtask does not erase the parent intent or make the predictive handoff decorative.
+
+This is anticipatory interaction, not generic suggestion generation. Prefer controls that advance the user's demonstrated workflow over broad capability menus, speculative side quests, or “What next?” buttons. A predicted high-impact action is offered as an explicit self-contained request or confirmation, never silently executed. When confidence is low or materially different next intents compete, omit controls or expose only the smallest clarifying choice.
+
+Zero buttons remains preferable when controls would only decorate the answer, restate visible prose, solicit generic “What next?” input, expose an unclear consequence, save negligible effort, or when the user already issued a complete command and neither that command nor the inferred active workflow leaves a high-confidence immediate decision. A button earns its place by reducing response effort, ambiguity, turnaround time, or supervision cost while preserving an ordinary typed reply as a first-class option.
 
 For status requests, show a compact `Refresh` control and bounded inspect/drill-down controls only when work is active, blocked, stale-sensitive, or otherwise actionable. A completed static status needs no buttons. Do not add destructive shortcuts or actions whose target and consequence are not yet clear.
 
@@ -130,11 +136,11 @@ Use the transport's canonical prompt-button syntax. For pi-telegram, one top-lev
 
 Model the control surface as an ordered ragged sequence of independently sized rows, not as a rectangular matrix to fill. Rectangular grids are one specialization for genuinely spatial or coordinate-bearing state; most interfaces should vary row width according to hierarchy, grouping, label pressure, and action priority.
 
-- Put controls in one compact row only when they are genuine peers that answer the same local question or form one coherent toolbar/navigation group.
-- Use a singleton full-width row for a structurally independent, pinned, primary, summary, or high-consequence action when separation improves comprehension.
+- Default to one full-width button per row for non-spatial controls. Put controls in one compact row only when they are genuine peers that answer the same local question or form one coherent toolbar/navigation group **and** their rendered labels comfortably fit a narrow phone-width chat.
+- Use a singleton full-width row for a structurally independent, pinned, primary, summary, or high-consequence action, and whenever label length makes horizontal grouping cramped or ambiguous.
 - Vary row widths intentionally—for example `1 → 2 → 4 → 1 → 2`—and never pad a row with empty, duplicate, or no-op controls merely to produce uniform dimensions.
 - Preserve reading order across rows: orientation and structural navigation first, primary content or choices next, secondary controls afterward, and destructive actions visibly separated when present.
-- Use at most two columns when buttons carry words, phrases, icon-plus-text labels, or other text that must be read; move additional peer choices into more semantic rows rather than compressing four or more textual buttons across a phone-width line. Three through five columns are for short symbols, glyphs, coordinates, or compact codes whose position carries meaning. Six through eight may be used only for single-glyph or similarly minimal position-bearing labels whose grouping materially improves the interaction. Eight is the phone-width UX maximum: never generate a row of nine or more controls even though the parser has no artificial width cap. Never shorten necessary wording merely to increase row density; regroup or use full-width rows when labels need explanation, wrap ambiguously, or lose meaning without prose.
+- Treat two columns as an earned compact mode, not the default: a pair normally fits when each label is no more than one emoji plus roughly two average-length words. If either label has more words, unusually long words, qualifiers, or likely wrapping, place each button on its own row. Use at most two columns for readable text labels; move additional peer choices into more semantic rows rather than compressing textual buttons across a phone-width line. Three through five columns are for short symbols, glyphs, coordinates, or compact codes whose position carries meaning. Six through eight may be used only for single-glyph or similarly minimal position-bearing labels whose grouping materially improves the interaction; a row of emoji-only controls may therefore legitimately use up to eight columns. Eight is the phone-width UX maximum: never generate a row of nine or more controls even though the parser has no artificial width cap. Never shorten necessary wording merely to increase row density; regroup or use full-width rows when labels need explanation, wrap ambiguously, or lose meaning without prose.
 
 Treat vertical extent independently from horizontal density. A genuinely spatial surface may retain many rows—such as an `8×16` field—when vertical continuity, coordinates, and one-glance topology matter; do not paginate merely to make its height match its width. For non-spatial collections, however, a tall button wall should yield to semantic grouping, progressive disclosure, or pagination. Keep compact state and instructions above a tall surface, preserve stable coordinates across regeneration, and avoid repeating prose between rows.
 
@@ -181,7 +187,7 @@ Button prompts must:
 - Request fresh inspection when state may have changed.
 - Avoid embedding volatile output that should be rediscovered.
 
-Labels stay short, distinct, and scannable. Emoji are optional semantic markers; do not rely on color alone. If buttons are unavailable, render the same control surface as a numbered choice list.
+Labels stay short, distinct, and scannable. Prefer an explicit `label` over exposing a long prompt as button text. Emoji are explicitly allowed and encouraged when one consistent semantic marker improves scanning or expressiveness; keep their meaning consistent across sibling controls, avoid decorative noise, and do not rely on emoji or color alone. If buttons are unavailable, render the same control surface as a numbered choice list.
 
 ## Capability Adapters
 
@@ -230,6 +236,8 @@ Buttons may represent explicit alternatives without live system inspection. Stat
 
 Before sending a surface, verify:
 
+- If the reply asks a Telegram user for bounded confirmation or selection, qualifying controls are present; do not ship a prose-only blocking question merely because the answer is short.
+- If the completed act unblocks a high-confidence next intent inferred from the parent goal and workflow trajectory, qualifying handoff controls are present even when no explicit pending question exists and the latest user message was itself a complete command.
 - State and controls share one clear owner and target.
 - Live claims come from current evidence.
 - Complete versus filtered or adapted output is labeled honestly.

@@ -1845,7 +1845,8 @@ test("Command admission advances polling while start-menu effects remain unsettl
     },
   });
   const controller = new AbortController();
-  const config = { botToken: "123:abc", lastUpdateId: 0 };
+  const config = { botToken: "123:abc", lastUpdateId: 999 };
+  let acceptedThroughUpdateId = 0;
   let getUpdatesCalls = 0;
 
   await runTelegramPollLoop({
@@ -1859,10 +1860,14 @@ test("Command admission advances polling while start-menu effects remain unsettl
       controller.abort();
       throw new DOMException("stop", "AbortError");
     },
-    persistConfig: async (nextConfig) => {
-      persistedOffsets.push(nextConfig.lastUpdateId ?? -1);
+    persistConfig: async () => {
+      assert.fail("config persistence must not own the polling cursor");
     },
-    appendUpdateBatch: () => undefined,
+    appendUpdateBatch: (_updates, cursor) => {
+      acceptedThroughUpdateId = cursor!;
+      persistedOffsets.push(cursor!);
+    },
+    getAcceptedThroughUpdateId: () => acceptedThroughUpdateId,
     getJournalEntryCount: () => 0,
     signalUpdateWorker() {
       void handleCommand("start", message, {}).then((handled) => {
@@ -1876,7 +1881,8 @@ test("Command admission advances polling while start-menu effects remain unsettl
 
   assert.equal(allowedUserId, undefined);
   assert.equal(getUpdatesCalls, 2);
-  assert.equal(config.lastUpdateId, 1);
+  assert.equal(config.lastUpdateId, 999);
+  assert.equal(acceptedThroughUpdateId, 1);
   assert.deepEqual(persistedOffsets, [1]);
   assert.deepEqual(events.slice(0, 2), ["show", "register"]);
   assert.equal(events.includes("show:done"), false);

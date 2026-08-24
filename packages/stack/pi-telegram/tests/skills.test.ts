@@ -66,6 +66,30 @@ test("Telegram extension contributes all bundled skills", async () => {
   );
   assert.match(
     generatedSurface,
+    /emitting controls is required.*bounded confirmations or choices.*2–6 safe controls/su,
+  );
+  assert.match(
+    generatedSurface,
+    /blocking questions.*scope, version, workflow classification, approval, or the next release step/su,
+  );
+  assert.match(
+    generatedSurface,
+    /do not ship a prose-only blocking question merely because the answer is short/su,
+  );
+  assert.match(
+    generatedSurface,
+    /workflow handoff.*complete correction or implementation command.*project the user's likely next intent.*prepare → release/su,
+  );
+  assert.match(
+    generatedSurface,
+    /anticipatory interaction.*demonstrated workflow.*never silently executed/su,
+  );
+  assert.match(
+    generatedSurface,
+    /completed act unblocks a high-confidence next intent.*parent goal and workflow trajectory.*no explicit pending question exists/su,
+  );
+  assert.match(
+    generatedSurface,
     /no semantic column headings.*first data row as the syntactic header.*Do not insert blank, dash-only, duplicate, or invented placeholder headings/su,
   );
   assert.match(generatedSurface, /Compact Matrix Literal \(CML\)/u);
@@ -82,20 +106,31 @@ test("Telegram extension contributes all bundled skills", async () => {
     generatedSurface,
     /Rectangular grids are one specialization.*genuinely spatial/su,
   );
-  assert.match(generatedSurface, /genuine peers.*coherent toolbar/su);
+  assert.match(
+    generatedSurface,
+    /Default to one full-width button per row.*genuine peers.*narrow phone-width chat/su,
+  );
   assert.match(generatedSurface, /1 → 2 → 4 → 1 → 2/u);
   assert.match(generatedSurface, /never pad a row.*no-op controls/su);
   assert.match(
     generatedSurface,
-    /at most two columns.*words, phrases.*more semantic rows/su,
+    /two columns as an earned compact mode.*one emoji plus roughly two average-length words.*own row/su,
   );
   assert.match(
     generatedSurface,
-    /Three through five columns.*short symbols.*Six through eight/su,
+    /at most two columns for readable text labels.*more semantic rows/su,
+  );
+  assert.match(
+    generatedSurface,
+    /Three through five columns.*short symbols.*Six through eight.*emoji-only controls.*eight columns/su,
   );
   assert.match(generatedSurface, /Eight is the phone-width UX maximum/u);
   assert.match(generatedSurface, /never generate a row of nine or more controls/u);
   assert.match(generatedSurface, /Never shorten necessary wording/u);
+  assert.match(
+    generatedSurface,
+    /explicit `label` over exposing a long prompt.*Emoji are explicitly allowed and encouraged.*consistent semantic marker/su,
+  );
   assert.match(
     generatedSurface,
     /vertical extent independently.*`8×16` field.*do not paginate/su,

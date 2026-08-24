@@ -84,7 +84,6 @@ interface TelegramBotProfile {
   botUsername?: string; // runtime-managed
   botId?: number; // runtime-managed
   allowedUserId?: number;
-  lastUpdateId?: number; // runtime-managed
 }
 
 interface TelegramConfig {
@@ -114,7 +113,7 @@ interface TelegramConfig {
 
 Bot/session identity always persists under `profiles.<name>`. The ordinary setup path uses `profiles.default`; `/telegram-setup default` and `/telegram-connect default` are exact aliases for the bare commands. Named profiles use the same shape. Shared handlers plus `assistant`, `voice`, `time`, and `threads` remain top-level. On the first `0.24.0` load, unambiguous legacy root identity moves atomically into `profiles.default`; identical duplicates collapse, complementary fields merge, and conflicting values fail closed without modifying the file.
 
-The file is global across Pi instances. Cooperating instances serialize recursive delta merges through `telegram.json.transaction`, preserve unrelated global/profile changes from newer disk snapshots, and merge `lastUpdateId` monotonically. A semantically unchanged merge adopts the latest disk state in memory without replacing the file; later commits win when two deltas intentionally change the same leaf. Same-parent temp-file replacement retries bounded transient `EPERM`, `EACCES`, and `EBUSY` destination contention without deleting the live config or leaving transaction serialization. For manual edits, stop or idle the connected instances, publish a complete valid file atomically, and let them reload. A non-transactional editor racing Pi persistence has no same-leaf conflict guarantee.
+The file is global across Pi instances and contains configuration only. The per-profile polling/admission cursor is `acceptedThroughUpdateId` in that profile's private durable update journal; it is not a config key. On first connection after this cut, a legacy config cursor is transferred directly into the journal before polling and then removed from config. Journal publication failure preserves the legacy source; config publication failure leaves the journal authoritative so retry is idempotent. Cooperating instances serialize recursive config delta merges through `telegram.json.transaction` and preserve unrelated global/profile changes from newer disk snapshots. A semantically unchanged merge adopts the latest disk state in memory without replacing the file; later commits win when two deltas intentionally change the same leaf. Same-parent temp-file replacement retries bounded transient `EPERM`, `EACCES`, and `EBUSY` destination contention without deleting the live config or leaving transaction serialization. For manual edits, stop or idle the connected instances, publish a complete valid file atomically, and let them reload. A non-transactional editor racing Pi persistence has no same-leaf conflict guarantee.
 
 Hidden/default semantics are represented by absence:
 

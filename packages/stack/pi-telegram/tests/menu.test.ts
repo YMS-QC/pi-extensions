@@ -293,6 +293,31 @@ test("Menu state builder wires runtime to settings and model-registry ports", as
   );
 });
 
+test("Menu state builder supports settings managers without reload", async () => {
+  const model = createMenuModel("openai", "gpt-5");
+  const runtime = createTelegramModelMenuRuntime<typeof model>();
+  const getModelMenuState = createTelegramModelMenuStateBuilder({
+    runtime,
+    createSettingsManager: () => ({
+      getEnabledModels: () => ["openai/gpt-5"],
+    }),
+    getActiveModel: () => model,
+  });
+
+  const state = await getModelMenuState(42, {
+    cwd: "/tmp/project",
+    modelRegistry: {
+      refresh: () => {},
+      getAvailable: () => [model],
+    },
+  });
+
+  assert.deepEqual(
+    state.scopedModels.map((entry) => entry.model.id),
+    ["gpt-5"],
+  );
+});
+
 test("Menu runtime builds menu state from settings and model-registry ports", async () => {
   let reloadCount = 0;
   let refreshCount = 0;

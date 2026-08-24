@@ -254,6 +254,18 @@ test("Status bar text renders bridge connection and queue states", () => {
       hasBotToken: true,
       pollingActive: false,
       paired: true,
+      compactionInProgress: false,
+      processing: true,
+      queuedStatus: " +2",
+      error: "Telegram bus follower is not registered.",
+    }),
+    "<accent>telegram</accent> <dim>disconnected</dim><success> +2</success>",
+  );
+  assert.equal(
+    buildTelegramStatusBarText(theme, {
+      hasBotToken: true,
+      pollingActive: false,
+      paired: true,
       busRole: "follower",
       compactionInProgress: false,
       processing: false,

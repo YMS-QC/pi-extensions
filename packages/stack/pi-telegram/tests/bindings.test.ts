@@ -219,6 +219,7 @@ test("Queue binding composes mutation, admission, dispatch, and watchdog ports",
     Queue.createTelegramDeferredQueueDispatchRuntime<string>();
   deferredDispatch.bind("ctx");
   let nextLaneOrder = 0;
+  let admissionReady = true;
   const runtime = createTelegramQueueBindingRuntime({
     store,
     queue: {
@@ -234,7 +235,11 @@ test("Queue binding composes mutation, admission, dispatch, and watchdog ports",
         onItemsDiscarded: (items) => {
           events.push(`discard:${items.length}`);
         },
-        isItemReady: () => true,
+        isItemReady: () => admissionReady,
+        onPromptHandedOff: () => {
+          admissionReady = false;
+          events.push("prompt-committed");
+        },
         onControlSettled: () => {
           events.push("control-settled");
         },
@@ -268,6 +273,13 @@ test("Queue binding composes mutation, admission, dispatch, and watchdog ports",
       chatId: 7,
       replyToMessageId: 10,
       sourceMessageIds: [10],
+      admissionReceipts: [
+        {
+          queueKind: "prompt",
+          receiptId: "prompt-10",
+          sourceUpdateIds: [10],
+        },
+      ],
       queueOrder: 1,
       queueLane: "default",
       laneOrder: 1,
@@ -293,6 +305,7 @@ test("Queue binding composes mutation, admission, dispatch, and watchdog ports",
     "status",
     "status",
     "dispatch-start",
+    "prompt-committed",
     "send",
     "discard:1",
     "status",

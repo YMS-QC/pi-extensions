@@ -4348,7 +4348,46 @@ test("Dispatch runtime sends prompt turns as normal user messages", () => {
   assert.deepEqual(events, ["start:2", "send:default"]);
 });
 
-test("Dispatch runtime reports prompt dispatch failures after starting", () => {
+test("Dispatch runtime commits durable prompt authority before model dispatch", () => {
+  const events: string[] = [];
+  executeTelegramQueueDispatchPlan(
+    {
+      kind: "prompt",
+      item: {
+        kind: "prompt",
+        chatId: 2,
+        replyToMessageId: 3,
+        sourceMessageIds: [3],
+        queueOrder: 2,
+        queueLane: "default",
+        laneOrder: 2,
+        queuedAttachments: [],
+        content: [{ type: "text", text: "prompt" }],
+        historyText: "prompt",
+        statusSummary: "prompt",
+      },
+      remainingItems: [],
+    },
+    {
+      executeControlItem: () => {},
+      onPromptDispatchStart: () => events.push("start"),
+      commitPromptDispatch: () => {
+        events.push("commit");
+        return false;
+      },
+      sendUserMessage: () => events.push("send"),
+      onPromptDispatchFailure: (message) => events.push(`error:${message}`),
+      onIdle: () => {},
+    },
+  );
+  assert.deepEqual(events, [
+    "start",
+    "commit",
+    "error:Telegram prompt dispatch could not be committed durably.",
+  ]);
+});
+
+test("Dispatch runtime reports send failures after durable commitment", () => {
   const events: string[] = [];
   executeTelegramQueueDispatchPlan(
     {
@@ -4375,6 +4414,10 @@ test("Dispatch runtime reports prompt dispatch failures after starting", () => {
       onPromptDispatchStart: (chatId) => {
         events.push(`start:${chatId}`);
       },
+      commitPromptDispatch: () => {
+        events.push("commit");
+        return true;
+      },
       sendUserMessage: () => {
         throw new Error("boom");
       },
@@ -4386,7 +4429,7 @@ test("Dispatch runtime reports prompt dispatch failures after starting", () => {
       },
     },
   );
-  assert.deepEqual(events, ["start:2", "error:boom"]);
+  assert.deepEqual(events, ["start:2", "commit", "error:boom"]);
 });
 
 test("Queue dispatch controller plans prompts and reports dispatch failures", () => {

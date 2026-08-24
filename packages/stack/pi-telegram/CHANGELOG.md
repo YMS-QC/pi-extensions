@@ -2,6 +2,35 @@
 
 > Each release keeps at most 8 outcome records of at most 512 characters.
 
+## 0.37.2: Follower Recovery Delivery Hotfix
+
+- `Follower Recovery Delivery`: Holds follower Bot API calls behind a bounded registration wait when heartbeat recovery temporarily clears local authority, then sends once with the restored exact generation. Calls still fail closed if registration is not restored, and acknowledgement ambiguity remains non-retryable.
+
+## 0.37.1: Settings Manager Compatibility Hotfix
+
+- `Menu Compatibility`: Keeps `/start`, model, and queue menu rendering compatible with Pi settings-manager implementations that do not expose `reload()`. Hosts with reload retain explicit refresh behavior; other hosts use the freshly constructed settings snapshot instead of failing with `settingsManager.reload is not a function`.
+
+## 0.37.0: Journal-Owned Telegram Admission
+
+- `Configuration-Only State`: Moves the per-profile polling cursor out of `telegram.json` into atomic durable journal revisions, including cursor-only initial sync, compaction, reconstruction, and recovery. A journal-first one-shot cutover removes legacy config state idempotently, exact bot/profile fences remain enforced, status reads journal authority, and unsafe downgrade now fails closed.
+
+## 0.36.11: At-Most-Once Prompt Dispatch Hotfix
+
+- `At-Most-Once Prompt Dispatch`: Commits each exact durable Telegram receipt synchronously before Pi model admission and blocks dispatch when that commit fails, closing the session/process-replacement replay window that could deliver an already-processed old prompt again; the narrow commit-before-admission crash boundary now favors no duplicate over retry.
+
+## 0.36.10: Transport-Fenced Typing Hotfix
+
+- `Typing Authority Fence`: Starts and continues Telegram typing activity only while the Pi instance has direct ownership or a live follower registration, stopping quietly when authority disappears so classic takeover cannot re-arm a stale loop or flood diagnostics with expected follower-registration errors.
+
+## 0.36.9: Telegram Status And Generated Controls Hotfix
+
+- `Classic Takeover Status`: Keeps a classic-mode client visibly `disconnected` after another Pi instance takes Telegram ownership, preventing stale transport-side activity errors from overriding the authoritative connection state.
+- `Generated Button Surfaces`: Makes vertical full-width controls the phone-readable default, earns multi-column rows only for compact labels or emoji-only spatial controls, encourages concise semantic labels, and requires safe 2–6 button controls whenever a Telegram reply asks a bounded blocking confirmation or choice instead of leaving an avoidable prose-only feedback step.
+
+## 0.36.8: Durable Journal Recovery
+
+- `Durable Journal Recovery`: Restricts age cleanup to UUID-prefixed downloads, repairs missing or revisionless snapshots from validated segment evidence, and otherwise quarantines the snapshot plus segments before publishing a fresh journal, keeping `/telegram-connect` operational with informational recovery evidence instead of manual JSON repair.
+
 ## 0.36.7: Context-Aware Proactive Controls
 
 - `Proactive Prompt Buttons`: Plans valid top-level `telegram_button` comments before local/autonomous assistant segments enter Rich or HTML proactive delivery, preserving the ordinary callback store and renderer path instead of silently hiding correct controls.

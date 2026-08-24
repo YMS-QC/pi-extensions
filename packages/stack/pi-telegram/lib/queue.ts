@@ -2836,6 +2836,9 @@ export interface TelegramDispatchRuntimeDeps<TContext = unknown> {
     >["item"],
   ) => void;
   onPromptDispatchStart: (chatId: number) => void;
+  commitPromptDispatch?: (
+    item: Extract<TelegramQueueDispatchAction<TContext>, { kind: "prompt" }>["item"],
+  ) => boolean;
   sendUserMessage: (
     content: Extract<
       TelegramQueueDispatchAction,
@@ -2859,6 +2862,10 @@ export interface TelegramQueueDispatchControllerDeps<
   updateStatus: (ctx: TContext, error?: string) => void;
   sendTextReply: TelegramControlRuntimeDeps<TContext>["sendTextReply"];
   onPromptDispatchStart: (ctx: TContext, chatId: number) => void;
+  commitPromptDispatch?: (
+    item: Extract<TelegramQueueDispatchAction<TContext>, { kind: "prompt" }>["item"],
+    ctx: TContext,
+  ) => boolean;
   sendUserMessage: TelegramDispatchRuntimeDeps<TContext>["sendUserMessage"];
   onPromptDispatchFailure: (ctx: TContext, message: string) => void;
   isQueueItemTransportActive?: (item: TelegramQueueItem<TContext>) => boolean;
@@ -2890,6 +2897,9 @@ export function executeTelegramQueueDispatchPlan<TContext = unknown>(
   }
   deps.onPromptDispatchStart(plan.item.chatId);
   try {
+    if (deps.commitPromptDispatch && !deps.commitPromptDispatch(plan.item)) {
+      throw new Error("Telegram prompt dispatch could not be committed durably.");
+    }
     deps.sendUserMessage(plan.item.content);
   } catch (error) {
     const message = getTelegramQueueErrorMessage(error);
@@ -2922,6 +2932,7 @@ export function createTelegramQueueDispatchRuntime<TContext = unknown>(
     updateStatus: deps.updateStatus,
     sendTextReply: deps.sendTextReply,
     onPromptDispatchStart: deps.onPromptDispatchStart,
+    commitPromptDispatch: deps.commitPromptDispatch,
     sendUserMessage: deps.sendUserMessage,
     onPromptDispatchFailure: deps.onPromptDispatchFailure,
     isQueueItemTransportActive: deps.isQueueItemTransportActive,
@@ -3061,6 +3072,9 @@ export function createTelegramQueueDispatchController<TContext = unknown>(
         onPromptDispatchStart: (chatId) => {
           deps.onPromptDispatchStart(ctx, chatId);
         },
+        commitPromptDispatch: deps.commitPromptDispatch
+          ? (item) => deps.commitPromptDispatch!(item, ctx)
+          : undefined,
         sendUserMessage: deps.sendUserMessage,
         onPromptDispatchFailure: (message) => {
           deps.onPromptDispatchFailure(ctx, message);
