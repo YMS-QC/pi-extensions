@@ -18,7 +18,9 @@ for pkg in "${!VENDORS[@]}"; do
   echo "=== $pkg"
   read -r remote branch track <<< "${VENDORS[$pkg]}"
   git fetch "$remote" --tags --quiet 2>/dev/null || { echo "  [skip] fetch $remote 失败"; failed=$((failed+1)); continue; }
-  ref="$remote/$branch"
+  # subtree pull 的 ref 参数是远端侧 refspec：tag 名/分支名合法，
+  # 而 $remote/$branch 是本地 remote-tracking 名，远端不存在同名 ref 会 fetch 失败
+  ref="$branch"
   if [ "$track" = "tag" ]; then
     tag="$(git describe --tags --abbrev=0 "$remote/$branch" 2>/dev/null)" || tag=""
     if [ -n "$tag" ]; then

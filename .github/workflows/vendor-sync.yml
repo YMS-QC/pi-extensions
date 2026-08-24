@@ -115,7 +115,12 @@ jobs:
           for (const p of Object.values(v.packages)) {
             if (p.status !== "changed" || p.verdict !== "adopt") continue;
             const summary = String(p.summary || "").replace(/[^\x20-\x7e]/g, " ").split("`").join(" ").slice(0, 200);
-            console.log([p.name, p.remote, p.resolvedRef || `${p.remote}/${p.branch}`, p.prefix, summary].join("\t"));
+            // resolvedRef 可能是本地 remote-tracking 名（up-x/main），subtree pull 会把它当
+            // 远端 refspec 去 fetch，远端不存在同名 ref。tag 跟踪时 resolvedRef 是 tag 名（远端存在），
+            // 其余情况退回分支名，两者都是合法的远端 refspec。
+            let ref = p.resolvedRef || `${p.remote}/${p.branch}`;
+            if (ref === `${p.remote}/${p.branch}`) ref = p.branch;
+            console.log([p.name, p.remote, ref, p.prefix, summary].join("\t"));
           }' > .vendor-sync/adopt.tsv
           : > .vendor-sync/merge.log
           while IFS=$'\t' read -r name remote ref prefix summary; do
