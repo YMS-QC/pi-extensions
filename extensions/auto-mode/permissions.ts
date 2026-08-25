@@ -8,6 +8,7 @@ import type { ToolPattern } from "./types.ts";
 import {
   expandHomePattern,
   normalizePathForMatch,
+  resolveInputPath,
   resolvePathForPolicy,
   resolveToolInputPath,
 } from "./paths.ts";
@@ -177,36 +178,110 @@ export function matchesWildcardPattern(
   return true;
 }
 
-function getPrimaryArgument(
+export function normalizePermissionPathForMatch(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return platform === "win32" ? path.replace(/\\/g, "/") : path;
+}
+
+function pathArgumentsForMatch(
+  toolName: string,
+  cwd: string,
+  value: string,
+  overflowPolicy: WildcardOverflowPolicy,
+): string[] {
+  const resolved = resolveToolInputPath(toolName, cwd, value) ?? value;
+  const canonical = resolvePathForPolicy(resolved);
+  const candidates = canonical
+    ? [canonical, normalizePathForMatch(canonical, cwd)]
+    : [];
+  if (overflowPolicy === "match") {
+    candidates.push(resolved, normalizePathForMatch(resolved, cwd));
+  }
+  return [...new Set(
+    candidates.map((candidate) => normalizePermissionPathForMatch(candidate)),
+  )];
+}
+
+function getPrimaryArguments(
   toolName: string,
   input: Record<string, unknown>,
   cwd: string,
-): string {
+  overflowPolicy: WildcardOverflowPolicy,
+): string[] {
   if (toolName === "bash" && typeof input.command === "string") {
-    return input.command;
+    return [input.command];
   }
   if (
     (toolName === "read" || toolName === "write" || toolName === "edit") &&
     typeof input.path === "string"
   ) {
-    return normalizePathForMatch(
-      resolveToolInputPath(toolName, cwd, input.path) ?? input.path,
-      cwd,
-    );
+    return pathArgumentsForMatch(toolName, cwd, input.path, overflowPolicy);
   }
   if (toolName === "grep" && typeof input.pattern === "string") {
-    return input.pattern;
+    return [input.pattern];
   }
   if (
     (toolName === "find" || toolName === "ls") &&
     typeof input.path === "string"
   ) {
-    return normalizePathForMatch(
-      resolveToolInputPath(toolName, cwd, input.path) ?? input.path,
-      cwd,
-    );
+    return pathArgumentsForMatch(toolName, cwd, input.path, overflowPolicy);
   }
-  return JSON.stringify(input);
+  return [JSON.stringify(input)];
+}
+
+function isPermissionPathTool(toolName: string): boolean {
+  return toolName === "read" ||
+    toolName === "write" ||
+    toolName === "edit" ||
+    toolName === "find" ||
+    toolName === "ls";
+}
+
+export function appendPermissionPathPatternSuffix(
+  scope: string,
+  suffix: string,
+): string {
+  const normalizedScope = withoutTrailingSlash(
+    normalizePermissionPathForMatch(scope),
+  );
+  return normalizedScope.endsWith("/")
+    ? `${normalizedScope}${suffix}`
+    : `${normalizedScope}/${suffix}`;
+}
+
+function permissionPathPatternVariants(
+  pattern: string,
+  cwd: string,
+): string[] {
+  const expanded = normalizePermissionPathForMatch(expandHomePattern(pattern));
+  const wildcardIndex = expanded.indexOf("*");
+  if (wildcardIndex === -1) {
+    const resolved = resolveInputPath(cwd, expanded);
+    const canonical = resolved ? resolvePathForPolicy(resolved) : undefined;
+    return [...new Set(
+      [expanded, resolved, canonical]
+        .filter((value): value is string => !!value)
+        .map((value) => normalizePermissionPathForMatch(value)),
+    )];
+  }
+
+  const fixedPrefix = expanded.slice(0, wildcardIndex);
+  const lastSlash = fixedPrefix.lastIndexOf("/");
+  if (lastSlash < 0) return [expanded];
+  const fixedScope = fixedPrefix.slice(0, lastSlash) || "/";
+  const resolvedScope = resolveInputPath(cwd, fixedScope);
+  if (!resolvedScope) return [expanded];
+  const canonicalScope = resolvePathForPolicy(resolvedScope);
+  const suffix = expanded.slice(lastSlash).replace(/^\/+/, "");
+  return [...new Set([
+    expanded,
+    appendPermissionPathPatternSuffix(resolvedScope, suffix),
+    ...(canonicalScope
+      ? [appendPermissionPathPatternSuffix(canonicalScope, suffix)]
+      : []),
+  ])];
 }
 
 /**
@@ -309,6 +384,24 @@ function normalizedBashArgumentPattern(pattern: ToolPattern): string {
   return pattern.argumentPattern ?? "";
 }
 
+function matchesBashArgumentPattern(
+  argumentPattern: string,
+  candidate: string,
+  overflowPolicy: WildcardOverflowPolicy,
+): boolean {
+  if (matchesWildcardPattern(argumentPattern, candidate, overflowPolicy)) {
+    return true;
+  }
+  if (overflowPolicy !== "match" || !argumentPattern.endsWith(" *")) {
+    return false;
+  }
+  return matchesWildcardPattern(
+    argumentPattern.slice(0, -2),
+    candidate,
+    overflowPolicy,
+  );
+}
+
 /** Match a scoped permission rule against a concrete tool call. */
 export function matchesToolPattern(
   pattern: ToolPattern,
@@ -318,9 +411,18 @@ export function matchesToolPattern(
   overflowPolicy: WildcardOverflowPolicy = "match",
   bashAnalysis?: BashAnalysis,
 ): boolean {
-  if (!pattern.toolName) return false;
+  if (!pattern.toolName) return overflowPolicy === "match";
   if (pattern.toolName !== normalizeToolName(toolName)) return false;
-  if (!pattern.argumentPattern) return true;
+  if (pattern.argumentPattern === undefined) return true;
+  if (pattern.argumentPattern.trim() === "") {
+    return overflowPolicy === "match";
+  }
+  if (
+    toolName === "bash" &&
+    (bashPatternAnalyses.get(pattern)?.errors.length ?? 0) > 0
+  ) {
+    return overflowPolicy === "match";
+  }
   if (toolName === "bash" && bashAnalysis) {
     if (bashAnalysis.errors.length > 0) return overflowPolicy === "match";
     const candidates = overflowPolicy === "match"
@@ -328,11 +430,23 @@ export function matchesToolPattern(
       : [bashAnalysis.source];
     const argumentPattern = normalizedBashArgumentPattern(pattern);
     return candidates.some((candidate) =>
-      matchesWildcardPattern(argumentPattern, candidate, overflowPolicy)
+      matchesBashArgumentPattern(argumentPattern, candidate, overflowPolicy)
     );
   }
-  const primary = getPrimaryArgument(toolName, input, cwd);
-  return matchesWildcardPattern(pattern.argumentPattern, primary, overflowPolicy);
+  const argumentPatterns = isPermissionPathTool(toolName)
+    ? permissionPathPatternVariants(pattern.argumentPattern, cwd)
+    : [pattern.argumentPattern];
+  const primaryArguments = getPrimaryArguments(
+    toolName,
+    input,
+    cwd,
+    overflowPolicy,
+  );
+  return argumentPatterns.some((argumentPattern) =>
+    primaryArguments.some((primary) =>
+      matchesWildcardPattern(argumentPattern, primary, overflowPolicy)
+    )
+  );
 }
 
 /** Return the normalized Bash command that matched a scoped permission rule. */
@@ -346,10 +460,10 @@ export function matchingBashCommandText(
   if (!pattern.argumentPattern) return undefined;
   const argumentPattern = normalizedBashArgumentPattern(pattern);
   const command = bashAnalysis.commands.find((candidate) =>
-    matchesWildcardPattern(argumentPattern, candidate.text, overflowPolicy)
+    matchesBashArgumentPattern(argumentPattern, candidate.text, overflowPolicy)
   );
   if (command) return command.text;
-  return matchesWildcardPattern(argumentPattern, bashAnalysis.source, overflowPolicy)
+  return matchesBashArgumentPattern(argumentPattern, bashAnalysis.source, overflowPolicy)
     ? bashAnalysis.source
     : undefined;
 }
@@ -478,7 +592,7 @@ export function matchesAllowedToolPatterns(
   }
 
   const hasBareBashPattern = patterns.some((pattern) =>
-    pattern.toolName === "bash" && !pattern.argumentPattern
+    pattern.toolName === "bash" && pattern.argumentPattern === undefined
   );
   if (
     !hasBareBashPattern &&
@@ -490,7 +604,9 @@ export function matchesAllowedToolPatterns(
   return bashAnalysis.commands.every((command) =>
     patterns.some((pattern) => {
       if (pattern.toolName !== "bash") return false;
-      if (!pattern.argumentPattern) return command.redirects.length === 0;
+      if (pattern.argumentPattern === undefined) {
+        return command.redirects.length === 0;
+      }
       const patternAnalysis = bashPatternAnalyses.get(pattern);
       if (
         !patternAnalysis ||

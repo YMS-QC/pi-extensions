@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, parse as parsePath, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
@@ -22,6 +22,7 @@ import {
 	MAX_WILDCARD_PATTERN_LENGTH,
 	PI_GLOBAL_SETTINGS,
 	analyzeBash,
+	appendPermissionPathPatternSuffix,
 	buildClassifierActionMessage,
 	buildClassifierTranscript,
 	buildEffectiveConfigFromSources,
@@ -42,6 +43,7 @@ import {
 	matchesToolPattern,
 	matchesWildcardPattern,
 	modelVisibleConfigDiagnostics,
+	normalizePermissionPathForMatch,
 	newDecisionId,
 	parseClassifierDecision,
 	parseToolPattern,
@@ -937,6 +939,209 @@ test("permission patterns keep argument scope instead of flattening to a tool al
 	const capitalized = parseToolPattern("Bash(git status*)");
 	assert.ok(capitalized);
 	assert.equal(matchesToolPattern(capitalized, "bash", { command: "git status --short" }, process.cwd()), true);
+});
+
+test("malformed permission deny patterns fail closed without broadening allow rules", () => {
+	for (const source of ["bash()", "bash(", 'bash(git push "unterminated)']) {
+		const pattern = parseToolPattern(source);
+		assert.ok(pattern);
+		assert.equal(
+			matchesToolPattern(pattern, "bash", { command: "git status" }, process.cwd(), "match"),
+			true,
+		);
+		assert.equal(
+			matchesToolPattern(pattern, "bash", { command: "git status" }, process.cwd(), "no-match"),
+			false,
+		);
+	}
+});
+
+test("Bash permission denies match chained commands and normalized whitespace", () => {
+	const pattern = parseToolPattern("bash(git push *)");
+	assert.ok(pattern);
+
+	for (const command of ["git status && git push", "git  push"]) {
+		assert.equal(
+			matchesToolPattern(
+				pattern,
+				"bash",
+				{ command },
+				process.cwd(),
+				"match",
+				analyzeBash(command),
+			),
+			true,
+		);
+	}
+});
+
+test(
+	"POSIX permission paths preserve literal backslashes",
+	{ skip: process.platform === "win32" },
+	() => {
+		const base = mkdtempSync(join(os.tmpdir(), "pi-automode-permission-backslash-"));
+		try {
+			mkdirSync(join(base, "safe"));
+			writeFileSync(join(base, "safe", "secret"), "slash");
+			writeFileSync(join(base, String.raw`safe\secret`), "backslash");
+			const slashPattern = parseToolPattern("read(safe/secret)");
+			const backslashPattern = parseToolPattern(String.raw`read(safe\secret)`);
+			assert.ok(slashPattern);
+			assert.ok(backslashPattern);
+
+			for (const policy of ["match", "no-match"] as const) {
+				assert.equal(
+					matchesToolPattern(slashPattern, "read", { path: "safe/secret" }, base, policy),
+					true,
+				);
+				assert.equal(
+					matchesToolPattern(slashPattern, "read", { path: String.raw`safe\secret` }, base, policy),
+					false,
+				);
+				assert.equal(
+					matchesToolPattern(backslashPattern, "read", { path: String.raw`safe\secret` }, base, policy),
+					true,
+				);
+				assert.equal(
+					matchesToolPattern(backslashPattern, "read", { path: "safe/secret" }, base, policy),
+					false,
+				);
+			}
+		} finally {
+			rmSync(base, { recursive: true, force: true });
+		}
+	},
+);
+
+test("permission path candidates normalize Windows separators", () => {
+	const candidate = String.raw`C:\Users\carlo\private\secret.txt`;
+	const normalized = normalizePermissionPathForMatch(candidate, "win32");
+
+	assert.equal(normalized, "C:/Users/carlo/private/secret.txt");
+	assert.equal(matchesWildcardPattern("C:/Users/*/secret.txt", normalized, "match"), true);
+	assert.equal(matchesWildcardPattern("C:/Users/*/secret.txt", normalized, "no-match"), true);
+});
+
+test("permission path suffixes preserve Windows drive roots", () => {
+	assert.equal(appendPermissionPathPatternSuffix("C:/", "*"), "C:/*");
+	assert.equal(appendPermissionPathPatternSuffix("/", "*"), "/*");
+	assert.equal(
+		appendPermissionPathPatternSuffix("C:/Users/carlo", "*/secret"),
+		"C:/Users/carlo/*/secret",
+	);
+});
+
+test(
+	"Windows drive-root junction permission patterns match canonical targets",
+	{ skip: process.platform !== "win32" },
+	() => {
+		const base = mkdtempSync(join(os.tmpdir(), "pi-automode-permission-drive-root-"));
+		try {
+			const driveRoot = parsePath(base).root;
+			const link = join(base, "drive-root-link");
+			symlinkSync(driveRoot, link, "junction");
+			const pattern = parseToolPattern(`read(${link}/*)`);
+			assert.ok(pattern);
+			const input = join(driveRoot, "Windows", "System32", "file");
+
+			for (const policy of ["match", "no-match"] as const) {
+				assert.equal(
+					matchesToolPattern(pattern, "read", { path: input }, base, policy),
+					true,
+				);
+			}
+		} finally {
+			rmSync(base, { recursive: true, force: true });
+		}
+	},
+);
+
+test("relative permission path patterns resolve against the session cwd", () => {
+	const base = mkdtempSync(join(os.tmpdir(), "pi-automode-permission-cwd-"));
+	try {
+		const processDir = join(base, "process");
+		const sessionDir = join(base, "session");
+		const processTarget = join(base, "process-target");
+		const sessionTarget = join(base, "session-target");
+		for (const path of [processDir, sessionDir, processTarget, sessionTarget]) {
+			mkdirSync(path);
+		}
+		symlinkSync(processTarget, join(processDir, "safe"));
+		symlinkSync(sessionTarget, join(sessionDir, "safe"));
+		const processSecret = join(processTarget, "secret.txt");
+		const sessionSecret = join(sessionTarget, "secret.txt");
+		writeFileSync(processSecret, "process");
+		writeFileSync(sessionSecret, "session");
+
+		const moduleUrl = pathToFileURL(join(process.cwd(), "extensions/auto-mode.ts")).href;
+		const script = `
+			import { matchesToolPattern, parseToolPattern } from ${JSON.stringify(moduleUrl)};
+			process.chdir(${JSON.stringify(processDir)});
+			const pattern = parseToolPattern("read(safe/*)");
+			if (!pattern) throw new Error("pattern did not parse");
+			console.log(JSON.stringify({
+				processDeny: matchesToolPattern(pattern, "read", { path: ${JSON.stringify(processSecret)} }, ${JSON.stringify(sessionDir)}, "match"),
+				processAllow: matchesToolPattern(pattern, "read", { path: ${JSON.stringify(processSecret)} }, ${JSON.stringify(sessionDir)}, "no-match"),
+				sessionDeny: matchesToolPattern(pattern, "read", { path: ${JSON.stringify(sessionSecret)} }, ${JSON.stringify(sessionDir)}, "match"),
+				sessionAllow: matchesToolPattern(pattern, "read", { path: ${JSON.stringify(sessionSecret)} }, ${JSON.stringify(sessionDir)}, "no-match"),
+			}));
+		`;
+		const result = spawnSync(
+			process.execPath,
+			["--import", "tsx", "--input-type=module", "-e", script],
+			{ cwd: process.cwd(), encoding: "utf8" },
+		);
+
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(JSON.parse(result.stdout), {
+			processDeny: false,
+			processAllow: false,
+			sessionDeny: true,
+			sessionAllow: true,
+		});
+	} finally {
+		rmSync(base, { recursive: true, force: true });
+	}
+});
+
+test("path permission rules match canonical symlink targets", () => {
+	const base = mkdtempSync(join(os.tmpdir(), "pi-automode-permission-symlink-"));
+	try {
+		const target = join(base, "secret.txt");
+		const link = join(base, "public.txt");
+		writeFileSync(target, "secret");
+		symlinkSync(target, link);
+		const pattern = parseToolPattern(`read(${target})`);
+		assert.ok(pattern);
+
+		for (const policy of ["match", "no-match"] as const) {
+			assert.equal(
+				matchesToolPattern(pattern, "read", { path: link }, base, policy),
+				true,
+			);
+		}
+	} finally {
+		rmSync(base, { recursive: true, force: true });
+	}
+});
+
+test("path permission rules normalize file URLs before matching", () => {
+	const path = join(os.tmpdir(), "pi-automode-permission-secret.txt");
+	const pattern = parseToolPattern(`read(${path})`);
+	assert.ok(pattern);
+
+	for (const policy of ["match", "no-match"] as const) {
+		assert.equal(
+			matchesToolPattern(
+				pattern,
+				"read",
+				{ path: pathToFileURL(path).href },
+				process.cwd(),
+				policy,
+			),
+			true,
+		);
+	}
 });
 
 test("matchingBashCommandText reports the specific nested command match", () => {
@@ -2585,6 +2790,85 @@ test("tool_call hook blocks permissions.deny before deterministic checks and cla
 	assert.equal(result.block, true);
 	assert.match(result.reason ?? "", /permissions\.deny/);
 	assert.equal(harness.classifierCalls, 0);
+});
+
+test("tool_call hook fails closed for malformed permission denies", async () => {
+	const pattern = parseToolPattern('bash(git push "unterminated)');
+	assert.ok(pattern);
+	const harness = await setupHookTest({
+		config: baseConfig({ permissionDeny: [pattern] }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "bash",
+		input: { command: "git status" },
+	}, harness.ctx) as { block?: boolean; reason?: string };
+
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /permissions\.deny/);
+	assert.equal(harness.classifierCalls, 0);
+});
+
+test("tool_call path denies resolve symlinks and file URLs", async () => {
+	const base = mkdtempSync(join(os.tmpdir(), "pi-automode-permission-hook-"));
+	try {
+		const target = join(base, "secret.txt");
+		const link = join(base, "public.txt");
+		writeFileSync(target, "secret");
+		symlinkSync(target, link);
+		const pattern = parseToolPattern(`read(${target})`);
+		assert.ok(pattern);
+		const ctx = createFakeCtx([], { cwd: base });
+		const harness = await setupHookTest({
+			config: baseConfig({ permissionDeny: [pattern] }),
+			ctx,
+		});
+
+		for (const path of [link, pathToFileURL(target).href]) {
+			const result = await harness.emit("tool_call", {
+				toolName: "read",
+				input: { path },
+			}, harness.ctx) as { block?: boolean; reason?: string };
+
+			assert.equal(result.block, true, path);
+			assert.match(result.reason ?? "", /permissions\.deny/, path);
+		}
+		assert.equal(harness.classifierCalls, 0);
+	} finally {
+		rmSync(base, { recursive: true, force: true });
+	}
+});
+
+test("tool_call path allows resolve symlinks and file URLs", async () => {
+	const base = mkdtempSync(join(os.tmpdir(), "pi-automode-permission-allow-hook-"));
+	try {
+		const target = join(base, "allowed.txt");
+		const link = join(base, "link.txt");
+		writeFileSync(target, "allowed");
+		symlinkSync(target, link);
+		const pattern = parseToolPattern(`read(${target})`);
+		assert.ok(pattern);
+		const ctx = createFakeCtx([], { cwd: base });
+		const harness = await setupHookTest({
+			config: baseConfig({
+				classifyReadOnlyTools: true,
+				permissionAllow: [pattern],
+			}),
+			ctx,
+		});
+
+		for (const path of [link, pathToFileURL(target).href]) {
+			const result = await harness.emit("tool_call", {
+				toolName: "read",
+				input: { path },
+			}, harness.ctx);
+
+			assert.equal(result, undefined, path);
+		}
+		assert.equal(harness.classifierCalls, 0);
+	} finally {
+		rmSync(base, { recursive: true, force: true });
+	}
 });
 
 test("tool_call hook runs deterministic hard-deny before classifier", async () => {
