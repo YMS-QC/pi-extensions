@@ -39,8 +39,8 @@ pi -e ./extensions/auto-mode.ts
 /automode defaults  # print the built-in rule lists
 /automode config    # effective config, resolved log file path, + diagnostics
 /automode denials   # denial history for this session
-/automode model     # open classifier model selector and save to ~/.pi/agent/automode.json
-/automode model provider/model-id # save classifier model to ~/.pi/agent/automode.json
+/automode model     # open classifier model selector and save to ~/.pi/agent/extensions/pi-automode/config.json
+/automode model provider/model-id # save classifier model to ~/.pi/agent/extensions/pi-automode/config.json
 ```
 
 `/auto-mode` is an alias.

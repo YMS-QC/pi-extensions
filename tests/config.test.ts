@@ -1,4 +1,16 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+	chmodSync,
+	existsSync,
+	linkSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,10 +23,12 @@ import {
 	DEFAULT_MAX_USER_TRANSCRIPT_TOKENS,
 	DEFAULT_SOFT_DENY,
 	PI_GLOBAL_SETTINGS,
+	PI_LEGACY_GLOBAL_SETTINGS,
 	buildEffectiveConfigFromSources,
 	createPiAutomode,
 	loadEffectiveConfigWithDiagnostics,
 	modelVisibleConfigDiagnostics,
+	prepareGlobalConfig,
 	validateSettingsFile,
 	writeGlobalClassifierModel,
 } from "../extensions/auto-mode.ts";
@@ -43,8 +57,465 @@ test("automode exposes one read-only inspection tool", () => {
 	assert.deepEqual([...fake.commands.keys()], ["automode", "auto-mode"]);
 });
 
-test("global config path uses Pi agent config directory", () => {
-	assert.match(PI_GLOBAL_SETTINGS[0] ?? "", /\.pi\/agent\/automode\.json$/);
+test("global config path uses the extension data directory", () => {
+	assert.match(
+		PI_GLOBAL_SETTINGS[0] ?? "",
+		/\.pi\/agent\/extensions\/pi-automode\/config\.json$/,
+	);
+	assert.match(PI_LEGACY_GLOBAL_SETTINGS, /\.pi\/agent\/automode\.json$/);
+});
+
+test("importing the extension does not migrate global config", () => {
+	const home = mkdtempSync(join(os.tmpdir(), "pi-automode-config-import-"));
+	try {
+		const legacyPath = join(home, ".pi/agent/automode.json");
+		const currentPath = join(
+			home,
+			".pi/agent/extensions/pi-automode/config.json",
+		);
+		mkdirSync(join(home, ".pi/agent"), { recursive: true });
+		writeFileSync(legacyPath, "{}\n");
+
+		const imported = spawnSync(
+			process.execPath,
+			[
+				"--import",
+				"tsx",
+				"--input-type=module",
+				"--eval",
+				'import os from "node:os"; if (os.homedir() !== process.env.HOME) process.exit(3); await import("./extensions/auto-mode.ts")',
+			],
+			{
+				cwd: process.cwd(),
+				env: { ...process.env, HOME: home, USERPROFILE: home },
+				encoding: "utf8",
+			},
+		);
+
+		assert.equal(imported.status, 0, imported.stderr);
+		assert.equal(existsSync(legacyPath), true);
+		assert.equal(existsSync(currentPath), false);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("createPiAutomode delays global config preparation until registration", () => {
+	let preparations = 0;
+	const register = createPiAutomode({
+		prepareGlobalConfig() {
+			preparations++;
+			return { status: "current", activePath: "/tmp/config.json" };
+		},
+		loadConfig: () => baseConfig(),
+	});
+	assert.equal(preparations, 0);
+
+	register(createFakePi().pi);
+	assert.equal(preparations, 1);
+});
+
+test("prepareGlobalConfig moves a legacy config without changing its data", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-migrate-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		const source = '{\n  "autoMode": { "enabled": false }\n}\n';
+		writeFileSync(legacyPath, source);
+		chmodSync(legacyPath, 0o640);
+
+		const result = prepareGlobalConfig({ currentPath, legacyPath });
+
+		assert.equal(result.status, "migrated");
+		assert.equal(result.activePath, currentPath);
+		assert.equal(existsSync(legacyPath), false);
+		assert.equal(readFileSync(currentPath, "utf8"), source);
+		if (process.platform !== "win32") {
+			assert.equal(statSync(currentPath).mode & 0o777, 0o640);
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("prepareGlobalConfig prefers the new config and leaves a legacy conflict untouched", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-conflict-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		mkdirSync(join(dir, "extensions/pi-automode"), { recursive: true });
+		writeFileSync(legacyPath, "legacy\n");
+		writeFileSync(currentPath, "current\n");
+
+		const result = prepareGlobalConfig({ currentPath, legacyPath });
+
+		assert.equal(result.status, "conflict");
+		assert.equal(result.activePath, currentPath);
+		assert.match(result.diagnostic ?? "", /legacy.*ignored/i);
+		assert.equal(readFileSync(legacyPath, "utf8"), "legacy\n");
+		assert.equal(readFileSync(currentPath, "utf8"), "current\n");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("prepareGlobalConfig removes the published target when source unlink fails", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-unlink-failure-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		writeFileSync(legacyPath, JSON.stringify({ autoMode: { enabled: true } }));
+
+		const result = prepareGlobalConfig({
+			currentPath,
+			legacyPath,
+			unlinkFile(path) {
+				if (path === legacyPath) throw new Error("source unlink failed");
+				unlinkSync(path);
+			},
+		});
+
+		assert.equal(result.status, "failed");
+		assert.equal(result.activePath, legacyPath);
+		assert.equal(existsSync(legacyPath), true);
+		assert.equal(existsSync(currentPath), false);
+
+		writeGlobalClassifierModel("test/legacy-only", result.activePath);
+		assert.equal(existsSync(currentPath), false);
+		assert.equal(
+			JSON.parse(readFileSync(legacyPath, "utf8")).autoMode.classifierModel,
+			"test/legacy-only",
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("rollback failure keeps the extension registered and blocks config writes", async () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-rollback-failure-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		writeFileSync(legacyPath, JSON.stringify({ autoMode: { enabled: true } }));
+
+		const selection = prepareGlobalConfig({
+			currentPath,
+			legacyPath,
+			unlinkFile() {
+				throw new Error("unlink denied");
+			},
+		});
+
+		assert.equal(selection.status, "failed");
+		assert.equal(selection.activePath, legacyPath);
+		assert.match(selection.writeBlockedReason ?? "", /clean up interrupted/i);
+		assert.equal(statSync(legacyPath).ino, statSync(currentPath).ino);
+
+		let saved: string | undefined;
+		const fake = createFakePi();
+		assert.doesNotThrow(() => {
+			createPiAutomode({
+				prepareGlobalConfig: () => selection,
+				loadConfig: () => baseConfig(),
+				saveClassifierModel(classifierModel) {
+					saved = classifierModel;
+				},
+			})(fake.pi);
+		});
+		const ctx = createFakeCtx(fake.entries, { cwd: dir });
+		await fake.emit("session_start", { type: "session_start" }, ctx);
+
+		await fake.commands.get("automode")?.handler("model test/classifier", ctx);
+
+		assert.equal(saved, undefined);
+		assert.match(
+			ctx.notifications.at(-1)?.message ?? "",
+			/global config writes are disabled|clean up interrupted/i,
+		);
+		assert.equal(ctx.notifications.at(-1)?.type, "error");
+
+		const blocked = await fake.emit("tool_call", {
+			toolName: "write",
+			input: { path: ".pi/automode.local.json", content: "{}\n" },
+		}, ctx) as { block?: boolean; reason?: string };
+		assert.equal(blocked.block, true);
+		assert.match(blocked.reason ?? "", /safety-control/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("prepareGlobalConfig completes an interrupted same-inode migration", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-interrupted-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		mkdirSync(join(dir, "extensions/pi-automode"), { recursive: true });
+		writeFileSync(legacyPath, JSON.stringify({ autoMode: { enabled: true } }));
+		linkSync(legacyPath, currentPath);
+		assert.equal(statSync(legacyPath).ino, statSync(currentPath).ino);
+
+		const result = prepareGlobalConfig({ currentPath, legacyPath });
+
+		assert.equal(result.status, "migrated");
+		assert.equal(result.activePath, currentPath);
+		assert.equal(existsSync(legacyPath), false);
+		assert.equal(existsSync(currentPath), true);
+
+		writeGlobalClassifierModel("test/current-only", result.activePath);
+		assert.equal(existsSync(legacyPath), false);
+		assert.equal(
+			JSON.parse(readFileSync(currentPath, "utf8")).autoMode.classifierModel,
+			"test/current-only",
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("prepareGlobalConfig treats a concurrently created target as a conflict", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-race-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		writeFileSync(legacyPath, "legacy\n");
+
+		const result = prepareGlobalConfig({
+			currentPath,
+			legacyPath,
+			moveFile() {
+				writeFileSync(currentPath, "current\n");
+				throw new Error("target appeared");
+			},
+		});
+
+		assert.equal(result.status, "conflict");
+		assert.equal(result.activePath, currentPath);
+		assert.equal(readFileSync(legacyPath, "utf8"), "legacy\n");
+		assert.equal(readFileSync(currentPath, "utf8"), "current\n");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("prepareGlobalConfig keeps the legacy path active after a migration error", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-failure-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		writeFileSync(legacyPath, "legacy\n");
+
+		const result = prepareGlobalConfig({
+			currentPath,
+			legacyPath,
+			moveFile() {
+				throw new Error("read-only target");
+			},
+		});
+
+		assert.equal(result.status, "failed");
+		assert.equal(result.activePath, legacyPath);
+		assert.match(result.diagnostic ?? "", /read-only target/);
+		assert.equal(readFileSync(legacyPath, "utf8"), "legacy\n");
+		assert.equal(existsSync(currentPath), false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("prepareGlobalConfig selects the new path when neither config exists", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-empty-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		assert.deepEqual(prepareGlobalConfig({ currentPath, legacyPath }), {
+			status: "current",
+			activePath: currentPath,
+		});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("config loading and classifier-model writes use an explicit active global path", () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-active-"));
+	const previousInlineSettings = process.env.PI_AUTOMODE_SETTINGS_JSON;
+	delete process.env.PI_AUTOMODE_SETTINGS_JSON;
+	try {
+		const activePath = join(dir, "active.json");
+		writeFileSync(activePath, JSON.stringify({
+			autoMode: { classifierModel: "test/active" },
+		}));
+
+		const loaded = loadEffectiveConfigWithDiagnostics(dir, false, activePath);
+		assert.equal(loaded.config.classifierModel, "test/active");
+
+		writeGlobalClassifierModel("test/updated", activePath);
+		assert.equal(
+			JSON.parse(readFileSync(activePath, "utf8")).autoMode.classifierModel,
+			"test/updated",
+		);
+	} finally {
+		if (previousInlineSettings === undefined) {
+			delete process.env.PI_AUTOMODE_SETTINGS_JSON;
+		} else {
+			process.env.PI_AUTOMODE_SETTINGS_JSON = previousInlineSettings;
+		}
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("automode model writes the new global path when no config exists", async () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-new-write-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		const selection = prepareGlobalConfig({ currentPath, legacyPath });
+		const fake = createFakePi();
+		createPiAutomode({
+			prepareGlobalConfig: () => selection,
+			loadConfig: () => baseConfig(),
+		})(fake.pi);
+		const ctx = createFakeCtx(fake.entries);
+		await fake.emit("session_start", { type: "session_start" }, ctx);
+
+		await fake.commands.get("automode")?.handler("model test/classifier", ctx);
+
+		assert.equal(existsSync(legacyPath), false);
+		assert.equal(
+			JSON.parse(readFileSync(currentPath, "utf8")).autoMode.classifierModel,
+			"test/classifier",
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("extension loads the migrated global config before session_start", async () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-initial-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		writeFileSync(legacyPath, JSON.stringify({
+			autoMode: { classifierModel: "test/migrated" },
+		}));
+		const selection = prepareGlobalConfig({ currentPath, legacyPath });
+		const fake = createFakePi();
+		createPiAutomode({ prepareGlobalConfig: () => selection })(fake.pi);
+
+		const inspected = await fake.tools.get("automode_inspect")?.execute(
+			"call-initial-migrated-config",
+			{ action: "config" },
+			undefined,
+			undefined,
+			createFakeCtx(fake.entries),
+		) as { details: { config: { classifierModel?: string } } };
+
+		assert.equal(inspected.details.config.classifierModel, "test/migrated");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("extension migration status controls notifications, diagnostics, and model writes", async () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-runtime-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		writeFileSync(legacyPath, JSON.stringify({ autoMode: { enabled: true } }));
+		const selection = prepareGlobalConfig({
+			currentPath,
+			legacyPath,
+			moveFile() {
+				throw new Error("target unavailable");
+			},
+		});
+		const fake = createFakePi();
+		createPiAutomode({
+			prepareGlobalConfig: () => selection,
+			loadConfig: () => baseConfig(),
+		})(fake.pi);
+		const ctx = createFakeCtx(fake.entries);
+
+		await fake.emit("session_start", { type: "session_start" }, ctx);
+		await fake.emit("session_start", { type: "session_start" }, ctx);
+		assert.equal(ctx.notifications.length, 1);
+		assert.equal(ctx.notifications[0]?.type, "warning");
+		assert.match(ctx.notifications[0]?.message ?? "", /target unavailable/);
+
+		const inspected = await fake.tools.get("automode_inspect")?.execute(
+			"call-config-migration",
+			{ action: "config" },
+			undefined,
+			undefined,
+			ctx,
+		) as { details: { diagnostics: string[] } };
+		assert.match(inspected.details.diagnostics.join("\n"), /target unavailable/);
+
+		await fake.commands.get("automode")?.handler("model test/classifier", ctx);
+		assert.equal(
+			JSON.parse(readFileSync(legacyPath, "utf8")).autoMode.classifierModel,
+			"test/classifier",
+		);
+		assert.equal(existsSync(currentPath), false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("global config conflicts warn once in each extension runtime", async () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-conflict-notice-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		mkdirSync(join(dir, "extensions/pi-automode"), { recursive: true });
+		writeFileSync(legacyPath, "{}\n");
+		writeFileSync(currentPath, "{}\n");
+		const selection = prepareGlobalConfig({ currentPath, legacyPath });
+
+		for (let runtime = 0; runtime < 2; runtime++) {
+			const fake = createFakePi();
+			createPiAutomode({
+				prepareGlobalConfig: () => selection,
+				loadConfig: () => baseConfig(),
+			})(fake.pi);
+			const ctx = createFakeCtx(fake.entries);
+			await fake.emit("session_start", { type: "session_start" }, ctx);
+			await fake.emit("session_start", { type: "session_start" }, ctx);
+			assert.equal(ctx.notifications.length, 1);
+			assert.equal(ctx.notifications[0]?.type, "warning");
+			assert.match(ctx.notifications[0]?.message ?? "", /conflict/i);
+			assert.match(ctx.notifications[0]?.message ?? "", new RegExp(legacyPath));
+			assert.match(ctx.notifications[0]?.message ?? "", new RegExp(currentPath));
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("successful global config migration produces one UI notification", async () => {
+	const dir = mkdtempSync(join(os.tmpdir(), "pi-automode-config-notice-"));
+	try {
+		const legacyPath = join(dir, "automode.json");
+		const currentPath = join(dir, "extensions/pi-automode/config.json");
+		writeFileSync(legacyPath, "{}\n");
+		const selection = prepareGlobalConfig({ currentPath, legacyPath });
+		const fake = createFakePi();
+		createPiAutomode({
+			prepareGlobalConfig: () => selection,
+			loadConfig: () => baseConfig(),
+		})(fake.pi);
+		const ctx = createFakeCtx(fake.entries);
+
+		await fake.emit("session_start", { type: "session_start" }, ctx);
+		await fake.emit("session_start", { type: "session_start" }, ctx);
+
+		assert.equal(ctx.notifications.length, 1);
+		assert.equal(ctx.notifications[0]?.type, "info");
+		assert.match(ctx.notifications[0]?.message ?? "", /moved/i);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("disk config ignores all project files until the project is trusted", () => {

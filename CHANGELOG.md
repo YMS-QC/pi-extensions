@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file.
 ## New features
 
 - **Bash AST analysis** — Replace handwritten shell parsing with `unbash`. Permission and hard-deny checks now inspect command structure, nested commands, wrappers, redirects, and malformed input. Bash allow rules require complete structural coverage and fail closed when analysis is unsafe. (#26)
+- **Extension-owned global config** — Store global settings at `~/.pi/agent/extensions/pi-automode/config.json`. Migrate the legacy file automatically, preserve a safe fallback after migration errors, and report conflicts through notifications and diagnostics. (#27)
 
 ## Bug fixes
 

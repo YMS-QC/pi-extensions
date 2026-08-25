@@ -24,6 +24,7 @@ test("deterministic hard deny protects global Pi extensions and settings", () =>
 	const agentDir = join(os.homedir(), ".pi/agent");
 	for (const path of [
 		join(agentDir, "extensions/auto-mode.ts"),
+		join(agentDir, "extensions/pi-automode/config.json"),
 		join(os.homedir(), ".PI/AGENT/EXTENSIONS/auto-mode.ts"),
 		join(agentDir, "settings.json"),
 		join(agentDir, "settings/providers.json"),

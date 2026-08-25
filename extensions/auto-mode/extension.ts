@@ -22,10 +22,13 @@ import {
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_SOFT_DENY,
   PATH_BEARING_TOOLS,
+  PI_GLOBAL_SETTINGS,
   READ_ONLY_TOOLS,
 } from "./constants.ts";
 import {
+  type GlobalConfigPreparation,
   loadEffectiveConfigWithDiagnostics,
+  prepareGlobalConfig,
   writeGlobalClassifierModel,
 } from "./config.ts";
 import { deterministicHardDeny } from "./hard-deny.ts";
@@ -109,8 +112,10 @@ export type PiAutomodeOptions = {
   loadConfig?: (cwd: string, projectTrusted: boolean) => EffectiveConfig;
   /** Override classifier calls in tests so unit tests never need a real LLM/API key. */
   classifyAction?: ClassifyAction;
-  /** Override classifier-model persistence in tests. Runtime code writes ~/.pi/agent/automode.json. */
+  /** Override classifier-model persistence in tests. Runtime code writes the active global config. */
   saveClassifierModel?: (classifierModel: string) => void;
+  /** Override global config migration and path selection in tests. */
+  prepareGlobalConfig?: () => GlobalConfigPreparation;
   /** Override the application-owned observability log root in tests. */
   logRoot?: string;
   /** Override the observability log clock in tests. */
@@ -166,18 +171,43 @@ function logClassifierIo(decision: ClassifyResult, log: LogCtx): void {
 
 /** Create a Pi extension instance. Default export uses production dependencies. */
 export function createPiAutomode(options: PiAutomodeOptions = {}) {
-  const loadConfigWithDiagnostics = options.loadConfig
-    ? (cwd: string, projectTrusted: boolean): ConfigLoadResult => ({
-      config: options.loadConfig!(cwd, projectTrusted),
-      diagnostics: [],
-    })
-    : loadEffectiveConfigWithDiagnostics;
   const classify = options.classifyAction ?? defaultClassifyAction;
-  const saveClassifierModel = options.saveClassifierModel ??
-    writeGlobalClassifierModel;
   const now = options.now ?? (() => new Date());
 
   return function piAutomode(pi: ExtensionAPI) {
+    const globalConfig = options.prepareGlobalConfig?.() ??
+      (options.loadConfig
+        ? { status: "current" as const, activePath: PI_GLOBAL_SETTINGS[0] }
+        : prepareGlobalConfig());
+    const loadConfigWithDiagnostics = (
+      cwd: string,
+      projectTrusted: boolean,
+    ): ConfigLoadResult => {
+      const result = options.loadConfig
+        ? {
+          config: options.loadConfig(cwd, projectTrusted),
+          diagnostics: [],
+        }
+        : loadEffectiveConfigWithDiagnostics(
+          cwd,
+          projectTrusted,
+          globalConfig.activePath,
+        );
+      return globalConfig.diagnostic
+        ? {
+          ...result,
+          diagnostics: [...result.diagnostics, globalConfig.diagnostic],
+        }
+        : result;
+    };
+    const persistClassifierModel = options.saveClassifierModel ??
+      ((classifierModel: string) =>
+        writeGlobalClassifierModel(classifierModel, globalConfig.activePath));
+    const saveClassifierModel = globalConfig.writeBlockedReason
+      ? (_classifierModel: string) => {
+        throw new Error(globalConfig.writeBlockedReason);
+      }
+      : persistClassifierModel;
     let loadResult = loadConfigWithDiagnostics(process.cwd(), false);
     let config: EffectiveConfig = loadResult.config;
     let configDiagnostics: string[] = loadResult.diagnostics;
@@ -189,6 +219,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       recentDenials: [],
     };
     let loadedContext = "";
+    let globalConfigNoticeShown = false;
 
     function effectiveConfig(): EffectiveConfig {
       return {
@@ -367,6 +398,17 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       config = loadResult.config;
       configDiagnostics = loadResult.diagnostics;
       state = restoreState(ctx);
+      if (
+        ctx.hasUI &&
+        globalConfig.notification &&
+        !globalConfigNoticeShown
+      ) {
+        ctx.ui.notify(
+          globalConfig.notification,
+          globalConfig.status === "migrated" ? "info" : "warning",
+        );
+        globalConfigNoticeShown = true;
+      }
       updateUi(ctx);
     });
 
