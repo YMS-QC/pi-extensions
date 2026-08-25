@@ -232,8 +232,24 @@ export function isProtectedPath(
 }
 
 export function isSafetyControlPath(path: string, cwd: string): boolean {
-  const normalized = path.replace(/\\/g, "/");
-  const file = basename(normalized).toLowerCase();
+  const policyPath = resolvePathForPolicy(path) ?? resolve(path);
+  const policyCwd = resolvePathForPolicy(cwd) ?? resolve(cwd);
+  const normalized = normalizeProtectedPathForMatch(policyPath);
+  const file = basename(normalized);
+  const piAgentRoot = normalizeProtectedPathForMatch(
+    resolve(HOME, ".pi/agent"),
+  );
+  const globalExtensions = `${piAgentRoot}/extensions`;
+  const globalSettings = `${piAgentRoot}/settings`;
+  if (
+    normalized === `${piAgentRoot}/settings.json` ||
+    normalized === globalExtensions ||
+    normalized.startsWith(`${globalExtensions}/`) ||
+    normalized === globalSettings ||
+    normalized.startsWith(`${globalSettings}/`)
+  ) {
+    return true;
+  }
   if (
     normalized.endsWith("/.pi/auto-mode.json") ||
     normalized.endsWith("/auto-mode.json")
@@ -246,7 +262,7 @@ export function isSafetyControlPath(path: string, cwd: string): boolean {
   if (normalized.includes("/.pi/") && file.startsWith("automode")) return true;
   if (
     normalized.includes("/pi-automode/") ||
-    (isInside(path, cwd) && file.includes("auto-mode"))
+    (isInside(policyPath, policyCwd) && file.includes("auto-mode"))
   ) {
     return true;
   }

@@ -1481,6 +1481,57 @@ test("deterministic hard deny catches safety-control edits", () => {
 	);
 });
 
+test("deterministic hard deny protects global Pi extensions and settings", () => {
+	const agentDir = join(os.homedir(), ".pi/agent");
+	for (const path of [
+		join(agentDir, "extensions/auto-mode.ts"),
+		join(os.homedir(), ".PI/AGENT/EXTENSIONS/auto-mode.ts"),
+		join(agentDir, "settings.json"),
+		join(agentDir, "settings/providers.json"),
+	]) {
+		assert.match(
+			deterministicHardDeny("write", { path }, "/tmp/project") ?? "",
+			/safety-control/,
+			path,
+		);
+	}
+	assert.match(
+		deterministicHardDeny(
+			"edit",
+			{ path: join(agentDir, "settings.json") },
+			"/tmp/project",
+		) ?? "",
+		/safety-control/,
+	);
+
+	assert.equal(
+		deterministicHardDeny(
+			"write",
+			{ path: "/tmp/project/src/app.ts" },
+			"/tmp/project",
+		),
+		undefined,
+	);
+});
+
+test("deterministic hard deny resolves symlinks to global Pi extensions", () => {
+	const project = mkdtempSync(join(os.tmpdir(), "pi-automode-global-extension-link-"));
+	try {
+		const link = join(project, "linked-extensions");
+		symlinkSync(join(os.homedir(), ".pi/agent/extensions"), link);
+		assert.match(
+			deterministicHardDeny(
+				"write",
+				{ path: join(link, "auto-mode.ts") },
+				project,
+			) ?? "",
+			/safety-control/,
+		);
+	} finally {
+		rmSync(project, { recursive: true, force: true });
+	}
+});
+
 test("deterministic hard deny catches TLS weakening and authorized_keys writes", () => {
 	assert.match(
 		deterministicHardDeny("bash", { command: "git config --global http.sslVerify false" }, process.cwd()) ?? "",
@@ -3760,23 +3811,46 @@ test("permissions.allow does not cover protected in-tree writes", async () => {
 			classifier: async () => ({ decision: "block", tier: "soft_deny", reason: "protected hook write" }),
 		});
 
-		const blocked = await harness.emit("tool_call", {
-			toolName: "write",
-			input: { path: ".git/hooks/pre-commit", content: "#!/bin/sh\n" },
-		}, harness.ctx) as { block?: boolean; reason?: string };
-		assert.equal(blocked.block, true);
-		assert.match(blocked.reason ?? "", /protected hook write/);
-		assert.equal(harness.classifierCalls, 1);
+		for (const path of [".git/hooks/pre-commit", ".pi/project-state.json"]) {
+			const blocked = await harness.emit("tool_call", {
+				toolName: "write",
+				input: { path, content: "protected\n" },
+			}, harness.ctx) as { block?: boolean; reason?: string };
+			assert.equal(blocked.block, true);
+			assert.match(blocked.reason ?? "", /protected hook write/);
+		}
+		assert.equal(harness.classifierCalls, 2);
 
 		const allowed = await harness.emit("tool_call", {
 			toolName: "write",
 			input: { path: "src/app.ts", content: "export const x = 1;\n" },
 		}, harness.ctx);
 		assert.equal(allowed, undefined);
-		assert.equal(harness.classifierCalls, 1);
+		assert.equal(harness.classifierCalls, 2);
 	} finally {
 		rmSync(project, { recursive: true, force: true });
 	}
+});
+
+test("global Pi extension writes are hard-denied before permissions.allow", async () => {
+	const pattern = parseToolPattern("write(*)");
+	assert.ok(pattern);
+	const harness = await setupHookTest({
+		config: baseConfig({ permissionAllow: [pattern] }),
+		classifier: async () => ({ decision: "allow", tier: "allow", reason: "would allow" }),
+	});
+
+	const result = await harness.emit("tool_call", {
+		toolName: "write",
+		input: {
+			path: join(os.homedir(), ".pi/agent/extensions/auto-mode.ts"),
+			content: "export default false;\n",
+		},
+	}, harness.ctx) as { block?: boolean; reason?: string };
+
+	assert.equal(result.block, true);
+	assert.match(result.reason ?? "", /safety-control/);
+	assert.equal(harness.classifierCalls, 0);
 });
 
 test("permissions.allow does not cover case-variant protected writes", async () => {
