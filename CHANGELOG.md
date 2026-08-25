@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [1.13.0] - 2026-08-25
 
 ## New features
 
@@ -14,6 +14,7 @@ All notable changes to this project are documented in this file.
 - **Conservative permission rules** — Malformed deny and ask patterns block actions. Malformed patterns do not expand allow rules. Permission checks examine each Bash subcommand and normalize whitespace. Path checks resolve symlinks and normalize `file://` and Windows paths. (#22)
 - **Recursive deletion hard-deny** — Detect uppercase flags and GNU abbreviations for recursive `rm`, including commands behind `command`, `exec`, and `env`. Parse the `--` delimiter and shell tilde expansion. Protect Linux and macOS system roots without blocking active-home subdirectories, `/opt`, or `/srv`. (#23)
 - **Global Pi safety-control paths** — Hard-deny direct writes and edits to `~/.pi/agent/extensions/`, `~/.pi/agent/settings.json`, and `~/.pi/agent/settings/`. Resolve case variants and symlink targets before matching. (#24)
+- **Case-insensitive protected paths** — Match protected paths without case distinctions and normalize Unicode spellings. This closes path bypasses on case-insensitive filesystems. (#25)
 
 ## [1.12.0] - 2026-08-23
 
@@ -34,5 +35,5 @@ All notable changes to this project are documented in this file.
 - **Project config trust gate** — Ignore `.pi/automode.local.json` and `.pi/automode.json` until Pi trusts the project. Apply the trust gate during startup and config reloads. (#16)
 - **In-memory observability logs** — Write logs to an extension-owned directory (`~/.pi/agent/extensions/pi-automode/logs/`) instead of the launching project directory. Thanks, @HerbertGao! (#13)
 
-[Unreleased]: https://github.com/czottmann/pi-automode/compare/v1.12.0...HEAD
+[1.13.0]: https://github.com/czottmann/pi-automode/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/czottmann/pi-automode/compare/v1.11.0...v1.12.0
