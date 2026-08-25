@@ -3779,6 +3779,33 @@ test("permissions.allow does not cover protected in-tree writes", async () => {
 	}
 });
 
+test("permissions.allow does not cover case-variant protected writes", async () => {
+	const pattern = parseToolPattern("write(*)");
+	assert.ok(pattern);
+	const project = mkdtempSync(join(os.tmpdir(), "pi-automode-allow-case-"));
+	try {
+		const harness = await setupHookTest({
+			config: baseConfig({
+				permissionAllow: [pattern],
+				protectedPaths: [".zshrc"],
+			}),
+			ctx: createFakeCtx([], { cwd: project }),
+			classifier: async () => ({ decision: "block", tier: "soft_deny", reason: "protected profile write" }),
+		});
+
+		const result = await harness.emit("tool_call", {
+			toolName: "write",
+			input: { path: ".ZSHRC", content: "export UNSAFE=1\n" },
+		}, harness.ctx) as { block?: boolean; reason?: string };
+
+		assert.equal(result.block, true);
+		assert.match(result.reason ?? "", /protected profile write/);
+		assert.equal(harness.classifierCalls, 1);
+	} finally {
+		rmSync(project, { recursive: true, force: true });
+	}
+});
+
 test("permissions.allow does not cover writes through symlinks to protected paths", async () => {
 	const pattern = parseToolPattern("write(*)");
 	assert.ok(pattern);
@@ -4746,6 +4773,19 @@ test("write through a symlink to an in-tree safety-control file is hard-denied b
 test("protected-path matching normalizes Windows separators", () => {
 	assert.equal(matchesProtectedPath(".git\\config", DEFAULT_PROTECTED_PATHS), true);
 	assert.equal(matchesProtectedPath("src\\index.ts", DEFAULT_PROTECTED_PATHS), false);
+});
+
+test("protected-path matching is case-insensitive and preserves path boundaries", () => {
+	assert.equal(matchesProtectedPath(".ZSHRC", [".zshrc"]), true);
+	assert.equal(matchesProtectedPath(".GIT/config", [".git"]), true);
+	assert.equal(matchesProtectedPath(".github/config", [".git"]), false);
+});
+
+test("protected-path matching normalizes canonically equivalent Unicode", () => {
+	assert.equal(
+		matchesProtectedPath(".CONFIG/CAFÉ/settings", [".config/cafe\u0301"]),
+		true,
+	);
 });
 
 test("protected paths config can extend defaults", () => {

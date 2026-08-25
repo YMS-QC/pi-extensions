@@ -180,13 +180,21 @@ function resolvePathForPolicyInner(
   }
 }
 
+function normalizeProtectedPathForMatch(value: string): string {
+  return value
+    .replace(/\\/g, "/")
+    .normalize("NFC")
+    .toLowerCase()
+    .normalize("NFC");
+}
+
 export function matchesProtectedPath(
   relativePath: string,
   protectedPaths: string[],
 ): boolean {
-  const normalizedPath = relativePath.replace(/\\/g, "/");
+  const normalizedPath = normalizeProtectedPathForMatch(relativePath);
   return protectedPaths.some((pattern) => {
-    const normalizedPattern = pattern.replace(/\\/g, "/");
+    const normalizedPattern = normalizeProtectedPathForMatch(pattern);
     return normalizedPath === normalizedPattern ||
       normalizedPath.startsWith(`${normalizedPattern}/`);
   });
