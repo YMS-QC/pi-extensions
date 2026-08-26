@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+## Bug fixes
+
+- **Classifier stream timeout** — Apply `classifierTimeoutMs` to the full response stream. Provider behavior cannot keep classifier calls pending after the deadline. Parent cancellation remains active. Reject values above the Node.js timer limit. (#30)
+
 ## [1.13.0] - 2026-08-25
 
 ## New features
@@ -35,5 +41,6 @@ All notable changes to this project are documented in this file.
 - **Project config trust gate** — Ignore `.pi/automode.local.json` and `.pi/automode.json` until Pi trusts the project. Apply the trust gate during startup and config reloads. (#16)
 - **In-memory observability logs** — Write logs to an extension-owned directory (`~/.pi/agent/extensions/pi-automode/logs/`) instead of the launching project directory. Thanks, @HerbertGao! (#13)
 
+[Unreleased]: https://github.com/czottmann/pi-automode/compare/v1.13.0...HEAD
 [1.13.0]: https://github.com/czottmann/pi-automode/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/czottmann/pi-automode/compare/v1.11.0...v1.12.0
