@@ -2244,7 +2244,7 @@ test("Update journal explicit queue discard fences stale or foreign owners", asy
   });
 });
 
-test("Update journal dead-owner recovery requires exact negative liveness proof", async () => {
+test("Update journal dead-owner cleanup requires exact negative liveness proof", async () => {
   await withJournalTempDir(async ({ path }) => {
     let ownerLiveness: "alive" | "dead" | "unverifiable" = "alive";
     const store = createStore(path, {
@@ -2318,12 +2318,7 @@ test("Update journal dead-owner recovery requires exact negative liveness proof"
     });
     assert.equal(recovered.status, "recovered");
     assert.deepEqual(recovered.recoveredUpdateIds, [9]);
-    assert.deepEqual(store.read().entries[0], {
-      updateId: 9,
-      update: { update_id: 9 },
-      admittedAtMs: 1,
-      state: "pending",
-    });
+    assert.deepEqual(store.read().entries, []);
     assert.throws(
       () =>
         store.recoverDeadQueueOwner({

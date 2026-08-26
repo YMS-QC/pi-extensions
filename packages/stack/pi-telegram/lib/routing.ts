@@ -1677,9 +1677,12 @@ export function createTelegramInboundRouteRuntime<
                   })
               : undefined,
             stopTypingLoop: deps.stopTypingLoop,
-            sendTextReply: (text) =>
+            sendTextReply: (text, options) =>
               deps
-                .sendTextReply(chatId, replyToMessageId, text, { target })
+                .sendTextReply(chatId, replyToMessageId, text, {
+                  target,
+                  parseMode: options?.parseMode,
+                })
                 .then(() => {}),
             suppressStartNotice: true,
             recordRuntimeEvent: deps.recordRuntimeEvent,

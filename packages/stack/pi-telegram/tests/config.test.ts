@@ -497,21 +497,25 @@ test("Telegram config load recovers invalid JSON and records a diagnostic", asyn
   assert.match(events[0] ?? "", /^config:SyntaxError:load:/);
 });
 
-test("Telegram voice reply mode helpers normalize legacy manual to hidden", () => {
+test("Telegram voice reply mode helpers normalize legacy hidden to manual", () => {
   let config: TelegramConfig = {};
   const store = { get: () => config };
   const getMode = createTelegramVoiceReplyModeGetter(store);
   const isConfigured = createTelegramVoiceReplyModeConfiguredChecker(store);
 
-  assert.equal(getMode(), "hidden");
+  assert.equal(getMode(), "manual");
   assert.equal(isConfigured(), false);
 
-  config = { voice: { replyMode: "manual" } } as unknown as TelegramConfig;
-  assert.equal(getMode(), "hidden");
+  config = { voice: { replyMode: "hidden" } };
+  assert.equal(getMode(), "manual");
+  assert.equal(isConfigured(), false);
+
+  config = { voice: { replyMode: "manual" } };
+  assert.equal(getMode(), "manual");
   assert.equal(isConfigured(), false);
 
   config = { voice: { replyMode: "invalid" } } as unknown as TelegramConfig;
-  assert.equal(getMode(), "hidden");
+  assert.equal(getMode(), "manual");
   assert.equal(isConfigured(), false);
 });
 
@@ -533,7 +537,7 @@ test("Telegram voice reply mode setter persists telegram.json", async () => {
     voice: { replyMode: "mirror" },
   });
 
-  await setMode("hidden");
+  await setMode("manual");
 
   assert.equal(store.get().voice, undefined);
   assert.deepEqual(await readTelegramConfig(configPath), {

@@ -95,11 +95,28 @@ export function createTelegramQueueBindingRuntime<TContext>(deps: {
   sendUserMessage: Queue.TelegramQueueDispatchRuntimeDeps<TContext>["sendUserMessage"];
   recordRuntimeEvent?: TelegramRuntimeEventRecorder;
 }): TelegramQueueBindingRuntime<TContext> {
+  const settleDiscardedItems = (
+    items: readonly Queue.TelegramQueueItem<TContext>[],
+    ctx: TContext,
+  ): boolean => {
+    const durableItems = items.filter(
+      (item) => (item.admissionReceipts?.length ?? 0) > 0,
+    );
+    if (durableItems.length === 0) return true;
+    const settlement = deps.admission.getSettlement();
+    if (!settlement) return false;
+    settlement.onItemsDiscarded(durableItems, ctx);
+    return durableItems.every((item) => !settlement.isItemReady(item));
+  };
   const mutation = Queue.createTelegramQueueMutationController({
     ...deps.store,
     allocateLaneOrder: deps.queue.allocateItemOrder,
     onItemsDiscarded(items, ctx) {
-      deps.admission.getSettlement()?.onItemsDiscarded(items, ctx);
+      if (!settleDiscardedItems(items, ctx)) {
+        throw new Error(
+          "Telegram queue items could not be discarded durably.",
+        );
+      }
     },
     updateStatus: deps.updateStatus,
     recordRuntimeEvent: deps.recordRuntimeEvent,
@@ -135,6 +152,9 @@ export function createTelegramQueueBindingRuntime<TContext>(deps: {
     },
     onControlSettled(item, ctx) {
       deps.admission.getSettlement()?.onControlSettled(item, ctx);
+    },
+    onPromptSkipped(item, ctx) {
+      return settleDiscardedItems([item], ctx);
     },
     updateStatus: deps.updateStatus,
     sendTextReply: deps.sendTextReply,
@@ -909,6 +929,25 @@ export function registerTelegramLifecycleRuntimeHooks({
       { replyToPrompt: false },
     );
   };
+  let activeTurnDeliveryTail = Promise.resolve();
+  const scheduleActiveTurnDelivery = (task: () => Promise<void>): void => {
+    const previous = activeTurnDeliveryTail;
+    activeTurnDeliveryTail = (async () => {
+      await previous;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 0);
+        timer.unref?.();
+      });
+      await task();
+    })().catch((error) => {
+      recordRuntimeEvent("delivery", error, {
+        phase: "agent-end-background-delivery",
+      });
+    });
+  };
+  const waitForActiveTurnDelivery = async (): Promise<void> => {
+    await activeTurnDeliveryTail;
+  };
   const agentLifecycleHooks = Queue.createTelegramAgentLifecycleHooks<
     Queue.PendingTelegramTurn,
     Pi.ExtensionContext,
@@ -950,16 +989,7 @@ export function registerTelegramLifecycleRuntimeHooks({
     dispatchNextQueuedTelegramTurn,
     requestDeferredDispatchNextQueuedTelegramTurn:
       deferredQueueDispatchRuntime.request,
-    scheduleActiveTurnDelivery(task) {
-      const timer = setTimeout(() => {
-        void task().catch((error) => {
-          recordRuntimeEvent("delivery", error, {
-            phase: "agent-end-background-delivery",
-          });
-        });
-      }, 0);
-      timer.unref?.();
-    },
+    scheduleActiveTurnDelivery,
     clearPreview: previewRuntime.clear,
     setPreviewPendingText: previewRuntime.setPendingText,
     finalizeMarkdownPreview,
@@ -1079,7 +1109,11 @@ export function registerTelegramLifecycleRuntimeHooks({
       activityRuntime.onCompactionStart(Pi.getSessionCompactionReason(event));
       compactionObserver.onSessionBeforeCompact(event, ctx);
       if (shouldNotify) {
-        await sendCompactionNotice(Commands.TELEGRAM_COMPACTION_STARTED_TEXT);
+        await waitForActiveTurnDelivery();
+        if (!isSessionContextActive(ctx)) return;
+        await sendCompactionNotice(
+          Commands.TELEGRAM_COMPACTION_STARTED_MARKDOWN,
+        );
       }
     },
     async onSessionCompact(event, ctx) {
@@ -1088,7 +1122,9 @@ export function registerTelegramLifecycleRuntimeHooks({
       compactionObserver.onSessionCompact(event, ctx);
       if (observedAutomaticCompaction) {
         observedAutomaticCompaction = false;
-        await sendCompactionNotice(Commands.TELEGRAM_COMPACTION_COMPLETED_TEXT);
+        await sendCompactionNotice(
+          Commands.TELEGRAM_COMPACTION_COMPLETED_MARKDOWN,
+        );
       }
     },
     async onAgentStart(event, ctx) {

@@ -26,8 +26,8 @@ Use emoji as stable semantic markers, not decoration. Emoji carry transportable 
 | `🧠` | Thinking level | `/thinking`, thinking menu headings, thinking status rows | Use only for reasoning/thinking controls. |
 | `🔢` | Queue list / ordered work | `/queue`, queue menu entrypoints | Queue item rows may also use numeric labels. |
 | `⏱️` | Queue is ticking / current work is active | Inline main-menu Queue row only | Running-clock queue state: the narrow present moment is being worked now. |
-| `⏳` | Queue has waiting prompts | Inline main-menu Queue row only | Hourglass queue state: sand above the neck is future work still waiting. |
-| `⌛` | Queue is empty / standing idle | Inline main-menu Queue row only | Standing hourglass queue state: no future work is waiting above the neck. |
+| `⏳` | Waiting / temporarily busy | Inline main-menu Queue row, busy notices | Hourglass means work or availability is pending; the sentence must name what is busy. |
+| `⌛` | Empty / standing idle | Inline main-menu Queue row, empty-queue notices | Standing hourglass means no future work is waiting above the neck. |
 | `⚙️` | Settings / configuration | Settings menu headings and Settings navigation rows | Extension-injected rows appear before the built-in `⚙️ Settings` row. |
 | `🧩` | Extension-provided surface | Extension command examples, extension section examples | Companion extensions may choose their own emoji, but `🧩` means generic extension/plugin. |
 | `👄` | Voice reply policy | Voice reply settings row and detail card | Not a generic audio attachment marker. |
@@ -43,18 +43,27 @@ Use emoji as stable semantic markers, not decoration. Emoji carry transportable 
 | --- | --- | --- | --- |
 | `🟢` | Start / active / current positive state | `/start`, active row, current selected option, active `On` toggle | In command context it means “open/start menu”; in state context it means selected/active. |
 | `🗜` | Compact session | `/compact`, compact confirmation action | Do not use for generic cleanup/delete. |
-| `⏩` | Force next queued turn | `/next` command and matching menu action | Means skip/advance to next waiting item. |
-| `▶️` | Continue/resume generation | `/continue` command and matching menu action | Means resume/continue current session flow, not force-next. |
-| `⏹️` | Abort current Pi work | `/abort` command description | Stops active work but is not a destructive queue clear by itself. |
-| `🟥` | Stop / abort-and-clear danger | `/stop` command description | Stronger than `⏹️`; use for disruptive stop/clear semantics. |
+| `⏩` | Abort and advance | Busy `/next` command result and matching menu action | Means the active turn is aborted before advancing to queued work. |
+| `▶️` | Play / continue immediately | Idle `/next` result, `/continue` command, and matching menu action | Means work can start or resume directly without first aborting an active turn. |
+| `⏹️` | Abort current Pi work | `/abort` command description and active `/stop` result | Stops active work; accompanying copy states separately when queued work is cleared. |
+| `🟥` | Destructive stop command | `/stop` command description | Strong warning at the command/action entrypoint; standalone results use the more precise idle or abort state icon. |
 | `🆕` | New session / fresh start | Reserved visible extension command example for `/new`-like flows | Same-thread Telegram `/new` is currently blocked by Pi core API; keep this meaning reserved. |
 | `🌀` | Refresh | Queue refresh row and future refresh buttons | Re-fetch/re-render current surface, not transport reconnect. |
 | `↪️` | Reroute to an existing target | Thread chooser buttons that send a captured command/message from one thread to another live thread | Curved arrow means the message arrived here but bends to another target. |
 | `🔁` | Replace/restore mode | Thread replace/restore chooser entrypoints | Opens a second step for moving a Pi instance binding to the current source thread. |
 | `➡️` | Choose replacement target | Thread replace/restore target buttons that select which Pi instance should move to the current thread | Use inside the second replace/restore chooser, not for ordinary reroutes. |
 | `☑️` | Activate / choose this item | Model detail activation action, generated button-only choice heading | Positive selection cue; use `🟢 Active` for already-current state. |
-| `❌` | No / cancel | Confirmation cancel buttons | Use for safe cancellation, not destructive removal. |
+| `❌` | No / cancel / terminal failure | Confirmation cancel buttons and terminal failure notices | Do not use for a recoverable operation failure that leaves session state intact. |
 | `🗑` | Delete / defer removal | Destructive confirmations and removal reaction | In the queue menu, reversible Keep/Skip selectors replace immediate deletion. |
+
+### Informational Feedback
+
+| Emoji | Meaning | Canonical surfaces | Notes |
+| --- | --- | --- | --- |
+| `💤` | Nothing active | No-active-turn notices | Neutral idle result, not an error. |
+| `✅` | Completed successfully | Compaction and other completion notices | Use only after the operation has completed. |
+| `🚫` | Unavailable, denied, or cancelled operation | Missing capability/auth notices, access denial, and compaction cancellation | Callback alerts use the same emoji without bold markup. |
+| `⚠️` | Recoverable operation failure | Compaction failure notice | The attempted operation failed, but the original session state remains usable. |
 
 ### State Indicators And Button Grammars
 
@@ -70,6 +79,8 @@ Use emoji as stable semantic markers, not decoration. Emoji carry transportable 
 ### Queue Reaction Shortcuts
 
 Queue reactions are shortcut controls for waiting turns. Preserve their semantics across Telegram reactions, queue-menu rows, status previews, and tests. Positive emoji control the Priority/Normal lane; negative emoji control Keep/Skip. These categories are independent, may coexist, and mutate only their own dimension. Crossing lanes appends the prompt at the destination FIFO tail; changing Keep/Skip or changing emoji within one category preserves lane position. Skip wins only when dispatch reaches the prompt.
+
+Skipped queue ordinals strike only the numeric position. Detail HTML closes `<s>` before the period; list-button labels place a hair-space boundary between the combining-struck number and the plain period so Telegram font overhang cannot visually strike punctuation.
 
 Queue item detail renders two independent selector rows:
 
@@ -209,11 +220,14 @@ Examples:
 
 ## Message Cards
 
-Message cards sent by the bot should start with a strong heading.
+Message cards and standalone informational notices sent by the bot should start with a strong heading.
 
 Rules:
 
 - Start with a bold heading or, for dialogs, a bold question.
+- Format standalone notices as one fully bold line: relevant emoji, one space, concise sentence, and terminal period or colon.
+- Apply the same hierarchy to success, progress, empty, busy, unavailable, cancellation, and failure notices; do not bold only a fragment of a standalone notice.
+- Callback alerts remain plain text because Telegram does not support rich text there, but still keep the relevant emoji and concise sentence.
 - Setting detail cards may include an emoji in the heading, then a colon and the current value in `<code>`.
 - Explain what the setting does and what the options mean only as much as needed.
 - Order setting value descriptions exactly like the chooser: rows top-to-bottom and values in a shared row left-to-right. Keep `(default)` on the actual default wherever it falls; default status never changes order.

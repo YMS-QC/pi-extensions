@@ -404,25 +404,27 @@ export function createTelegramBridgeSessionLifecycleAssembly<
     stopPolling: suspendForReplacement,
     clearPendingMediaGroups: deps.services.suspendGroupedInput,
   });
-  const servicesLifecycle = appendTelegramLifecycleHooks(
-    queueLifecycle,
-    {
-      async onSessionStart(event, ctx) {
-        deps.services.resumeGroupedInput(ctx);
-        await deps.services.delivery.onSessionStart();
-        await deps.services.polling.onSessionStart(event, ctx);
-        deps.services.capabilityMonitor.start(ctx);
-        deps.services.queueWatchdog.start(ctx);
-      },
-      async onSessionShutdown() {
-        await deps.services.delivery.onSessionShutdown();
-        deps.services.queueWatchdog.stop();
-        deps.services.capabilityMonitor.stop();
-        await deps.services.inboundWorker.onSessionShutdown();
-      },
+  const servicesLifecycle: TelegramSessionLifecycleHooks = {
+    async onSessionStart(event, ctx) {
+      await queueLifecycle.onSessionStart(event, ctx);
+      if (!isSessionActive(ctx)) return;
+      deps.services.resumeGroupedInput(ctx);
+      await deps.services.delivery.onSessionStart();
+      await deps.services.polling.onSessionStart(event, ctx);
+      deps.services.capabilityMonitor.start(ctx);
+      deps.services.queueWatchdog.start(ctx);
     },
-    isSessionActive,
-  );
+    async onSessionShutdown(event, ctx) {
+      if (!isSessionActive(ctx)) return;
+      await deps.services.delivery.onSessionShutdown();
+      if (!isSessionActive(ctx)) return;
+      deps.services.queueWatchdog.stop();
+      deps.services.capabilityMonitor.stop();
+      await queueLifecycle.onSessionShutdown(event, ctx);
+      if (!isSessionActive(ctx)) return;
+      await deps.services.inboundWorker.onSessionShutdown();
+    },
+  };
   const followerLifecycle = appendTelegramLifecycleHooks(
     servicesLifecycle,
     {

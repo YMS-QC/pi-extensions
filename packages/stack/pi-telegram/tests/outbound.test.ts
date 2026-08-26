@@ -1385,11 +1385,11 @@ test("Voice reply sender falls back to next handler when sendMultipart throws", 
   dispose2();
 });
 
-test("Voice reply sender accepts provider returning { audioPath }", async () => {
+test("Voice reply sender accepts provider returning an audio path", async () => {
   const events: unknown[] = [];
-  const dispose = registerTelegramVoiceSynthesisProvider(async () => ({
-    audioPath: "/tmp/response.ogg",
-  }));
+  const dispose = registerTelegramVoiceSynthesisProvider(
+    async () => "/tmp/response.ogg",
+  );
   const sendVoiceReply = createTelegramVoiceReplySender({
     execCommand: async () => ({
       stdout: "",
@@ -1408,33 +1408,5 @@ test("Voice reply sender accepts provider returning { audioPath }", async () => 
   ) as Record<string, unknown>;
   assert.equal(fileEvent.filePath, "/tmp/response.ogg");
   assert.equal(fileEvent.fileName, "response.ogg");
-  dispose();
-});
-
-test("Voice reply sender passes transcriptText as caption", async () => {
-  const fields: Record<string, unknown>[] = [];
-  const dispose = registerTelegramVoiceSynthesisProvider(async () => ({
-    audioPath: "/tmp/response.ogg",
-    transcriptText: "Clean text without speech tags",
-  }));
-  const sendVoiceReply = createTelegramVoiceReplySender({
-    execCommand: async () => ({
-      stdout: "",
-      stderr: "",
-      code: 0,
-      killed: false,
-    }),
-    sendMultipart: async (_method, f) => {
-      fields.push(f);
-    },
-    recordRuntimeEvent: () => {},
-  });
-  await sendVoiceReply({ chatId: 10, replyToMessageId: 20 }, "hello");
-  assert.equal(fields.length, 1);
-  assert.equal((fields[0] as Record<string, unknown>).chat_id, "10");
-  assert.equal(
-    (fields[0] as Record<string, unknown>).caption,
-    "Clean text without speech tags",
-  );
   dispose();
 });

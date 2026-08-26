@@ -9,6 +9,7 @@ import {
   TELEGRAM_DEFAULT_PROFILE_NAME,
 } from "./config.ts";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi.ts";
+import { escapeHtml } from "./rendering.ts";
 import type { TelegramBridgeStatusLineOptions } from "./status.ts";
 import {
   createTelegramControlItemBuilder,
@@ -185,9 +186,24 @@ export function formatTelegramCommandEmojiPrefix(
   return `${getTelegramCommandEmoji(command)} `;
 }
 
+export function formatTelegramInformationHeading(
+  emoji: string,
+  text: string,
+): string {
+  return `<b>${escapeHtml(emoji)} ${escapeHtml(text)}</b>`;
+}
+
 export const TELEGRAM_COMPACTION_STARTED_TEXT =
-  `${formatTelegramCommandEmojiPrefix("compact")}Compaction started.`;
-export const TELEGRAM_COMPACTION_COMPLETED_TEXT = "✅ Compaction completed.";
+  formatTelegramInformationHeading(
+    getTelegramCommandEmoji("compact"),
+    "Compaction started.",
+  );
+export const TELEGRAM_COMPACTION_COMPLETED_TEXT =
+  formatTelegramInformationHeading("✅", "Compaction completed.");
+export const TELEGRAM_COMPACTION_STARTED_MARKDOWN =
+  `**${formatTelegramCommandEmojiPrefix("compact")}Compaction started.**`;
+export const TELEGRAM_COMPACTION_COMPLETED_MARKDOWN =
+  "**✅ Compaction completed.**";
 
 function formatTelegramBotCommandDescription(
   command: TelegramCommandEmojiName,
@@ -585,7 +601,10 @@ export interface TelegramStopCommandDeps {
   setFoldQueuedPromptsIntoHistory: (fold: boolean) => void;
   abortCurrentTurn: () => void;
   updateStatus: () => void;
-  sendTextReply: (text: string) => Promise<void>;
+  sendTextReply: (
+    text: string,
+    options?: { parseMode?: "HTML" },
+  ) => Promise<void>;
 }
 
 export interface TelegramRuntimeEventRecorderPort {
@@ -619,7 +638,10 @@ export interface TelegramCompactCommandDeps extends TelegramRuntimeEventRecorder
     onComplete: () => void;
     onError: (error: unknown) => void;
   }) => void;
-  sendTextReply: (text: string) => Promise<void>;
+  sendTextReply: (
+    text: string,
+    options?: { parseMode?: "HTML" },
+  ) => Promise<void>;
   suppressStartNotice?: boolean;
 }
 
@@ -921,8 +943,11 @@ export function createTelegramCommandTargetRuntime<
         await deps.sendTextReply(
           target.chatId,
           target.replyToMessageId,
-          "Settings menu is unavailable.",
-          { target },
+          formatTelegramInformationHeading(
+            "🚫",
+            "Settings menu is unavailable.",
+          ),
+          { target, parseMode: "HTML" },
         );
         return;
       }
@@ -1108,6 +1133,25 @@ function getTelegramCommandErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function formatTelegramCompactionFailure(error: unknown): string {
+  let message = getTelegramCommandErrorMessage(error).trim();
+  const redundantPrefixes = [
+    "Compaction failed: ",
+    "Turn prefix summarization failed: ",
+  ];
+  let stripped = true;
+  while (stripped) {
+    stripped = false;
+    for (const prefix of redundantPrefixes) {
+      if (!message.startsWith(prefix)) continue;
+      message = message.slice(prefix.length).trim();
+      stripped = true;
+    }
+  }
+  const sentence = /[.!?]$/u.test(message) ? message : `${message}.`;
+  return `Compaction failed! ${sentence}`;
+}
+
 export function parseTelegramCommand(
   text: string,
 ): ParsedTelegramCommand | undefined {
@@ -1165,7 +1209,10 @@ export async function handleTelegramStopCommand(
         ? ` Cleared ${formatTelegramQueuedTurnCount(clearedCount)}.`
         : "";
     if (clearedCount > 0) deps.updateStatus();
-    await deps.sendTextReply(`No active turn.${clearedSuffix}`);
+    await deps.sendTextReply(
+      formatTelegramInformationHeading("💤", `No active turn.${clearedSuffix}`),
+      { parseMode: "HTML" },
+    );
     return;
   }
   deps.abortCurrentTurn();
@@ -1174,7 +1221,13 @@ export async function handleTelegramStopCommand(
     clearedCount > 0
       ? ` Cleared ${formatTelegramQueuedTurnCount(clearedCount)}.`
       : "";
-  await deps.sendTextReply(`Aborted current turn.${clearedSuffix}`);
+  await deps.sendTextReply(
+    formatTelegramInformationHeading(
+      "⏹️",
+      `Aborted current turn.${clearedSuffix}`,
+    ),
+    { parseMode: "HTML" },
+  );
 }
 
 export async function handleTelegramAbortCommand(deps: {
@@ -1184,17 +1237,26 @@ export async function handleTelegramAbortCommand(deps: {
   abortCurrentTurn: () => void;
   setFoldQueuedPromptsIntoHistory: (fold: boolean) => void;
   updateStatus: () => void;
-  sendTextReply: (text: string) => Promise<void>;
+  sendTextReply: (
+    text: string,
+    options?: { parseMode?: "HTML" },
+  ) => Promise<void>;
 }): Promise<void> {
   deps.clearPendingModelSwitch();
   if (!deps.hasAbortHandler()) {
-    await deps.sendTextReply("No active turn.");
+    await deps.sendTextReply(
+      formatTelegramInformationHeading("💤", "No active turn."),
+      { parseMode: "HTML" },
+    );
     return;
   }
   deps.setFoldQueuedPromptsIntoHistory(deps.hasActiveTelegramTurn());
   deps.abortCurrentTurn();
   deps.updateStatus();
-  await deps.sendTextReply("Aborted current turn.");
+  await deps.sendTextReply(
+    formatTelegramInformationHeading("⏹️", "Aborted current turn."),
+    { parseMode: "HTML" },
+  );
 }
 
 export async function handleTelegramNextCommand(deps: {
@@ -1213,7 +1275,10 @@ export async function handleTelegramNextCommand(deps: {
 }): Promise<void> {
   deps.clearPendingModelSwitch();
   if (!deps.hasQueuedItems()) {
-    await deps.sendTextReply("<b>Queue is empty.</b>", { parseMode: "HTML" });
+    await deps.sendTextReply(
+      formatTelegramInformationHeading("⌛", "Queue is empty."),
+      { parseMode: "HTML" },
+    );
     return;
   }
   if (!deps.isIdle() && deps.hasAbortHandler()) {
@@ -1221,17 +1286,30 @@ export async function handleTelegramNextCommand(deps: {
     deps.abortCurrentTurn();
     deps.updateStatus();
     await deps.sendTextReply(
-      "Aborted current turn. Dispatching next queued turn.",
+      formatTelegramInformationHeading(
+        "⏩",
+        "Aborted! Dispatching next queued turn.",
+      ),
+      { parseMode: "HTML" },
     );
     return;
   }
   if (!deps.isIdle()) {
-    await deps.sendTextReply("Pi is busy. Send /abort or /stop first.");
+    await deps.sendTextReply(
+      formatTelegramInformationHeading(
+        "⏳",
+        "Pi is busy. Send /abort or /stop first.",
+      ),
+      { parseMode: "HTML" },
+    );
     return;
   }
   deps.dispatchNextQueuedTurn();
   deps.updateStatus();
-  await deps.sendTextReply("Dispatching next queued turn.");
+  await deps.sendTextReply(
+    formatTelegramInformationHeading("▶️", "Dispatching next queued turn."),
+    { parseMode: "HTML" },
+  );
 }
 
 export async function handleTelegramContinueCommand<TMessage, TContext>(
@@ -1301,15 +1379,15 @@ export async function handleTelegramCompactConfirmationCallback<TContext>(
   const chatId = callbackMessage?.chat?.id;
   const messageId = callbackMessage?.message_id;
   if (typeof chatId !== "number" || typeof messageId !== "number") {
-    await deps.answerCallbackQuery(query.id, "Interactive message expired.");
+    await deps.answerCallbackQuery(query.id, "⌛ Interactive message expired.");
     return true;
   }
   if (query.data === "compact:cancel") {
     await deps.editInteractiveMessage(
       chatId,
       messageId,
-      "Compaction cancelled.",
-      "plain",
+      "<b>🚫 Compaction cancelled.</b>",
+      "html",
       { inline_keyboard: [] },
     );
     await deps.answerCallbackQuery(query.id);
@@ -1319,7 +1397,7 @@ export async function handleTelegramCompactConfirmationCallback<TContext>(
     chatId,
     messageId,
     TELEGRAM_COMPACTION_STARTED_TEXT,
-    "plain",
+    "html",
     { inline_keyboard: [] },
   );
   await deps.answerCallbackQuery(query.id);
@@ -1345,7 +1423,11 @@ export async function handleTelegramCompactCommand(
     deps.isCompactionInProgress()
   ) {
     await deps.sendTextReply(
-      "Cannot compact while Pi or the Telegram queue is busy. Wait for queued turns to finish or send /abort first.",
+      formatTelegramInformationHeading(
+        "⏳",
+        "Cannot compact while Pi or the Telegram queue is busy. Wait for queued turns to finish or send /abort first.",
+      ),
+      { parseMode: "HTML" },
     );
     return;
   }
@@ -1359,7 +1441,9 @@ export async function handleTelegramCompactCommand(
         deps.setCompactionInProgress(false);
         deps.updateStatus();
         dispatchNextQueuedTelegramTurnAfterCompact(deps);
-        void deps.sendTextReply(TELEGRAM_COMPACTION_COMPLETED_TEXT);
+        void deps.sendTextReply(TELEGRAM_COMPACTION_COMPLETED_TEXT, {
+          parseMode: "HTML",
+        });
       },
       onError: (error) => {
         deps.stopTypingLoop?.();
@@ -1367,8 +1451,13 @@ export async function handleTelegramCompactCommand(
         deps.updateStatus();
         dispatchNextQueuedTelegramTurnAfterCompact(deps);
         deps.recordRuntimeEvent?.("compact", error);
-        const errorMessage = getTelegramCommandErrorMessage(error);
-        void deps.sendTextReply(`Compaction failed: ${errorMessage}`);
+        void deps.sendTextReply(
+          formatTelegramInformationHeading(
+            "⚠️",
+            formatTelegramCompactionFailure(error),
+          ),
+          { parseMode: "HTML" },
+        );
       },
     });
   } catch (error) {
@@ -1376,14 +1465,19 @@ export async function handleTelegramCompactCommand(
     deps.setCompactionInProgress(false);
     deps.updateStatus();
     deps.recordRuntimeEvent?.("compact", error);
-    const errorMessage = getTelegramCommandErrorMessage(error);
-    await deps.sendTextReply(`Compaction failed: ${errorMessage}`);
+    await deps.sendTextReply(
+      formatTelegramInformationHeading(
+        "⚠️",
+        formatTelegramCompactionFailure(error),
+      ),
+      { parseMode: "HTML" },
+    );
     return;
   }
   if (!deps.suppressStartNotice) {
-    await deps.sendTextReply(
-      TELEGRAM_COMPACTION_STARTED_TEXT,
-    );
+    await deps.sendTextReply(TELEGRAM_COMPACTION_STARTED_TEXT, {
+      parseMode: "HTML",
+    });
   }
 }
 

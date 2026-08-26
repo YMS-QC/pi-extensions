@@ -2589,7 +2589,7 @@ test("Replacement registration stays live while its process races dead-owner rec
   }
 }, 10_000);
 
-test("Replacement process recovers dead queue owner before one replay", async () => {
+test("Replacement process discards dead session-owned queue authority", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-telegram-dead-owner-"));
   const path = join(dir, "inbox.json");
   const deadOwner = {
@@ -2628,7 +2628,7 @@ test("Replacement process recovers dead queue owner before one replay", async ()
       "recover",
     );
     assert.deepEqual(replacement, {
-      executionCount: 1,
+      executionCount: 0,
       foreignQueuedCount: 0,
       queuedClaimCount: 0,
       entryCount: 0,
@@ -3896,7 +3896,7 @@ test("Extension runtime clears queued follow-ups after a Telegram stop", async (
     assert.equal(promptText, "[telegram] new request");
     assert.equal(promptText.includes("follow up"), false);
     assert.equal(
-      sendTexts.some((text) => text.startsWith("Aborted current turn.")),
+      sendTexts.some((text) => text.startsWith("<b>⏹️ Aborted current turn.")),
       true,
     );
     await handlers.get("session_shutdown")?.({}, idleCtx);
@@ -4178,9 +4178,10 @@ test("Extension runtime opens immediate model menu before queued prompt after ag
   }
 });
 
-test("Extension runtime keeps queued turns blocked until compaction completes", async () => {
+test("Extension runtime keeps queued turns blocked until compaction settles", async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();
   const runtimeEvents: string[] = [];
+  const failureParseModes: string[] = [];
   let compactHooks:
     | {
         onComplete: () => void;
@@ -4226,7 +4227,11 @@ test("Extension runtime keeps queued turns blocked until compaction completes", 
       throw new DOMException("stop", "AbortError");
     }
     if (method === "sendMessage" || method === "sendRichMessage") {
-      runtimeEvents.push(`send:${getRuntimeTelegramApiText(body)}`);
+      const text = getRuntimeTelegramApiText(body);
+      runtimeEvents.push(`send:${text}`);
+      if (text.includes("Compaction failed!")) {
+        failureParseModes.push(String(body?.parse_mode ?? ""));
+      }
       return createRuntimeTelegramApiResponse({
         message_id: 100 + runtimeEvents.length,
       });
@@ -4288,11 +4293,11 @@ test("Extension runtime keeps queued turns blocked until compaction completes", 
     await waitForCondition(() => runtimeEvents.includes("compact:start"));
     await waitForCondition(
       () =>
-        runtimeEvents.includes("edit:🗜 Compaction started.") &&
+        runtimeEvents.includes("edit:<b>🗜 Compaction started.</b>") &&
         runtimeEvents.includes("typing:99:typing"),
     );
     assert.equal(
-      runtimeEvents.indexOf("edit:🗜 Compaction started.") <
+      runtimeEvents.indexOf("edit:<b>🗜 Compaction started.</b>") <
         runtimeEvents.indexOf("typing:99:typing"),
       true,
     );
@@ -4318,13 +4323,20 @@ test("Extension runtime keeps queued turns blocked until compaction completes", 
       ),
       false,
     );
-    compactHooks?.onComplete();
+    compactHooks?.onError(
+      new Error(
+        "Turn prefix summarization failed: This operation was aborted",
+      ),
+    );
     await waitForCondition(() =>
       runtimeEvents.includes("dispatch:[telegram] follow up after compaction"),
     );
     await waitForCondition(() =>
-      runtimeEvents.includes("send:✅ Compaction completed."),
+      runtimeEvents.includes(
+        "send:<b>⚠️ Compaction failed! This operation was aborted.</b>",
+      ),
     );
+    assert.deepEqual(failureParseModes, ["HTML"]);
     await handlers.get("session_shutdown")?.({}, ctx);
   } finally {
     restoreFetch();
@@ -4377,11 +4389,11 @@ test("Extension runtime blocks queued dispatch during observed auto-compaction",
         message_id: 100 + runtimeEvents.length,
       });
     }
-    if (
-      method === "sendMessageDraft" ||
-      method === "sendChatAction" ||
-      method === "editMessageText"
-    ) {
+    if (method === "editMessageText") {
+      runtimeEvents.push(`edit:${getRuntimeTelegramApiText(body)}`);
+      return createRuntimeTelegramApiResponse(true);
+    }
+    if (method === "sendMessageDraft" || method === "sendChatAction") {
       return createRuntimeTelegramApiResponse(true);
     }
     throw new Error(`Unexpected Telegram API method: ${method}`);
@@ -4429,7 +4441,16 @@ test("Extension runtime blocks queued dispatch during observed auto-compaction",
       ctx,
     );
     await waitForCondition(() =>
-      runtimeEvents.includes("send:🗜 Compaction started."),
+      runtimeEvents.includes("send:**🗜 Compaction started.**"),
+    );
+    const finalReplyIndex = runtimeEvents.findIndex(
+      (event) => event === "send:done" || event === "edit:done",
+    );
+    assert.notEqual(finalReplyIndex, -1);
+    assert.equal(
+      finalReplyIndex <
+        runtimeEvents.indexOf("send:**🗜 Compaction started.**"),
+      true,
     );
     await new Promise((resolve) => setTimeout(resolve, 80));
     assert.equal(
@@ -4441,7 +4462,7 @@ test("Extension runtime blocks queued dispatch during observed auto-compaction",
       runtimeEvents.includes("dispatch:[telegram] queued during active turn"),
     );
     await waitForCondition(() =>
-      runtimeEvents.includes("send:✅ Compaction completed."),
+      runtimeEvents.includes("send:**✅ Compaction completed.**"),
     );
     await handlers.get("session_shutdown")?.({}, ctx);
   } finally {

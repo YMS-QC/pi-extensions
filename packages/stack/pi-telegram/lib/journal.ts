@@ -3381,15 +3381,8 @@ export function createTelegramUpdateJournalStore(
         const recoveredUpdateIds = [...requestedIds].sort((a, b) => a - b);
         const published = publishMutation(
           current,
-          current.file.entries.map((entry) =>
-            requestedIds.has(entry.updateId)
-              ? {
-                  updateId: entry.updateId,
-                  update: entry.update,
-                  admittedAtMs: entry.admittedAtMs,
-                  state: "pending" as const,
-                }
-              : entry,
+          current.file.entries.filter(
+            (entry) => !requestedIds.has(entry.updateId),
           ),
           true,
         );

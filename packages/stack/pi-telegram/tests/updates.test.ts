@@ -3810,7 +3810,7 @@ test("Admission lifecycle recovers confirmed-dead queue authority before worker 
   assert.equal(recoveryCalls, 1);
   assert.deepEqual(storage.getEntries(), []);
   assert.deepEqual(events, [
-    "inbound-worker:Recovered queued authority from a confirmed-dead process.:dead-queue-owner-recovery",
+    "inbound-worker:Discarded session-owned queue authority from a confirmed-dead process.:dead-queue-owner-cleanup",
   ]);
   await lifecycle.onSessionShutdown();
 });

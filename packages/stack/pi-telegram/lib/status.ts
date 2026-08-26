@@ -344,6 +344,7 @@ export interface TelegramBridgeStatusRuntimeDeps<
   getActiveToolExecutions: () => number;
   hasPendingModelSwitch: () => boolean;
   getQueuedItems: () => TQueueItem[];
+  getQueuedItemCount?: (items: TQueueItem[]) => number;
   formatQueuedStatus: (items: TQueueItem[]) => string;
   getRecentRuntimeEvents: () => TelegramRuntimeEvent[];
   getRuntimeLockState?: () => string;
@@ -658,6 +659,7 @@ export function createTelegramBridgeStatusRuntime<
     getStatusBarState: (_ctx, error) => {
       const config = deps.getConfig();
       const queuedItems = deps.getQueuedItems();
+      const queuedItemCount = deps.getQueuedItemCount?.(queuedItems) ?? queuedItems.length;
       const hasActiveTurn = deps.hasActiveTurn();
       const hasPendingDispatch = deps.hasDispatchPending();
       const hasPendingModelSwitch = deps.hasPendingModelSwitch();
@@ -677,13 +679,13 @@ export function createTelegramBridgeStatusRuntime<
           hasPendingDispatch ||
           hasPendingModelSwitch ||
           activeToolExecutions > 0 ||
-          queuedItems.length > 0,
+          queuedItemCount > 0,
         processingStatus: getTelegramStatusBarProcessingStatus({
           hasActiveTurn,
           hasPendingDispatch,
           hasPendingModelSwitch,
           activeToolExecutions,
-          queuedItems: queuedItems.length,
+          queuedItems: queuedItemCount,
         }),
         queuedStatus: deps.formatQueuedStatus(queuedItems),
         error,

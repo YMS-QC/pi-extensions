@@ -99,8 +99,7 @@ interface TelegramConfig {
     timeInjection?: "hidden" | "always" | "interval";
   };
   voice?: {
-    replyMode?: "hidden" | "mirror" | "always";
-    sendTranscript?: boolean;
+    replyMode?: "manual" | "mirror" | "always";
   };
   time?: {
     interval?: number;
@@ -409,16 +408,13 @@ const offStt = registerTelegramVoiceTranscriptionProvider(
 
 const offTts = registerTelegramVoiceSynthesisProvider(
   async (text, options) => {
-    const audioPath = await synthesizeOggOpus(text, options);
-    return getTelegramVoiceSendTranscript(getCurrentTelegramConfigView())
-      ? { audioPath, transcriptText: text }
-      : { audioPath };
+    return await synthesizeOggOpus(text, options);
   },
   { id: "@scope/my-extension/tts" },
 );
 ```
 
-Stable voice-provider registrations pass a durable `id`. Omitting `id` is a compatibility path for older providers and receives a generated session-local id. Providers return `undefined` to pass. TTS providers must return `.ogg` or `.opus` files for native Telegram voice notes. `voice.sendTranscript` is the bridge-owned transcript preference; providers that expose captions should gate `transcriptText` with `getTelegramVoiceSendTranscript(config)` instead of defining a second reply-policy toggle.
+Stable voice-provider registrations pass a durable `id`. Omitting `id` is a compatibility path for older providers and receives a generated session-local id. Providers return `undefined` to pass. TTS providers must return `.ogg` or `.opus` files for native Telegram voice notes.
 
 Full behavior: [Voice Integration](./voice.md).
 
@@ -525,7 +521,6 @@ export default function demoOutbound(pi: ExtensionAPI) {
 ```ts
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-  getTelegramVoiceSendTranscript,
   registerTelegramVoiceSynthesisProvider,
   registerTelegramVoiceTranscriptionProvider,
 } from "@llblab/pi-telegram/voice";
@@ -533,16 +528,12 @@ import {
 export default function demoVoice(pi: ExtensionAPI) {
   let unregisterTts: (() => void) | undefined;
   let unregisterStt: (() => void) | undefined;
-  let currentConfig: { voice?: { sendTranscript?: boolean } } = {};
   pi.on("session_start", async () => {
     unregisterTts?.();
     unregisterStt?.();
     unregisterTts = registerTelegramVoiceSynthesisProvider(
       async (text) => {
-        const audioPath = await synthesizeDemoOgg(text);
-        return getTelegramVoiceSendTranscript(currentConfig)
-          ? { audioPath, transcriptText: text }
-          : { audioPath };
+        return await synthesizeDemoOgg(text);
       },
       { id: "demo-voice/tts" },
     );

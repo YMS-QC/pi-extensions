@@ -73,6 +73,10 @@ function toTelegramQueueMenuItems<Context>(
   });
 }
 
+function formatSkippedTelegramQueuePosition(position: number): string {
+  return Array.from(String(position), (char) => `${char}\u0335`).join("");
+}
+
 function buildTelegramQueueMenuReplyMarkup(
   items: readonly TelegramQueueMenuItem[],
   emptyRefreshIndex = 0,
@@ -86,7 +90,7 @@ function buildTelegramQueueMenuReplyMarkup(
       : "queue:refresh";
   const refreshRow = [{ text: "🌀 Refresh", callback_data: refreshData }];
   if (items.length === 0) return { inline_keyboard: [backRow, refreshRow] };
-  const rows = items.map((item, index) => {
+  const rows = items.map((item) => {
     const prefix = item.reactionSuppressionEmoji
       ? `${item.reactionSuppressionEmoji} `
       : item.isPriority
@@ -94,7 +98,11 @@ function buildTelegramQueueMenuReplyMarkup(
         : item.hasAttachments
           ? "📎 "
           : "";
-    const label = `${index + 1}. ${prefix}${item.statusSummary}`;
+    const position = item.reactionSuppressionEmoji
+      ? formatSkippedTelegramQueuePosition(item.queuePosition)
+      : String(item.queuePosition);
+    const ordinalSeparator = item.reactionSuppressionEmoji ? "\u200A" : "";
+    const label = `${position}${ordinalSeparator}. ${prefix}${item.statusSummary}`;
     return [
       {
         text: label,
@@ -162,7 +170,10 @@ function getTelegramQueueMenuItemText(item: TelegramQueueMenuItem): string {
     : item.isPriority
       ? ` ${item.priorityEmoji ?? "⚡"}`
       : "";
-  const heading = `<b>${item.queuePosition}.</b>${badge}`;
+  const position = item.reactionSuppressionEmoji
+    ? `<s>${item.queuePosition}</s>.`
+    : `<b>${item.queuePosition}.</b>`;
+  const heading = `${position}${badge}`;
   const preview = `<pre>${escapeTelegramQueueMenuHtmlPreview(item.promptText)}</pre>`;
   return `${heading}\n${preview}`;
 }
@@ -182,7 +193,7 @@ function buildTelegramQueueItemSubmenuReplyMarkup(
           callback_data: `queue:prio-set:${chatId}:${replyToMessageId}:priority`,
         },
         {
-          text: isPriority ? "⚫️ Normal" : "🟣 Normal",
+          text: isPriority ? "⚫️ Normal" : "🔵 Normal",
           callback_data: `queue:prio-set:${chatId}:${replyToMessageId}:normal`,
         },
       ],
