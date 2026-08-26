@@ -22,6 +22,7 @@ import {
   DEFAULT_MAX_USER_TRANSCRIPT_TOKENS,
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_SOFT_DENY,
+  MAX_CLASSIFIER_TIMEOUT_MS,
   PI_GLOBAL_SETTINGS,
   PI_LEGACY_GLOBAL_SETTINGS,
   PI_PROJECT_LOCAL_SETTINGS,
@@ -324,10 +325,11 @@ export function validateSettingsFile(
       if (
         hasOwn(autoMode, "classifierTimeoutMs") &&
         (!Number.isInteger(autoMode.classifierTimeoutMs) ||
-          (autoMode.classifierTimeoutMs as number) < 1000)
+          (autoMode.classifierTimeoutMs as number) < 1000 ||
+          (autoMode.classifierTimeoutMs as number) > MAX_CLASSIFIER_TIMEOUT_MS)
       ) {
         diagnostics.push(
-          `${source}: autoMode.classifierTimeoutMs must be an integer of at least 1000`,
+          `${source}: autoMode.classifierTimeoutMs must be an integer from 1000 through ${MAX_CLASSIFIER_TIMEOUT_MS}`,
         );
       }
       if (
@@ -591,7 +593,9 @@ function validFastClassifierBudget(value: unknown): value is number {
 }
 
 function validClassifierTimeout(value: unknown): value is number {
-  return Number.isInteger(value) && Number(value) >= 1000;
+  return Number.isInteger(value) &&
+    Number(value) >= 1000 &&
+    Number(value) <= MAX_CLASSIFIER_TIMEOUT_MS;
 }
 
 function applyAutoModeScalars(
