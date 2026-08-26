@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   DEFAULT_ALLOW,
@@ -18,6 +26,7 @@ import {
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_SOFT_DENY,
   PI_GLOBAL_SETTINGS,
+  PI_LEGACY_GLOBAL_SETTINGS,
   PI_PROJECT_LOCAL_SETTINGS,
   PI_PROJECT_SHARED_SETTINGS,
 } from "./constants.ts";
@@ -39,6 +48,169 @@ import type {
   ToolPattern,
 } from "./types.ts";
 import { hasOwn, stringArray } from "./utils.ts";
+
+export type GlobalConfigPreparation = {
+  status: "current" | "migrated" | "conflict" | "failed";
+  activePath: string;
+  diagnostic?: string;
+  notification?: string;
+  writeBlockedReason?: string;
+};
+
+export type PrepareGlobalConfigOptions = {
+  currentPath?: string;
+  legacyPath?: string;
+  moveFile?: (source: string, destination: string) => void;
+  unlinkFile?: (path: string) => void;
+};
+
+function sameFileIdentity(firstPath: string, secondPath: string): boolean {
+  try {
+    const first = lstatSync(firstPath);
+    const second = lstatSync(secondPath);
+    return first.dev === second.dev && first.ino === second.ino;
+  } catch {
+    return false;
+  }
+}
+
+function cleanupPublishedDestination(
+  destination: string,
+  unlinkFile: (path: string) => void,
+  originalError: unknown,
+): AggregateError | undefined {
+  try {
+    unlinkFile(destination);
+    return undefined;
+  } catch (cleanupError) {
+    return new AggregateError(
+      [originalError, cleanupError],
+      `Could not clean up interrupted Auto Mode config migration at ${destination}`,
+    );
+  }
+}
+
+function moveFileWithoutOverwrite(
+  source: string,
+  destination: string,
+  unlinkFile: (path: string) => void,
+): void {
+  linkSync(source, destination);
+  try {
+    unlinkFile(source);
+  } catch (error) {
+    throw cleanupPublishedDestination(destination, unlinkFile, error) ?? error;
+  }
+}
+
+function globalConfigFailure(
+  currentPath: string,
+  legacyPath: string,
+  error: unknown,
+  writeBlockedReason?: string,
+): GlobalConfigPreparation {
+  const message =
+    `Could not move Auto Mode config from ${legacyPath} to ${currentPath}: ${
+      error instanceof Error ? error.message : String(error)
+    }. Using the legacy config for this session${
+      writeBlockedReason ? "; global config writes are disabled" : ""
+    }.`;
+  return {
+    status: "failed",
+    activePath: legacyPath,
+    diagnostic: message,
+    notification: message,
+    writeBlockedReason,
+  };
+}
+
+function globalConfigConflict(
+  currentPath: string,
+  legacyPath: string,
+): GlobalConfigPreparation {
+  const message =
+    `Auto Mode config conflict: using ${currentPath}; legacy config ${legacyPath} is ignored and was not changed.`;
+  return {
+    status: "conflict",
+    activePath: currentPath,
+    diagnostic: message,
+    notification: message,
+  };
+}
+
+/** Select one global config path for this runtime and migrate a legacy file when possible. */
+export function prepareGlobalConfig(
+  options: PrepareGlobalConfigOptions = {},
+): GlobalConfigPreparation {
+  const currentPath = options.currentPath ?? PI_GLOBAL_SETTINGS[0];
+  const legacyPath = options.legacyPath ?? PI_LEGACY_GLOBAL_SETTINGS;
+  const currentExists = existsSync(currentPath);
+  const legacyExists = existsSync(legacyPath);
+  const unlinkFile = options.unlinkFile ?? unlinkSync;
+
+  if (currentExists && legacyExists) {
+    if (!sameFileIdentity(currentPath, legacyPath)) {
+      return globalConfigConflict(currentPath, legacyPath);
+    }
+    try {
+      unlinkFile(legacyPath);
+      return {
+        status: "migrated",
+        activePath: currentPath,
+        notification:
+          `Completed interrupted Auto Mode config migration from ${legacyPath} to ${currentPath}.`,
+      };
+    } catch (error) {
+      const cleanupError = cleanupPublishedDestination(
+        currentPath,
+        unlinkFile,
+        error,
+      );
+      return globalConfigFailure(
+        currentPath,
+        legacyPath,
+        cleanupError ?? error,
+        cleanupError?.message,
+      );
+    }
+  }
+  if (currentExists || !legacyExists) {
+    return { status: "current", activePath: currentPath };
+  }
+
+  try {
+    mkdirSync(dirname(currentPath), { recursive: true });
+    const moveFile = options.moveFile ??
+      ((source: string, destination: string) =>
+        moveFileWithoutOverwrite(source, destination, unlinkFile));
+    moveFile(legacyPath, currentPath);
+    return {
+      status: "migrated",
+      activePath: currentPath,
+      notification: `Moved Auto Mode config from ${legacyPath} to ${currentPath}.`,
+    };
+  } catch (error) {
+    if (existsSync(currentPath)) {
+      if (!sameFileIdentity(currentPath, legacyPath)) {
+        return globalConfigConflict(currentPath, legacyPath);
+      }
+      const cleanupError = cleanupPublishedDestination(
+        currentPath,
+        unlinkFile,
+        error,
+      );
+      if (cleanupError) {
+        return globalConfigFailure(
+          currentPath,
+          legacyPath,
+          cleanupError,
+          cleanupError.message,
+        );
+      }
+    }
+    return globalConfigFailure(currentPath, legacyPath, error);
+  }
+}
 
 function readSettingsFile(path: string): LoadedSettingsFile | undefined {
   if (!existsSync(path)) return undefined;
@@ -687,6 +859,7 @@ function ignoredSharedAllowDiagnostics(
 export function loadEffectiveConfigWithDiagnostics(
   cwd: string,
   projectTrusted = false,
+  globalSettingsPath = PI_GLOBAL_SETTINGS[0],
 ): ConfigLoadResult {
   const inlineSettings: SettingsFile[] = [];
   const diagnostics: string[] = [];
@@ -708,7 +881,7 @@ export function loadEffectiveConfigWithDiagnostics(
     }
   }
 
-  const globalFiles = PI_GLOBAL_SETTINGS.map(readSettingsFile);
+  const globalFiles = [readSettingsFile(globalSettingsPath)];
   const projectLocalPaths = PI_PROJECT_LOCAL_SETTINGS.map((file) =>
     resolve(cwd, file)
   );
@@ -758,8 +931,13 @@ export function loadEffectiveConfigWithDiagnostics(
 export function loadEffectiveConfig(
   cwd: string,
   projectTrusted = false,
+  globalSettingsPath = PI_GLOBAL_SETTINGS[0],
 ): EffectiveConfig {
-  return loadEffectiveConfigWithDiagnostics(cwd, projectTrusted).config;
+  return loadEffectiveConfigWithDiagnostics(
+    cwd,
+    projectTrusted,
+    globalSettingsPath,
+  ).config;
 }
 
 function readWritableSettingsFile(path: string): SettingsFile {

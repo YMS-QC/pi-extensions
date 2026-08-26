@@ -45,8 +45,8 @@ pi -e ./extensions/auto-mode.ts
 /automode defaults  # print the built-in rule lists
 /automode config    # effective config, resolved log file path, + diagnostics
 /automode denials   # denial history for this session
-/automode model     # open classifier model selector and save to ~/.pi/agent/automode.json
-/automode model provider/model-id # save classifier model to ~/.pi/agent/automode.json
+/automode model     # open classifier model selector and save to ~/.pi/agent/extensions/pi-automode/config.json
+/automode model provider/model-id # save classifier model to ~/.pi/agent/extensions/pi-automode/config.json
 ```
 
 `/auto-mode` is an alias.
@@ -130,6 +130,8 @@ Both stages receive the complete current tool input in a dedicated message. Tran
 
 Both stages use a classifier-specific session key. They request short cache retention from providers that support it. A missing model, provider failure, or malformed response blocks the action.
 
+Pi-automode parses Bash structure with `unbash` before permission and deterministic hard-deny checks. The analysis includes nested commands and literal shell-wrapper scripts. A Bash parse error blocks the action.
+
 ## Examples
 
 - `examples/automode.local.json`: copy to `.pi/automode.local.json` in a project and edit the domains, buckets, and source-control org.
@@ -152,7 +154,7 @@ The tests cover these safety-sensitive areas:
 - the `permissions.allow` tier and its precedence
 - configuration-source precedence and diagnostics
 - `$defaults` behavior
-- deterministic hard-deny checks and shell parsing
+- deterministic hard-deny checks and Bash AST analysis
 - classifier routing for `write` and `edit`
 - symlink-aware safety-control checks
 - token-budgeted transcript selection

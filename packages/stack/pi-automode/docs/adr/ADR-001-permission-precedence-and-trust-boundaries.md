@@ -31,6 +31,8 @@ Pi-automode reads `permissions.allow` only from user-owned configuration sources
 
 Shared `.pi/automode.json` can add deny and ask rules after project trust. It cannot add allow rules.
 
+[ADR-002](ADR-002-global-config-in-extension-data-directory.md) replaces only the global configuration path. Permission precedence and trust boundaries stay unchanged.
+
 For an oversized matcher input, deny and ask rules return a match. Allow rules return no match. This behavior keeps denial rules fail-closed without broadening allow rules.
 
 ## Consequences

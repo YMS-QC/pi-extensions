@@ -180,13 +180,21 @@ function resolvePathForPolicyInner(
   }
 }
 
+function normalizeProtectedPathForMatch(value: string): string {
+  return value
+    .replace(/\\/g, "/")
+    .normalize("NFC")
+    .toLowerCase()
+    .normalize("NFC");
+}
+
 export function matchesProtectedPath(
   relativePath: string,
   protectedPaths: string[],
 ): boolean {
-  const normalizedPath = relativePath.replace(/\\/g, "/");
+  const normalizedPath = normalizeProtectedPathForMatch(relativePath);
   return protectedPaths.some((pattern) => {
-    const normalizedPattern = pattern.replace(/\\/g, "/");
+    const normalizedPattern = normalizeProtectedPathForMatch(pattern);
     return normalizedPath === normalizedPattern ||
       normalizedPath.startsWith(`${normalizedPattern}/`);
   });
@@ -224,8 +232,24 @@ export function isProtectedPath(
 }
 
 export function isSafetyControlPath(path: string, cwd: string): boolean {
-  const normalized = path.replace(/\\/g, "/");
-  const file = basename(normalized).toLowerCase();
+  const policyPath = resolvePathForPolicy(path) ?? resolve(path);
+  const policyCwd = resolvePathForPolicy(cwd) ?? resolve(cwd);
+  const normalized = normalizeProtectedPathForMatch(policyPath);
+  const file = basename(normalized);
+  const piAgentRoot = normalizeProtectedPathForMatch(
+    resolve(HOME, ".pi/agent"),
+  );
+  const globalExtensions = `${piAgentRoot}/extensions`;
+  const globalSettings = `${piAgentRoot}/settings`;
+  if (
+    normalized === `${piAgentRoot}/settings.json` ||
+    normalized === globalExtensions ||
+    normalized.startsWith(`${globalExtensions}/`) ||
+    normalized === globalSettings ||
+    normalized.startsWith(`${globalSettings}/`)
+  ) {
+    return true;
+  }
   if (
     normalized.endsWith("/.pi/auto-mode.json") ||
     normalized.endsWith("/auto-mode.json")
@@ -238,7 +262,7 @@ export function isSafetyControlPath(path: string, cwd: string): boolean {
   if (normalized.includes("/.pi/") && file.startsWith("automode")) return true;
   if (
     normalized.includes("/pi-automode/") ||
-    (isInside(path, cwd) && file.includes("auto-mode"))
+    (isInside(policyPath, policyCwd) && file.includes("auto-mode"))
   ) {
     return true;
   }
@@ -248,13 +272,15 @@ export function isSafetyControlPath(path: string, cwd: string): boolean {
 export function shellPathTokenToPath(
   token: string,
   cwd: string,
+  shellText = token,
 ): string | undefined {
   let value = token.trim();
   if (!value || value === "-" || value.startsWith("&")) return undefined;
   value = value
     .replace(/^\$HOME(?=\/|$)/, HOME)
     .replace(/^\$\{HOME\}(?=\/|$)/, HOME);
-  if (value.startsWith("~/")) value = resolve(HOME, value.slice(2));
+  if (shellText === "~") value = HOME;
+  else if (shellText.startsWith("~/")) value = resolve(HOME, value.slice(2));
   return isAbsolute(value) ? resolve(value) : resolve(cwd, value);
 }
 

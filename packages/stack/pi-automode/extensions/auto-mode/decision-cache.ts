@@ -23,12 +23,16 @@ export class DecisionCache {
   private entries = new Map<string, CacheEntry>();
   private config: DecisionCacheConfig;
 
-  constructor(config: DecisionCacheConfig) {
-    this.config = config;
+  constructor(config: DecisionCacheConfig | undefined) {
+    this.config = config ?? { enabled: false, ttlMs: 300_000, maxEntries: 256 };
   }
 
-  updateConfig(config: DecisionCacheConfig): void {
-    this.config = config;
+  /**
+   * Accept an undefined config (upstream-shaped EffectiveConfig without fork
+   * fields) and fall back to the disabled default instead of throwing.
+   */
+  updateConfig(config: DecisionCacheConfig | undefined): void {
+    this.config = config ?? { enabled: false, ttlMs: 300_000, maxEntries: 256 };
     this.prune();
   }
 

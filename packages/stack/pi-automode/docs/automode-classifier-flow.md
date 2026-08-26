@@ -89,7 +89,7 @@ Pi-automode loads global and inline configuration during extension initializatio
 
 The effective configuration combines these sources:
 
-- `~/.pi/agent/automode.json`
+- `~/.pi/agent/extensions/pi-automode/config.json`
 - `.pi/automode.local.json` for trusted projects
 - `PI_AUTOMODE_SETTINGS_JSON`
 - shared `.pi/automode.json` for trusted projects, but only for `permissions.deny` and `permissions.ask`
@@ -195,7 +195,7 @@ Current deterministic blocks include these actions:
 - dangerous recursive deletes of root, home, or system paths
 - selected system or SSH permission mutations
 
-The `bash` checks use a small shell lexer. It handles quotes, redirects, pipes, `&&`, `||`, and `;`. This catches common "safe prefix, risky suffix" patterns.
+The `bash` checks use the `unbash` abstract syntax tree. They inspect chains, pipelines, compound commands, substitutions, redirects, and literal shell-wrapper scripts.
 
 Recursive-delete checks hard-deny `/`, the user home root, and top-level system roots. They exempt subpaths of the user home because these paths contain user data.
 
@@ -324,7 +324,7 @@ Pi-automode selects the classifier model in this order:
 1. `autoMode.classifierModel` from configuration
 2. the current Pi session model.
 
-`/automode model provider/model-id` and the interactive model picker save `autoMode.classifierModel` to `~/.pi/agent/automode.json`. Project-local `.pi/automode.local.json` can still override that global choice.
+`/automode model provider/model-id` and the interactive model picker save `autoMode.classifierModel` to `~/.pi/agent/extensions/pi-automode/config.json`. Project-local `.pi/automode.local.json` can still override that global choice.
 
 `autoMode.classifierReasoningLevel` can request `low`, `medium`, `high`, `xhigh`, or `max` reasoning for both stages.
 
@@ -424,4 +424,4 @@ The classifier flow can be inspected or changed through slash commands:
 
 `/auto-mode` is an alias.
 
-`/automode off` disables the whole flow for the current session. `/automode on` re-enables it. `/automode model` saves the classifier model to `~/.pi/agent/automode.json`.
+`/automode off` disables the whole flow for the current session. `/automode on` re-enables it. `/automode model` saves the classifier model to `~/.pi/agent/extensions/pi-automode/config.json`.

@@ -13,6 +13,7 @@ import {
   defaultClassifyAction,
   serializeClassifierAction,
 } from "./classifier.ts";
+import { analyzeBash, type BashAnalysis } from "./bash.ts";
 import {
   AUTO_MODE_GUIDANCE,
   DEFAULT_ALLOW,
@@ -21,10 +22,13 @@ import {
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_SOFT_DENY,
   PATH_BEARING_TOOLS,
+  PI_GLOBAL_SETTINGS,
   READ_ONLY_TOOLS,
 } from "./constants.ts";
 import {
+  type GlobalConfigPreparation,
   loadEffectiveConfigWithDiagnostics,
+  prepareGlobalConfig,
   writeGlobalClassifierModel,
 } from "./config.ts";
 import { deterministicHardDeny } from "./hard-deny.ts";
@@ -38,8 +42,10 @@ import {
 import { formatModelSpec, parseModelSpec } from "./model.ts";
 import { promptForClassifierModel } from "./model-selector.ts";
 import {
+  matchesAllowedToolPatterns,
   matchesDeniedPath,
   matchesToolPattern,
+  matchingBashCommandText,
   recursiveSearchMayReachDeniedPath,
 } from "./permissions.ts";
 import {
@@ -68,11 +74,15 @@ import type {
   DenialRecord,
   EffectiveConfig,
 } from "./types.ts";
-import { safeJson } from "./utils.ts";
+import { safeJson, truncateMiddle } from "./utils.ts";
 
 const INSPECT_TOOL = "automode_inspect";
 const INSPECTION_ACTIONS = ["status", "config", "defaults", "denials"] as const;
 type InspectionAction = (typeof INSPECTION_ACTIONS)[number];
+
+function matchedCommandSummary(command: string | undefined): string | undefined {
+  return command ? truncateMiddle(command, 500) : undefined;
+}
 
 function canonicalPath(path: string): string {
   try {
@@ -103,12 +113,16 @@ export type PiAutomodeOptions = {
   loadConfig?: (cwd: string, projectTrusted: boolean) => EffectiveConfig;
   /** Override classifier calls in tests so unit tests never need a real LLM/API key. */
   classifyAction?: ClassifyAction;
-  /** Override classifier-model persistence in tests. Runtime code writes ~/.pi/agent/automode.json. */
+  /** Override classifier-model persistence in tests. Runtime code writes the active global config. */
   saveClassifierModel?: (classifierModel: string) => void;
+  /** Override global config migration and path selection in tests. */
+  prepareGlobalConfig?: () => GlobalConfigPreparation;
   /** Override the application-owned observability log root in tests. */
   logRoot?: string;
   /** Override the observability log clock in tests. */
   now?: () => Date;
+  /** Override Bash analysis in tests. Runtime code uses unbash. */
+  analyzeBash?: typeof analyzeBash;
 };
 
 type LogCtx = {
@@ -158,18 +172,43 @@ function logClassifierIo(decision: ClassifyResult, log: LogCtx): void {
 
 /** Create a Pi extension instance. Default export uses production dependencies. */
 export function createPiAutomode(options: PiAutomodeOptions = {}) {
-  const loadConfigWithDiagnostics = options.loadConfig
-    ? (cwd: string, projectTrusted: boolean): ConfigLoadResult => ({
-      config: options.loadConfig!(cwd, projectTrusted),
-      diagnostics: [],
-    })
-    : loadEffectiveConfigWithDiagnostics;
   const classify = options.classifyAction ?? defaultClassifyAction;
-  const saveClassifierModel = options.saveClassifierModel ??
-    writeGlobalClassifierModel;
   const now = options.now ?? (() => new Date());
 
   return function piAutomode(pi: ExtensionAPI) {
+    const globalConfig = options.prepareGlobalConfig?.() ??
+      (options.loadConfig
+        ? { status: "current" as const, activePath: PI_GLOBAL_SETTINGS[0] }
+        : prepareGlobalConfig());
+    const loadConfigWithDiagnostics = (
+      cwd: string,
+      projectTrusted: boolean,
+    ): ConfigLoadResult => {
+      const result = options.loadConfig
+        ? {
+          config: options.loadConfig(cwd, projectTrusted),
+          diagnostics: [],
+        }
+        : loadEffectiveConfigWithDiagnostics(
+          cwd,
+          projectTrusted,
+          globalConfig.activePath,
+        );
+      return globalConfig.diagnostic
+        ? {
+          ...result,
+          diagnostics: [...result.diagnostics, globalConfig.diagnostic],
+        }
+        : result;
+    };
+    const persistClassifierModel = options.saveClassifierModel ??
+      ((classifierModel: string) =>
+        writeGlobalClassifierModel(classifierModel, globalConfig.activePath));
+    const saveClassifierModel = globalConfig.writeBlockedReason
+      ? (_classifierModel: string) => {
+        throw new Error(globalConfig.writeBlockedReason);
+      }
+      : persistClassifierModel;
     let loadResult = loadConfigWithDiagnostics(process.cwd(), false);
     let config: EffectiveConfig = loadResult.config;
     let configDiagnostics: string[] = loadResult.diagnostics;
@@ -182,6 +221,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       recentDenials: [],
     };
     let loadedContext = "";
+    let globalConfigNoticeShown = false;
 
     function effectiveConfig(): EffectiveConfig {
       return {
@@ -210,13 +250,16 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
     function notify(
       ctx: ExtensionContext | ExtensionCommandContext,
       message: string,
-      kind: "status" | "safety" = "status",
+      kind: "status" | "safety" | "error" = "status",
     ): void {
       if (!ctx.hasUI) return;
       const level = effectiveConfig().notifications;
       if (level === "none") return;
       if (level === "statusOnly" && kind !== "safety") return;
-      ctx.ui.notify(message, kind === "safety" ? "warning" : "info");
+      ctx.ui.notify(
+        message,
+        kind === "status" ? "info" : kind === "safety" ? "warning" : "error",
+      );
     }
 
     function updateUi(ctx: ExtensionContext): void {
@@ -247,6 +290,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           `classifier denied: ${state.classifierDenied}`,
           `permissions.deny rules: ${cfg.permissionDeny.length}`,
           `permissions.ask rules: ${cfg.permissionAsk.length}`,
+          `permissions.allow rules: ${cfg.permissionAllow.length}`,
           `environment entries: ${cfg.environment.length}`,
           `allow entries: ${cfg.allow.length}`,
           `soft_deny entries: ${cfg.softDeny.length}`,
@@ -380,6 +424,17 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       decisionCache.updateConfig(config.decisionCache);
       decisionCache.clear();
       state = restoreState(ctx);
+      if (
+        ctx.hasUI &&
+        globalConfig.notification &&
+        !globalConfigNoticeShown
+      ) {
+        ctx.ui.notify(
+          globalConfig.notification,
+          globalConfig.status === "migrated" ? "info" : "warning",
+        );
+        globalConfigNoticeShown = true;
+      }
       updateUi(ctx);
     });
 
@@ -408,6 +463,27 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       const isOwnedInspection = event.toolName === INSPECT_TOOL &&
         ownsInspectionTool();
       const input = event.input as Record<string, unknown>;
+      let bashAnalysis: BashAnalysis | undefined;
+      if (event.toolName === "bash") {
+        const source = typeof input.command === "string" ? input.command : "";
+        try {
+          bashAnalysis = (options.analyzeBash ?? analyzeBash)(source);
+        } catch (error) {
+          bashAnalysis = {
+            source,
+            commands: [],
+            redirects: [],
+            redirectTargets: [],
+            structure: [],
+            allowStructureSafe: false,
+            errors: [{
+              message: `Bash analysis failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            }],
+          };
+        }
+      }
       const summary = actionSummary(event.toolName, input);
       if (!isOwnedInspection) state.checkedActions += 1;
       const logCtx: LogCtx = {
@@ -427,12 +503,26 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       };
 
       for (const pattern of cfg.permissionDeny) {
-        if (matchesToolPattern(pattern, event.toolName, input, ctx.cwd)) {
+        if (
+          matchesToolPattern(
+            pattern,
+            event.toolName,
+            input,
+            ctx.cwd,
+            "match",
+            bashAnalysis,
+          )
+        ) {
+          const matchedCommand = matchedCommandSummary(
+            matchingBashCommandText(pattern, bashAnalysis),
+          );
           if (isOwnedInspection) state.checkedActions += 1;
           return block(ctx, {
             timestamp: Date.now(),
             toolName: event.toolName,
-            reason: `Blocked by permissions.deny: ${pattern.raw}`,
+            reason: `Blocked by permissions.deny: ${pattern.raw}${
+              matchedCommand ? `; matched command: ${matchedCommand}` : ""
+            }`,
             action: summary,
             kind: "permissions.deny",
           }, logCtx);
@@ -441,16 +531,30 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
 
       let askRequiresClassifier = false;
       for (const pattern of cfg.permissionAsk) {
-        if (!matchesToolPattern(pattern, event.toolName, input, ctx.cwd)) {
+        if (
+          !matchesToolPattern(
+            pattern,
+            event.toolName,
+            input,
+            ctx.cwd,
+            "match",
+            bashAnalysis,
+          )
+        ) {
           continue;
         }
         if (!ctx.hasUI) {
+          const matchedCommand = matchedCommandSummary(
+            matchingBashCommandText(pattern, bashAnalysis),
+          );
           if (isOwnedInspection) state.checkedActions += 1;
           return block(ctx, {
             timestamp: Date.now(),
             toolName: event.toolName,
             reason:
-              `Matched permissions.ask (${pattern.raw}) but no UI is available`,
+              `Matched permissions.ask (${pattern.raw})${
+                matchedCommand ? ` for command: ${matchedCommand}` : ""
+              } but no UI is available`,
             action: summary,
             kind: "permissions.ask",
           }, logCtx);
@@ -461,11 +565,16 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           { signal: ctx.signal },
         );
         if (!allowed) {
+          const matchedCommand = matchedCommandSummary(
+            matchingBashCommandText(pattern, bashAnalysis),
+          );
           if (isOwnedInspection) state.checkedActions += 1;
           return block(ctx, {
             timestamp: Date.now(),
             toolName: event.toolName,
-            reason: `Declined permissions.ask: ${pattern.raw}`,
+            reason: `Declined permissions.ask: ${pattern.raw}${
+              matchedCommand ? `; matched command: ${matchedCommand}` : ""
+            }`,
             action: summary,
             kind: "permissions.ask",
           }, logCtx);
@@ -477,6 +586,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         event.toolName,
         input,
         ctx.cwd,
+        bashAnalysis,
       );
       if (deterministicReason) {
         if (isOwnedInspection) state.checkedActions += 1;
@@ -587,20 +697,18 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       // Deterministic allow tier. It runs after every deterministic denial.
       // Accepted ask rules skip this tier and always reach the classifier.
       if (!askRequiresClassifier) {
-        for (const pattern of cfg.permissionAllow) {
-          if (
-            !matchesToolPattern(
-              pattern,
-              event.toolName,
-              input,
-              ctx.cwd,
-              "no-match",
-            )
-          ) {
-            continue;
-          }
+        if (
+          matchesAllowedToolPatterns(
+            cfg.permissionAllow,
+            event.toolName,
+            input,
+            ctx.cwd,
+            bashAnalysis,
+          )
+        ) {
           // A protected-path write/edit is never covered by permissions.allow;
           // it stays on the classifier path (same rule as the inside-CWD tier).
+          let protectedWrite = false;
           if (event.toolName === "write" || event.toolName === "edit") {
             const inputPath = extractInputPath(event.toolName, input);
             const resolved = inputPath === undefined
@@ -611,17 +719,19 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
               resolved !== undefined &&
               isProtectedPath(resolved, ctx.cwd, cfg.protectedPaths)
             ) {
-              break;
+              protectedWrite = true;
             }
           }
-          return allow(
-            ctx,
-            "permissions.allow",
-            `Allowed by permissions.allow: ${pattern.raw}`,
-            event.toolName,
-            summary,
-            logCtx,
-          );
+          if (!protectedWrite) {
+            return allow(
+              ctx,
+              "permissions.allow",
+              "Allowed by permissions.allow",
+              event.toolName,
+              summary,
+              logCtx,
+            );
+          }
         }
       }
 
@@ -641,7 +751,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       // permission rules already ran above, so a command like
       // `git status && rm -rf /` is still blocked before reaching this tier
       // (hard-deny parses every shell segment).
-      if (event.toolName === "bash" && cfg.bashFastPath.length > 0) {
+      if (event.toolName === "bash" && (cfg.bashFastPath?.length ?? 0) > 0) {
         const matched = cfg.bashFastPath.some((pattern) =>
           matchesToolPattern(pattern, event.toolName, input, ctx.cwd),
         );
@@ -663,7 +773,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       // repeated identical calls. Deterministic tiers above always re-run, so
       // a cached decision never bypasses permissions, hard-deny, or the
       // fast-path tiers.
-      if (cfg.decisionCache.enabled) {
+      if (cfg.decisionCache?.enabled) {
         const cacheKey = DecisionCache.key(
           event.toolName,
           input,
@@ -705,7 +815,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         loadedContext,
       );
       logClassifierIo(decision, logCtx);
-      if (cfg.decisionCache.enabled) {
+      if (cfg.decisionCache?.enabled) {
         decisionCache.set(
           DecisionCache.key(event.toolName, input, ctx.cwd),
           decision.decision,
@@ -875,12 +985,12 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
           ? ctx.modelRegistry.find(parsed.provider, parsed.id)
           : undefined;
         if (!model) {
-          notify(ctx, `Model not found: ${selected}`, "safety");
+          notify(ctx, `Model not found: ${selected}`, "error");
           return;
         }
         const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
         if (!auth.ok) {
-          notify(ctx, auth.error, "safety");
+          notify(ctx, auth.error, "error");
           return;
         }
         const modelSpec = formatModelSpec(model);
@@ -892,7 +1002,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
             `Failed to save classifier model: ${
               error instanceof Error ? error.message : String(error)
             }`,
-            "safety",
+            "error",
           );
           return;
         }
@@ -918,7 +1028,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       notify(
         ctx,
         "Usage: /automode [status|on|off|reload|reset|defaults|config|denials|model [provider/id]]",
-        "safety",
+        "error",
       );
     }
 
