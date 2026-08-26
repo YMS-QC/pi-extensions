@@ -1,9 +1,5 @@
 import { createHash } from "node:crypto";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
-import {
-  complete as compatComplete,
-  completeSimple as compatCompleteSimple,
-} from "@earendil-works/pi-ai/compat";
 import type {
   AssistantMessage,
   Model,
@@ -138,30 +134,57 @@ type RegistryCompletionApi = {
     ) => { result: () => Promise<AssistantMessage> };
   } | undefined;
 };
+type ClassifierCompletionFallbacks = {
+  rawComplete: ClassifierCompletionFn;
+  simpleComplete: ClassifierCompletionFn;
+};
+
+type ClassifierCompletionFallbackLoader =
+  () => Promise<ClassifierCompletionFallbacks>;
+
+// Static import would initialize deprecated compat registries on current Pi;
+// OMP rewrites this literal dynamic import to its native pi-ai module.
+async function loadCompatCompletionFns(): Promise<ClassifierCompletionFallbacks> {
+  const { complete, completeSimple } = await import(
+    "@earendil-works/pi-ai/compat"
+  );
+  return {
+    rawComplete: complete as ClassifierCompletionFn,
+    simpleComplete: completeSimple as ClassifierCompletionFn,
+  };
+}
 
 /**
  * Prefer the current runtime registry so extension-registered providers remain
  * visible. Older Pi-family runtimes (including OMP 18) expose neither
- * `complete` nor `getProvider`; fall back to the compat API they already use.
+ * `complete` nor `getProvider`; lazily load the compat API they already use.
  */
 export function createRegistryCompletionFns(
   registry: RegistryCompletionApi,
-  fallbackRaw: ClassifierCompletionFn = compatComplete,
-  fallbackSimple: ClassifierCompletionFn = compatCompleteSimple,
-): {
-  rawComplete: ClassifierCompletionFn;
-  simpleComplete: ClassifierCompletionFn;
-} {
+  fallbackLoader: ClassifierCompletionFallbackLoader =
+    loadCompatCompletionFns,
+): ClassifierCompletionFallbacks {
+  let fallbackPromise: Promise<ClassifierCompletionFallbacks> | undefined;
   const rawComplete: ClassifierCompletionFn =
     typeof registry.complete === "function"
       ? (model, context, options) =>
         registry.complete!.call(registry, model, context, options)
-      : fallbackRaw;
+      : async (model, context, options) =>
+        (await (fallbackPromise ??= fallbackLoader())).rawComplete(
+          model,
+          context,
+          options,
+        );
   const simpleComplete: ClassifierCompletionFn =
     typeof registry.getProvider === "function"
       ? (model, context, options) =>
         completeSimpleWithRegistry(registry, model, context, options)
-      : fallbackSimple;
+      : async (model, context, options) =>
+        (await (fallbackPromise ??= fallbackLoader())).simpleComplete(
+          model,
+          context,
+          options,
+        );
   return { rawComplete, simpleComplete };
 }
 
