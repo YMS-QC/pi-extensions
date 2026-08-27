@@ -22,8 +22,10 @@ import {
   markTelegramSyncSliceFresh,
   markTelegramSyncSliceSuspect,
   recoverStaleTelegramTopicApiError,
+  settleStaleTelegramTopicExecutionFailure,
   shouldReconcileTelegramSync,
 } from "../lib/sync.ts";
+import { TelegramApiStaleTargetError } from "../lib/telegram-api.ts";
 import { createTelegramTopicTargetStore } from "../lib/threads.ts";
 
 test("Telegram sync state runtime owns transitions and nested provisioning activity", () => {
@@ -170,6 +172,29 @@ test("Telegram sync recovers stale topic API errors outside the entrypoint", asy
   assert.deepEqual(events, [
     { category: "bus", phase: "topic-target-stale", threadId: 42 },
   ]);
+});
+
+test("Telegram sync terminally settles authenticated stale evidence after leader recovery", async () => {
+  const store = createTopicStore([]);
+  let state = createUnknownTelegramSyncState();
+  const settled = await settleStaleTelegramTopicExecutionFailure(
+    new TelegramApiStaleTargetError(
+      "Telegram API sendMessage failed: Bad Request: message thread not found",
+      { chatId: 7, threadId: 42 },
+    ),
+    {
+      topicTargetStore: store,
+      getSyncState: () => state,
+      setSyncState: (nextState) => {
+        state = nextState;
+      },
+      recordEvent() {},
+    },
+  );
+
+  assert.equal(settled, true);
+  assert.equal(store.persisted, false);
+  assert.equal(state["topic-state"]?.status, "unknown");
 });
 
 test("Telegram sync ignores non-stale topic API errors", async () => {

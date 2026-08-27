@@ -4,6 +4,7 @@
  * Owns pure contracts for deciding when local Telegram mirror state should be refreshed without querying Telegram on every action
  */
 
+import { getTelegramApiErrorRequestTarget } from "./telegram-api.ts";
 import { getTelegramTargetKey, type TelegramTarget } from "./target.ts";
 import * as ThreadReconciler from "./thread-reconciler.ts";
 import {
@@ -421,6 +422,22 @@ export function createTelegramStaleTopicApiErrorRecoveryRuntime<
 ): (apiBody: unknown, error: unknown) => Promise<boolean> {
   return (apiBody, error) =>
     recoverStaleTelegramTopicApiError(apiBody, error, deps);
+}
+
+export async function settleStaleTelegramTopicExecutionFailure<
+  TSyncState extends TelegramSyncState,
+>(
+  error: unknown,
+  deps: TelegramStaleTopicApiErrorRecoveryDeps<TSyncState>,
+): Promise<boolean> {
+  const target = getTelegramApiErrorRequestTarget(error);
+  if (!target || !isTelegramTopicTargetStaleError(error)) return false;
+  await recoverStaleTelegramTopicApiError(
+    { chat_id: target.chatId, message_thread_id: target.threadId },
+    error,
+    deps,
+  );
+  return true;
 }
 
 export async function recoverStaleTelegramTopicApiError<

@@ -20,6 +20,7 @@ import type { TelegramTarget } from "./target.ts";
 import {
   isTelegramApiMethodRetrySafe,
   TelegramApiCommitUnknownError,
+  TelegramApiStaleTargetError,
 } from "./telegram-api.ts";
 import {
   createTelegramBusFollowerDeliveryIdentity,
@@ -898,6 +899,20 @@ export function createTelegramBusFollowerApiCaller(
       response?.kind === "bus.ack"
         ? response.message
         : "Telegram bus API call did not return an acknowledgement.";
+    if (
+      response?.kind === "bus.ack" &&
+      response.error?.code === "stale-target" &&
+      response.error.chatId !== undefined &&
+      response.error.threadId !== undefined
+    ) {
+      throw new TelegramApiStaleTargetError(
+        message ?? "Telegram thread target is stale.",
+        {
+          chatId: response.error.chatId,
+          threadId: response.error.threadId,
+        },
+      );
+    }
     if (
       response?.kind === "bus.ack" &&
       response.error?.code === "commit-unknown"

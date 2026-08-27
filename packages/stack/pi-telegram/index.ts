@@ -844,6 +844,16 @@ export default function (pi: Pi.ExtensionAPI) {
         });
       },
     );
+  const staleTopicApiErrorRecoveryDeps = {
+    topicTargetStore: threadStore,
+    getSyncState: telegramSyncStateRuntime.getState,
+    setSyncState: telegramSyncStateRuntime.setState,
+    recordEvent: recordRuntimeEvent,
+  };
+  const recoverStaleTelegramTopicApiError =
+    Sync.createTelegramStaleTopicApiErrorRecoveryRuntime(
+      staleTopicApiErrorRecoveryDeps,
+    );
   const {
     owner: updateWorkerOwnerRuntime,
     leader: updateAdmissionLifecycleRuntime,
@@ -867,6 +877,12 @@ export default function (pi: Pi.ExtensionAPI) {
     worker: {
       defaultHandle: inboundRouteRuntime.handleUpdate,
       onStateChange: runtimeDiagnostics.scheduleSnapshotPersist,
+      settleTerminalExecutionFailure(error) {
+        return Sync.settleStaleTelegramTopicExecutionFailure(
+          error,
+          staleTopicApiErrorRecoveryDeps,
+        );
+      },
     },
     leader: {
       resolveBinding: resolveTelegramUpdateJournalBinding,
@@ -1055,13 +1071,6 @@ export default function (pi: Pi.ExtensionAPI) {
       updateStatus,
       onPollingStateChange: runtimeDiagnostics.scheduleSnapshotPersist,
       recordRuntimeEvent,
-    });
-  const recoverStaleTelegramTopicApiError =
-    Sync.createTelegramStaleTopicApiErrorRecoveryRuntime({
-      topicTargetStore: threadStore,
-      getSyncState: telegramSyncStateRuntime.getState,
-      setSyncState: telegramSyncStateRuntime.setState,
-      recordEvent: recordRuntimeEvent,
     });
   const authorizeFollowerApiCall = Bus.createTelegramFollowerApiCallAuthorizer({
     isMessageOwned: messageOwnershipRuntime.isOwnedByFollower,

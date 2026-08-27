@@ -816,8 +816,11 @@ export type TelegramBusEnvelope = (
           | "commit-unknown"
           | "request-id-collision"
           | "ledger-overloaded"
-          | "incompatible-protocol";
+          | "incompatible-protocol"
+          | "stale-target";
         method?: string;
+        chatId?: number;
+        threadId?: number;
       };
     }
 ) & { auth?: string };
@@ -945,6 +948,18 @@ export interface TelegramBusLocalServer {
   start: () => Promise<void>;
   stop: () => Promise<void>;
   ensureEndpoint: () => Promise<boolean>;
+}
+
+const TELEGRAM_ACTIVE_LOCAL_SERVERS = Symbol.for(
+  "@llblab/pi-telegram/active-local-servers",
+);
+type TelegramBusServerGlobal = typeof globalThis & {
+  [TELEGRAM_ACTIVE_LOCAL_SERVERS]?: Map<string, TelegramBusLocalServer>;
+};
+
+function getActiveTelegramBusLocalServers(): Map<string, TelegramBusLocalServer> {
+  const root = globalThis as TelegramBusServerGlobal;
+  return (root[TELEGRAM_ACTIVE_LOCAL_SERVERS] ??= new Map());
 }
 
 export type TelegramBusSocketPathSource = string | (() => string);
@@ -1560,6 +1575,11 @@ export function createTelegramBusLocalServer(
     start: async () => {
       if (server) return;
       const socketPath = resolveTelegramBusSocketPath(deps.socketPath);
+      const activeServers = getActiveTelegramBusLocalServers();
+      const replacedServer = activeServers.get(socketPath);
+      if (replacedServer && replacedServer !== runtime) {
+        await replacedServer.stop();
+      }
       const usesWindowsPipe = isTelegramBusPipePath(socketPath);
       const endpointGeneration = randomBytes(8).toString("hex");
       const listenPath = usesWindowsPipe
@@ -1598,6 +1618,19 @@ export function createTelegramBusLocalServer(
           await delayTelegramBusTransportRetry(25);
         }
       }
+      if (usesWindowsPipe) {
+        await deps.beforeEndpointPublication?.();
+        const committed = deps.commitEndpointPublication
+          ? deps.commitEndpointPublication(() => {})
+          : true;
+        if (!committed) {
+          activeSocketPath = undefined;
+          activeListenPath = undefined;
+          throw new Error(
+            "Telegram bus endpoint publication lost transport ownership.",
+          );
+        }
+      }
       server = createServer((socket) => {
         sockets.add(socket);
         let buffer = "";
@@ -1631,6 +1664,7 @@ export function createTelegramBusLocalServer(
           server?.once("error", reject);
           server?.listen(listenPath, resolve);
         });
+        activeServers.set(socketPath, runtime);
         deps.recordTransportEvent?.(
           "server-started",
           getTelegramBusEndpointDiagnostics(socketPath),
@@ -1671,6 +1705,9 @@ export function createTelegramBusLocalServer(
           server = undefined;
           activeSocketPath = undefined;
           activeListenPath = undefined;
+          if (activeServers.get(socketPath) === runtime) {
+            activeServers.delete(socketPath);
+          }
           if (failedServer) {
             await new Promise<void>((resolve) =>
               failedServer.close(() => resolve()),
@@ -1686,6 +1723,12 @@ export function createTelegramBusLocalServer(
       const activeServer = server;
       const socketPath = activeSocketPath;
       const listenPath = activeListenPath;
+      if (
+        socketPath &&
+        getActiveTelegramBusLocalServers().get(socketPath) === runtime
+      ) {
+        getActiveTelegramBusLocalServers().delete(socketPath);
+      }
       server = undefined;
       activeSocketPath = undefined;
       activeListenPath = undefined;
@@ -2527,13 +2570,24 @@ function parseAckEnvelope(
       code === "commit-unknown" ||
       code === "request-id-collision" ||
       code === "ledger-overloaded" ||
-      code === "incompatible-protocol"
+      code === "incompatible-protocol" ||
+      code === "stale-target"
     ) {
+      const chatId = value.error.chatId;
+      const threadId = value.error.threadId;
+      if (
+        code === "stale-target" &&
+        (!Number.isSafeInteger(chatId) || !Number.isSafeInteger(threadId))
+      ) {
+        return undefined;
+      }
       envelope.error = {
         code,
         ...(typeof value.error.method === "string"
           ? { method: value.error.method }
           : {}),
+        ...(typeof chatId === "number" ? { chatId } : {}),
+        ...(typeof threadId === "number" ? { threadId } : {}),
       };
     }
   }

@@ -4,6 +4,7 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -23,6 +24,17 @@ test("Command templates split shell-like words without invoking a shell", () => 
     splitCommandTemplate("tool 'literal words' --name hello\\ world"),
     ["tool", "literal words", "--name", "hello world"],
   );
+});
+
+test("Command templates preserve quoted and unquoted Windows path separators", () => {
+  assert.deepEqual(
+    splitCommandTemplate('"C:\\Program Files\\Voice\\tts.cmd" "C:\\Temp\\voice output.ogg"'),
+    ["C:\\Program Files\\Voice\\tts.cmd", "C:\\Temp\\voice output.ogg"],
+  );
+  assert.deepEqual(splitCommandTemplate("C:\\Tools\\tts.exe --voice"), [
+    "C:\\Tools\\tts.exe",
+    "--voice",
+  ]);
 });
 
 test("Command templates accept shorthand string configs", () => {
@@ -266,6 +278,41 @@ test("Command templates resolve array-index placeholders and recursive defaults"
   );
   assert.deepEqual(invocation.args, ["right"]);
 });
+
+test(
+  "Command template execution supports Windows cmd wrappers without a shell template",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-telegram-command-cmd-"));
+    const binDir = join(dir, "node_modules", ".bin");
+    await mkdir(binDir, { recursive: true });
+    const scriptPath = join(binDir, "voice-writer.cmd");
+    const writerPath = join(dir, "voice-writer.mjs");
+    const outputPath = join(dir, "voice output.ogg");
+    const injectedPath = join(dir, "injected.txt");
+    await writeFile(
+      writerPath,
+      'import { writeFileSync } from "node:fs"; writeFileSync(process.argv[2], `${process.argv[3]}\\r\\n`);\n',
+      "utf8",
+    );
+    await writeFile(
+      scriptPath,
+      `@echo off\r\n@\"${process.execPath}\" \"${writerPath}\" %*\r\n`,
+      "utf8",
+    );
+    try {
+      const text = `voice & echo injected>\"${injectedPath}\"`;
+      const result = await execCommandTemplate(scriptPath, [outputPath, text], {
+        timeout: 5_000,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(await readFile(outputPath, "utf8"), `${text}\r\n`);
+      await assert.rejects(readFile(injectedPath, "utf8"), { code: "ENOENT" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("Command template execution writes stdin without invoking a shell", async () => {
   const result = await execCommandTemplate(

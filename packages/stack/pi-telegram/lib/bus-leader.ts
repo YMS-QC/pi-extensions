@@ -8,6 +8,7 @@
 import * as Sync from "./sync.ts";
 import * as ThreadReconciler from "./thread-reconciler.ts";
 import {
+  getTelegramApiErrorRequestTarget,
   isTelegramApiCommitUnknownError,
   type TelegramApiCallOptions,
 } from "./telegram-api.ts";
@@ -1756,6 +1757,10 @@ async function handleFollowerApiCall(
       result,
     };
   } catch (error) {
+    const staleTarget =
+      Threads.isTelegramTopicTargetStaleError(error)
+        ? getTelegramApiErrorRequestTarget(error)
+        : undefined;
     return {
       kind: "bus.ack",
       requestId: envelope.requestId,
@@ -1764,14 +1769,22 @@ async function handleFollowerApiCall(
         error instanceof Error
           ? error.message
           : "Telegram bus API call failed.",
-      ...(isTelegramApiCommitUnknownError(error)
+      ...(staleTarget
         ? {
             error: {
-              code: "commit-unknown" as const,
-              method: error.method,
+              code: "stale-target" as const,
+              chatId: staleTarget.chatId,
+              threadId: staleTarget.threadId,
             },
           }
-        : {}),
+        : isTelegramApiCommitUnknownError(error)
+          ? {
+              error: {
+                code: "commit-unknown" as const,
+                method: error.method,
+              },
+            }
+          : {}),
     };
   }
 }

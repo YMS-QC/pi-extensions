@@ -587,6 +587,7 @@ export function isTelegramApiCommitUnknownError(
 class TelegramApiHttpError extends Error {
   readonly status: number | undefined;
   readonly retryAfterSeconds: number | undefined;
+  requestTarget?: { chatId: number; threadId: number };
   constructor(
     message: string,
     status: number | undefined,
@@ -596,6 +597,41 @@ class TelegramApiHttpError extends Error {
     this.status = status;
     this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+function attachTelegramApiRequestTarget(
+  error: unknown,
+  body: Record<string, unknown> | Record<string, string>,
+): void {
+  if (!(error instanceof TelegramApiHttpError)) return;
+  const chatId = Number(body.chat_id);
+  const threadId = Number(body.message_thread_id);
+  if (!Number.isSafeInteger(chatId) || !Number.isSafeInteger(threadId)) return;
+  error.requestTarget = { chatId, threadId };
+}
+
+export class TelegramApiStaleTargetError extends Error {
+  readonly requestTarget: { chatId: number; threadId: number };
+
+  constructor(
+    message: string,
+    requestTarget: { chatId: number; threadId: number },
+  ) {
+    super(message);
+    this.name = "TelegramApiStaleTargetError";
+    this.requestTarget = { ...requestTarget };
+  }
+}
+
+export function getTelegramApiErrorRequestTarget(
+  error: unknown,
+): { chatId: number; threadId: number } | undefined {
+  const target =
+    error instanceof TelegramApiHttpError ||
+    error instanceof TelegramApiStaleTargetError
+      ? error.requestTarget
+      : undefined;
+  return target ? { ...target } : undefined;
 }
 
 export function isTelegramMessageNotModifiedError(error: unknown): boolean {
@@ -1156,21 +1192,26 @@ export async function callTelegram<TResponse>(
   options?: TelegramApiCallOptions,
 ): Promise<TResponse> {
   const configuredBotToken = assertTelegramBotTokenConfigured(botToken);
-  return callTelegramWithRetry(
-    method,
-    async (family) =>
-      telegramFetch(
-        `${TELEGRAM_API_BASE}/bot${configuredBotToken}/${method}`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-          signal: options?.signal,
-        },
-        family,
-      ),
-    options,
-  );
+  try {
+    return await callTelegramWithRetry(
+      method,
+      async (family) =>
+        telegramFetch(
+          `${TELEGRAM_API_BASE}/bot${configuredBotToken}/${method}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+            signal: options?.signal,
+          },
+          family,
+        ),
+      options,
+    );
+  } catch (error) {
+    attachTelegramApiRequestTarget(error, body);
+    throw error;
+  }
 }
 
 export type TelegramBotIdentityResponse = Pick<
@@ -1206,43 +1247,48 @@ export async function callTelegramMultipart<TResponse>(
 ): Promise<TResponse> {
   const configuredBotToken = assertTelegramBotTokenConfigured(botToken);
   const fileBlob = await openAsBlob(filePath);
-  return callTelegramWithRetry(
-    method,
-    async (family) => {
-      if (family) {
-        const multipart = await buildTelegramMultipartBody(
-          fields,
-          fileField,
-          fileBlob,
-          fileName,
-        );
+  try {
+    return await callTelegramWithRetry(
+      method,
+      async (family) => {
+        if (family) {
+          const multipart = await buildTelegramMultipartBody(
+            fields,
+            fileField,
+            fileBlob,
+            fileName,
+          );
+          return telegramFetch(
+            `${TELEGRAM_API_BASE}/bot${configuredBotToken}/${method}`,
+            {
+              method: "POST",
+              headers: { "content-type": multipart.contentType },
+              body: multipart.body as unknown as BodyInit,
+              signal: options?.signal,
+            },
+            family,
+          );
+        }
+        const form = new FormData();
+        for (const [key, value] of Object.entries(fields)) {
+          form.set(key, value);
+        }
+        form.set(fileField, fileBlob, fileName);
         return telegramFetch(
           `${TELEGRAM_API_BASE}/bot${configuredBotToken}/${method}`,
           {
             method: "POST",
-            headers: { "content-type": multipart.contentType },
-            body: multipart.body as unknown as BodyInit,
+            body: form,
             signal: options?.signal,
           },
-          family,
         );
-      }
-      const form = new FormData();
-      for (const [key, value] of Object.entries(fields)) {
-        form.set(key, value);
-      }
-      form.set(fileField, fileBlob, fileName);
-      return telegramFetch(
-        `${TELEGRAM_API_BASE}/bot${configuredBotToken}/${method}`,
-        {
-          method: "POST",
-          body: form,
-          signal: options?.signal,
-        },
-      );
-    },
-    options,
-  );
+      },
+      options,
+    );
+  } catch (error) {
+    attachTelegramApiRequestTarget(error, fields);
+    throw error;
+  }
 }
 
 export async function downloadTelegramFile(
