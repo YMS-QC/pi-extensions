@@ -101,7 +101,7 @@ The extension blocks these before any allow or classifier decision:
 - SSH `authorized_keys` writes
 - cron, launch agent, and system service persistence
 - TLS/certificate/auth weakening patterns
-- root, home, and system-path destructive deletes
+- root, home, and system-path destructive deletes. Subtrees of validated launcher-declared temp directories are treated as disposable. Declared roots that alias `HOME`, `/`, or a system root, or that contain `HOME`, are rejected instead.
 - edits to `.pi/automode*`, `.pi` auto-mode files, and this extension's safety-control files
 
 After these checks, pi-automode applies `permissions.allow`. Protected `write` and `edit` targets continue to the classifier.

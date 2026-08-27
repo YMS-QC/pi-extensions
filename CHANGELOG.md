@@ -7,6 +7,8 @@ All notable changes to this project are documented in this file.
 ## Bug fixes
 
 - **Classifier stream timeout** — Apply `classifierTimeoutMs` to the full response stream. Provider behavior cannot keep classifier calls pending after the deadline. Parent cancellation remains active. Reject values above the Node.js timer limit. (#30)
+- **OS temp-directory deletes** — Stop hard-denying recursive-delete subtrees under `os.tmpdir()` and `/tmp`. On macOS these resolve into `/private/tmp` and `/private/var/folders`, which matched the `/private` system root and blocked every temp cleanup. Deleting a temp root itself stays blocked. (#31)
+- **Validated temp-root declarations** — Derive the exempt temp roots only from launcher-declared values that stay safe: reject values such as `/`, empty strings, aliases of `HOME`, `/`, or a system root, and ancestors of `HOME`. Without validation, a malformed `TMPDIR` could disable deterministic denials for protected targets, and a broad `permissions.allow` rule could then allow the action without classifier review. Recompute candidates when the effective tmpdir changes. (#31)
 
 ## [1.13.0] - 2026-08-25
 
