@@ -61,6 +61,8 @@ export const DENIAL_HISTORY_LIMIT = 12;
 
 /** Per-request timeout for classifier completions (fast and detailed stages). */
 export const DEFAULT_CLASSIFIER_TIMEOUT_MS = 20_000;
+/** Largest timeout that Node can represent without reducing it to 1 ms. */
+export const MAX_CLASSIFIER_TIMEOUT_MS = 2_147_483_647;
 
 /** Built-in trusted environment. Users extend this with `$defaults`. */
 export const DEFAULT_ENVIRONMENT = [

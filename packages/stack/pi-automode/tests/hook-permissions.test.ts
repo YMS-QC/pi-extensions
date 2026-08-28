@@ -1122,3 +1122,26 @@ test("permissions.allow does not cover protected out-of-tree edits", async () =>
 		rmSync(base, { recursive: true, force: true });
 	}
 });
+
+test("tool_call broad permissions.allow cannot bypass deterministic denies under malformed TMPDIR", async () => {
+	const pattern = parseToolPattern("bash(rm -rf *)");
+	assert.ok(pattern);
+	const previousTmpdir = process.env.TMPDIR;
+	try {
+		process.env.TMPDIR = "/";
+		const harness = await setupHookTest({
+			config: baseConfig({ permissionAllow: [pattern] }),
+		});
+
+		const result = await harness.emit("tool_call", {
+			toolName: "bash",
+			input: { command: "rm -rf /etc/nginx" },
+		}, harness.ctx) as { block?: boolean; reason?: string };
+
+		assert.equal(result.block, true);
+		assert.match(result.reason ?? "", /irreversible deletion/);
+	} finally {
+		if (previousTmpdir === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = previousTmpdir;
+	}
+});

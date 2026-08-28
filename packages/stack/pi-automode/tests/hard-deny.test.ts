@@ -1,11 +1,12 @@
 import { existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import os from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
 	deterministicHardDeny,
 	isRootHomeOrSystemPath,
+	tempRootCandidates,
 } from "../extensions/auto-mode.ts";
 
 test("deterministic hard deny catches safety-control edits", () => {
@@ -230,6 +231,65 @@ test("AST hard-deny checks protect recursive rm variants and system roots", () =
 	}
 });
 
+test("AST hard-deny checks exempt OS temp-directory subtrees", () => {
+	// Reported false positive: `rm -rf /tmp/<dir>` hard-denied on macOS because
+	// /tmp is a symlink to /private/tmp and /private matched as a system root.
+	assert.equal(
+		deterministicHardDeny(
+			"bash",
+			{ command: "rm -rf /tmp/automode-allow-test" },
+			process.cwd(),
+		),
+		undefined,
+	);
+
+	// Deleting a temp directory created with mktemp/mkdtemp is routine cleanup.
+	// Prefix avoids the separate "pi-automode" substring safety-control deny so
+	// this test exercises only the temp-root logic.
+	const created = mkdtempSync(join(os.tmpdir(), "automode-temp-subtree-"));
+	try {
+		assert.equal(
+			deterministicHardDeny(
+				"bash",
+				{ command: `rm -rf ${created}` },
+				process.cwd(),
+			),
+			undefined,
+		);
+	} finally {
+		rmSync(created, { recursive: true, force: true });
+	}
+
+	// Compound form from the field report stays allowed end to end.
+	assert.equal(
+		deterministicHardDeny(
+			"bash",
+			{ command: "rm -rf /tmp/foolfighter-debug && mkdir /tmp/foolfighter-debug && docker cp c:/data/x.db /tmp/foolfighter-debug/x.db" },
+			process.cwd(),
+		),
+		undefined,
+	);
+});
+
+test(
+	"AST hard-deny checks keep the OS temp roots themselves protected",
+	{ skip: process.platform !== "darwin" },
+	() => {
+		for (const command of [
+			"rm -rf /tmp",
+			"rm -rf /private/tmp",
+			"rm -rf /var/folders",
+			"rm -rf /private/var/folders",
+		]) {
+			assert.match(
+				deterministicHardDeny("bash", { command }, process.cwd()) ?? "",
+				/irreversible deletion/,
+				command,
+			);
+		}
+	},
+);
+
 test("AST hard-deny checks leave literal tildes and application roots to review", () => {
 	for (const command of [
 		`rm -rf "~"`,
@@ -322,4 +382,126 @@ test("isRootHomeOrSystemPath exempts home subtree but keeps home root and system
 	assert.equal(isRootHomeOrSystemPath("/etc/hosts", stdHome), true);
 	assert.equal(isRootHomeOrSystemPath("/opt/app", stdHome), false);
 	assert.equal(isRootHomeOrSystemPath("/srv/app", stdHome), false);
+});
+
+test("isRootHomeOrSystemPath exempts temp subtrees but keeps temp roots", () => {
+	// Injectable candidates keep this platform-independent: callers pass
+	// symlink-resolved policy paths (`/tmp` → `/private/tmp` on macOS) and
+	// unresolved fallbacks alike, so both spellings must be listed.
+	const home = "/home/jdoe";
+	const temps = ["/tmp", "/private/tmp", "/var/folders/gn/T"];
+	assert.equal(isRootHomeOrSystemPath("/tmp/project/sub", home, temps), false);
+	assert.equal(
+		isRootHomeOrSystemPath("/private/tmp/session", home, temps),
+		false,
+	);
+	assert.equal(isRootHomeOrSystemPath("/var/folders/gn/T/x", home, temps), false);
+	assert.equal(isRootHomeOrSystemPath("/tmp", home, temps), true); // root itself stays blocked
+	assert.equal(isRootHomeOrSystemPath("/private/tmp", home, temps), true);
+	assert.equal(isRootHomeOrSystemPath("/var/folders/gn/T", home, temps), true);
+	assert.equal(isRootHomeOrSystemPath("/usr/local/lib", home, temps), true);
+	assert.equal(isRootHomeOrSystemPath("/etc/hosts", home, temps), true);
+});
+
+test("isRootHomeOrSystemPath keeps exact protections ahead of temp candidates", () => {
+	// Injected candidates must never defeat exact protections: the Silverblue
+	// home root, `/`, system subtrees, and broader declared values all stay
+	// protected no matter what callers pass as tempRoots.
+	const home = "/var/home/jdoe";
+	assert.equal(isRootHomeOrSystemPath(home, home, ["/var"]), true);
+	assert.equal(isRootHomeOrSystemPath("/etc/nginx", "/Users/x", [""]), true);
+	assert.equal(isRootHomeOrSystemPath("/", "/Users/x", [""]), true);
+	assert.equal(
+		isRootHomeOrSystemPath("/private/etc/ssl", "/Users/x", ["/private"]),
+		true,
+	);
+	assert.equal(isRootHomeOrSystemPath("/usr/share/doc", "/Users/x", ["/usr"]), true);
+});
+
+test("tempRootCandidates rejects malformed, protected, and home-ancestor declarations", async () => {
+	const previousTmpdir = process.env.TMPDIR;
+	const setTmpdir = (value: string | undefined) => {
+		if (value === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = value;
+	};
+	try {
+		// Distinct query strings give each check a pristine module instance, so
+		// earlier suite calls cannot mask these through memoization.
+		setTmpdir("/");
+		const slashModule = await import(
+			`../extensions/auto-mode/hard-deny.ts?tmp-root-slash`
+		);
+		assert.ok(
+			!slashModule.tempRootCandidates().includes(""),
+			slashModule.tempRootCandidates().join(","),
+		);
+
+		setTmpdir("/private");
+		const privateModule = await import(
+			`../extensions/auto-mode/hard-deny.ts?tmp-root-private`
+		);
+		assert.ok(
+			!privateModule.tempRootCandidates().includes("/private"),
+			privateModule.tempRootCandidates().join(","),
+		);
+
+		setTmpdir("/etc/cache");
+		const cacheModule = await import(
+			`../extensions/auto-mode/hard-deny.ts?tmp-root-cache`
+		);
+		const cacheRoots = [...cacheModule.tempRootCandidates()];
+		assert.ok(cacheRoots.some((root) => root.endsWith("/etc/cache")));
+
+		setTmpdir("/var");
+		const varModule = await import(
+			`../extensions/auto-mode/hard-deny.ts?tmp-root-var`
+		);
+		const varRoots = [...varModule.tempRootCandidates()];
+		assert.ok(!varRoots.includes("/var"), varRoots.join(","));
+		if (process.platform === "darwin") {
+			assert.ok(!varRoots.includes("/private/var"), varRoots.join(","));
+		}
+
+		setTmpdir(join(os.homedir(), ".."));
+		const ancestorModule = await import(
+			`../extensions/auto-mode/hard-deny.ts?tmp-root-ancestor`
+		);
+		assert.ok(
+			!ancestorModule.tempRootCandidates().includes(resolve(os.homedir(), "..")),
+			ancestorModule.tempRootCandidates().join(","),
+		);
+	} finally {
+		setTmpdir(previousTmpdir);
+	}
+});
+
+test("tempRootCandidates recomputes when the effective tmpdir changes", () => {
+	const previousTmpdir = process.env.TMPDIR;
+	try {
+		process.env.TMPDIR = "/etc/cache-first";
+		const first = tempRootCandidates();
+		process.env.TMPDIR = "/etc/cache-second";
+		const second = tempRootCandidates();
+		assert.ok(first.some((root) => root.endsWith("/cache-first")), first.join(","));
+		assert.ok(second.some((root) => root.endsWith("/cache-second")));
+		assert.ok(!second.some((root) => root.endsWith("/cache-first")));
+	} finally {
+		if (previousTmpdir === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = previousTmpdir;
+	}
+});
+
+test("AST hard-deny applies temp policy to find -delete roots", () => {
+	assert.equal(
+		deterministicHardDeny(
+			"bash",
+			{ command: "find /tmp/automode-find-subtree -delete" },
+			process.cwd(),
+		),
+		undefined,
+	);
+	assert.match(
+		deterministicHardDeny("bash", { command: "find /tmp -delete" }, process.cwd()) ?? "",
+		/system-wide delete/,
+	);
 });

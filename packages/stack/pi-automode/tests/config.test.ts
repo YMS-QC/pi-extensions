@@ -1085,7 +1085,23 @@ test("validateSettingsFile rejects classifierTimeoutMs below 1000", () => {
 		"inline",
 	);
 	assert.ok(
-		diagnostics.some((d) => /classifierTimeoutMs must be an integer of at least 1000/.test(d)),
+		diagnostics.some((d) => /classifierTimeoutMs must be an integer from 1000 through 2147483647/.test(d)),
+	);
+});
+
+test("validateSettingsFile rejects classifierTimeoutMs above the Node timer limit", () => {
+	const diagnostics = validateSettingsFile(
+		{ autoMode: { classifierTimeoutMs: 2_147_483_648 } },
+		"inline",
+	);
+	assert.ok(
+		diagnostics.some((d) => /classifierTimeoutMs must be an integer from 1000 through 2147483647/.test(d)),
+	);
+	assert.equal(
+		buildEffectiveConfigFromSources({
+			globalSettings: [{ autoMode: { classifierTimeoutMs: 2_147_483_648 } }],
+		}).classifierTimeoutMs,
+		20_000,
 	);
 });
 

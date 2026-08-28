@@ -155,6 +155,55 @@ export type ClassifierCompletionPlan = {
   reasoningLevel?: Exclude<EffectiveClassifierReasoningLevel, "off">;
 };
 
+async function completeClassifierAttempt(
+  completeFn: ClassifierCompletionFn,
+  model: Model<any>,
+  prompt: Parameters<ClassifierCompletionFn>[1],
+  parentSignal: AbortSignal | undefined,
+  options: Omit<Parameters<ClassifierCompletionFn>[2], "signal">,
+): Promise<AssistantMessage> {
+  if (options.timeoutMs === undefined) {
+    return completeFn(model, prompt, {
+      ...options,
+      ...(parentSignal === undefined ? {} : { signal: parentSignal }),
+    });
+  }
+
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) onParentAbort();
+  else parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      const reason = controller.signal.reason;
+      reject(reason instanceof Error ? reason : new Error("Classifier request aborted."));
+    };
+    if (controller.signal.aborted) onAbort();
+    else controller.signal.addEventListener("abort", onAbort, { once: true });
+  });
+  const timer = setTimeout(() => {
+    controller.abort(
+      new Error(`Classifier request timed out after ${options.timeoutMs} ms.`),
+    );
+  }, options.timeoutMs);
+
+  try {
+    return await Promise.race([
+      completeFn(model, prompt, {
+        ...options,
+        signal: controller.signal,
+      }),
+      aborted,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) controller.signal.removeEventListener("abort", onAbort);
+    parentSignal?.removeEventListener("abort", onParentAbort);
+  }
+}
+
 /**
  * Run normalized Pi AI completion through the provider in Pi's runtime registry.
  * This temporary bridge is only valid until Pi exposes
@@ -435,14 +484,15 @@ export async function classifyWithRetry(
     const started = Date.now();
     let response: AssistantMessage;
     try {
-      response = await completeFn(
+      response = await completeClassifierAttempt(
+        completeFn,
         classifier.model,
         prompt,
+        signal,
         {
           apiKey: classifier.apiKey,
           headers: classifier.headers,
           env: classifier.env,
-          signal,
           maxTokens,
           ...(temperature === undefined ? {} : { temperature }),
           ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
@@ -505,7 +555,8 @@ export async function classifyInStages(
   const fastStarted = Date.now();
   let fastResponse: AssistantMessage;
   try {
-    fastResponse = await completeFn(
+    fastResponse = await completeClassifierAttempt(
+      completeFn,
       classifier.model,
       {
         systemPrompt: prompt.systemPrompt,
@@ -515,11 +566,11 @@ export async function classifyInStages(
           stageMessage(CLASSIFIER_FAST_INSTRUCTION),
         ],
       },
+      signal,
       {
         apiKey: classifier.apiKey,
         headers: classifier.headers,
         env: classifier.env,
-        signal,
         // Reasoning and OpenAI-compatible models may consume hidden reasoning,
         // control, and EOS tokens before emitting the required visible digit.
         maxTokens: options.fastClassifierMaxTokens ??
