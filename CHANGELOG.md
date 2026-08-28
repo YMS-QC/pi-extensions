@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## Bug fixes
+
+- **OMP 18 classifier compatibility** — Support OMP 18 model registries that lack `complete()` and `getProvider()`. Load the legacy completion API only for these registries. Keep current Pi on its runtime registry path so extension-registered providers remain available. Thanks, @NarryG! (#29)
+
 ## [1.14.0] - 2026-08-27
 
 ## Bug fixes

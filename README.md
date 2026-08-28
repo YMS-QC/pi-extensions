@@ -8,6 +8,10 @@ It is not a sandbox. Extensions run in the Pi process. A malicious extension can
 
 Pi-automode does not guard user `!` or `!!` shell commands. It guards only agent tool calls. Use it to reduce unsafe autonomous tool use. Do not use it as an OS security boundary.
 
+## Compatibility
+
+Pi-automode supports Pi and Oh My Pi (OMP) 18. It automatically uses OMP's legacy completion API. The integration needs no OMP-specific configuration.
+
 ## Install
 
 From npm:
