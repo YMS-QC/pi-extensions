@@ -1,6 +1,6 @@
 {
   "name": "pi-hermes-memory",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "description": "🧠 Persistent memory + 🔍 session search + 🛡️ secret scanning for Pi. Token-aware policy-only memory by default, SQLite FTS5 search, auto-consolidation, procedural skills. 732 tests. Ported from Hermes agent.",
   "type": "module",
   "main": "src/index.ts",
@@ -47,8 +47,8 @@
     "url": "https://github.com/chandra447/pi-hermes-memory"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.80.1",
-    "@earendil-works/pi-coding-agent": ">=0.80.1"
+    "@earendil-works/pi-ai": ">=0.80.6",
+    "@earendil-works/pi-coding-agent": ">=0.80.6"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.80.2",
