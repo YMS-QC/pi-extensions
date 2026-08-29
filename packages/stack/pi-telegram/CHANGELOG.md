@@ -2,6 +2,14 @@
 
 > Each release keeps at most 8 outcome records of at most 512 characters.
 
+## 0.39.5: Auto-Compaction Notice Chronology Hotfix
+
+- `Turn Chronology`: Defers observed automatic-compaction notices while a Telegram turn is still active, preserving the same causal order shown by the terminal: final answer, compaction started, then compaction completed. Abandoned compactions and session shutdown discard deferred notices instead of leaking them into a later turn.
+
+## 0.39.4: Headless Status Bar Hotfix
+
+- `Headless Hosts`: Skips status-bar rendering when a print, RPC, ACP, or other non-interactive host has not initialized its theme, preventing repeated extension errors during lifecycle status refreshes while preserving normal interactive status updates and error propagation.
+
 ## 0.39.3: Windows IPC And Outbound Voice Hotfix
 
 - `Windows IPC Replacement`: Replaces an older same-process Named Pipe server before a new session generation listens on the stable endpoint, preventing `EADDRINUSE` during reload while keeping a late stop from invalidating its successor.

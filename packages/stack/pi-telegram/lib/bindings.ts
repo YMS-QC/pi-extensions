@@ -1028,6 +1028,7 @@ export function registerTelegramLifecycleRuntimeHooks({
     });
   };
   let observedAutomaticCompaction = false;
+  const deferredAutomaticCompactionNotices: string[] = [];
   const sendCompactionNotice = async (text: string): Promise<void> => {
     const turn = activeTurnRuntime.get();
     const target = turn?.target ?? proactivePushTargetGetter?.();
@@ -1042,6 +1043,10 @@ export function registerTelegramLifecycleRuntimeHooks({
       });
     }
   };
+  const flushDeferredAutomaticCompactionNotices = async (): Promise<void> => {
+    const notices = deferredAutomaticCompactionNotices.splice(0);
+    for (const notice of notices) await sendCompactionNotice(notice);
+  };
   const compactionObserver = Lifecycle.createTelegramCompactionObserverRuntime({
     isContextActive: isSessionContextActive,
     setCompactionInProgress: lifecycle.setCompactionInProgress,
@@ -1054,6 +1059,7 @@ export function registerTelegramLifecycleRuntimeHooks({
     recordRuntimeEvent,
     onCompactionAbandoned: () => {
       observedAutomaticCompaction = false;
+      deferredAutomaticCompactionNotices.length = 0;
       activityRuntime.onCompactionAbandoned();
     },
   });
@@ -1088,6 +1094,7 @@ export function registerTelegramLifecycleRuntimeHooks({
       activityVerbosityRuntime?.reset();
       assistantOutputRuntime.stop();
       observedAutomaticCompaction = false;
+      deferredAutomaticCompactionNotices.length = 0;
       compactionObserver.onSessionShutdown();
       if (event.reason === "quit" && disconnectOnQuit) {
         try {
@@ -1109,11 +1116,17 @@ export function registerTelegramLifecycleRuntimeHooks({
       activityRuntime.onCompactionStart(Pi.getSessionCompactionReason(event));
       compactionObserver.onSessionBeforeCompact(event, ctx);
       if (shouldNotify) {
-        await waitForActiveTurnDelivery();
-        if (!isSessionContextActive(ctx)) return;
-        await sendCompactionNotice(
-          Commands.TELEGRAM_COMPACTION_STARTED_MARKDOWN,
-        );
+        if (activeTurnRuntime.has()) {
+          deferredAutomaticCompactionNotices.push(
+            Commands.TELEGRAM_COMPACTION_STARTED_MARKDOWN,
+          );
+        } else {
+          await waitForActiveTurnDelivery();
+          if (!isSessionContextActive(ctx)) return;
+          await sendCompactionNotice(
+            Commands.TELEGRAM_COMPACTION_STARTED_MARKDOWN,
+          );
+        }
       }
     },
     async onSessionCompact(event, ctx) {
@@ -1122,9 +1135,18 @@ export function registerTelegramLifecycleRuntimeHooks({
       compactionObserver.onSessionCompact(event, ctx);
       if (observedAutomaticCompaction) {
         observedAutomaticCompaction = false;
-        await sendCompactionNotice(
-          Commands.TELEGRAM_COMPACTION_COMPLETED_MARKDOWN,
-        );
+        if (
+          activeTurnRuntime.has() ||
+          deferredAutomaticCompactionNotices.length > 0
+        ) {
+          deferredAutomaticCompactionNotices.push(
+            Commands.TELEGRAM_COMPACTION_COMPLETED_MARKDOWN,
+          );
+        } else {
+          await sendCompactionNotice(
+            Commands.TELEGRAM_COMPACTION_COMPLETED_MARKDOWN,
+          );
+        }
       }
     },
     async onAgentStart(event, ctx) {
@@ -1177,6 +1199,11 @@ export function registerTelegramLifecycleRuntimeHooks({
       if (!isSessionContextActive(ctx)) return;
       activityRuntime.onAgentEnd();
       await agentLifecycleHooks.onAgentEnd(event, ctx);
+      if (deferredAutomaticCompactionNotices.length > 0) {
+        await waitForActiveTurnDelivery();
+        if (!isSessionContextActive(ctx)) return;
+        await flushDeferredAutomaticCompactionNotices();
+      }
     },
     async onAgentSettled(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
