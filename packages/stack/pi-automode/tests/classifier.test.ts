@@ -11,6 +11,7 @@ import {
 	classifyInStages,
 	classifyWithRetry,
 	createClassifierCompletionPlan,
+	createRegistryCompletionFns,
 	createPiAutomode,
 	defaultClassifyAction,
 	parseClassifierDecision,
@@ -244,6 +245,56 @@ test("classifier completion plan preserves server default and clamps explicit le
 		requestedLevel: "low",
 		effectiveLevel: "off",
 	});
+});
+
+test("legacy model registries lazy-load and cache compat completion functions", async () => {
+	const rawCalls: unknown[] = [];
+	const simpleCalls: unknown[] = [];
+	let loadCalls = 0;
+	const legacyRaw = async (...args: unknown[]) => {
+		rawCalls.push(args);
+		return assistantWith("0");
+	};
+	const legacySimple = async (...args: unknown[]) => {
+		simpleCalls.push(args);
+		return assistantWith("0");
+	};
+	const completions = createRegistryCompletionFns({}, async () => {
+		loadCalls++;
+		return {
+			rawComplete: legacyRaw as never,
+			simpleComplete: legacySimple as never,
+		};
+	});
+
+	assert.equal(loadCalls, 0);
+	await completions.rawComplete({} as never, { systemPrompt: "", messages: [] }, { maxTokens: 1 });
+	await completions.simpleComplete({} as never, { systemPrompt: "", messages: [] }, { maxTokens: 1 });
+	assert.equal(loadCalls, 1);
+	assert.equal(rawCalls.length, 1);
+	assert.equal(simpleCalls.length, 1);
+});
+
+test("current model registries do not load compat completion functions", async () => {
+	let loadCalls = 0;
+	const provider = {
+		streamSimple: () => ({ result: async () => assistantWith("simple") }),
+	};
+	const registry = {
+		complete: async () => assistantWith("raw"),
+		getProvider: () => provider,
+	};
+	const completions = createRegistryCompletionFns(registry, async () => {
+		loadCalls++;
+		return {
+			rawComplete: async () => assistantWith("fallback"),
+			simpleComplete: async () => assistantWith("fallback"),
+		};
+	});
+
+	assert.equal((await completions.rawComplete({} as never, { systemPrompt: "", messages: [] }, { maxTokens: 1 })).content[0]?.type, "text");
+	assert.equal((await completions.simpleComplete({ provider: "test" } as never, { systemPrompt: "", messages: [] }, { maxTokens: 1 })).content[0]?.type, "text");
+	assert.equal(loadCalls, 0);
 });
 
 test("default classifier dispatches runtime-only models through the model registry", async () => {

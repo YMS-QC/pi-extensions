@@ -84,10 +84,9 @@ async function resolveClassifier(
     };
   }
 
-  const rawComplete: ClassifierCompletionFn = (callModel, context, options) =>
-    ctx.modelRegistry.complete(callModel, context, options);
-  const simpleComplete: ClassifierCompletionFn = (callModel, context, options) =>
-    completeSimpleWithRegistry(ctx, callModel, context, options);
+  const { rawComplete, simpleComplete } = createRegistryCompletionFns(
+    ctx.modelRegistry,
+  );
   const completionPlan = createClassifierCompletionPlan(
     model,
     config.classifierReasoningLevel,
@@ -124,6 +123,70 @@ export type ClassifierCompletionFn = (
     cacheRetention?: "none" | "short" | "long";
   },
 ) => Promise<AssistantMessage>;
+
+type RegistryCompletionApi = {
+  complete?: ClassifierCompletionFn;
+  getProvider?: (provider: string) => {
+    streamSimple: (
+      model: Model<any>,
+      context: { systemPrompt: string; messages: UserMessage[] },
+      options: Parameters<ClassifierCompletionFn>[2],
+    ) => { result: () => Promise<AssistantMessage> };
+  } | undefined;
+};
+type ClassifierCompletionFallbacks = {
+  rawComplete: ClassifierCompletionFn;
+  simpleComplete: ClassifierCompletionFn;
+};
+
+type ClassifierCompletionFallbackLoader =
+  () => Promise<ClassifierCompletionFallbacks>;
+
+// Static import would initialize deprecated compat registries on current Pi;
+// OMP rewrites this literal dynamic import to its native pi-ai module.
+async function loadCompatCompletionFns(): Promise<ClassifierCompletionFallbacks> {
+  const { complete, completeSimple } = await import(
+    "@earendil-works/pi-ai/compat"
+  );
+  return {
+    rawComplete: complete as ClassifierCompletionFn,
+    simpleComplete: completeSimple as ClassifierCompletionFn,
+  };
+}
+
+/**
+ * Prefer the current runtime registry so extension-registered providers remain
+ * visible. Older Pi-family runtimes (including OMP 18) expose neither
+ * `complete` nor `getProvider`; lazily load the compat API they already use.
+ */
+export function createRegistryCompletionFns(
+  registry: RegistryCompletionApi,
+  fallbackLoader: ClassifierCompletionFallbackLoader =
+    loadCompatCompletionFns,
+): ClassifierCompletionFallbacks {
+  let fallbackPromise: Promise<ClassifierCompletionFallbacks> | undefined;
+  const rawComplete: ClassifierCompletionFn =
+    typeof registry.complete === "function"
+      ? (model, context, options) =>
+        registry.complete!.call(registry, model, context, options)
+      : async (model, context, options) =>
+        (await (fallbackPromise ??= fallbackLoader())).rawComplete(
+          model,
+          context,
+          options,
+        );
+  const simpleComplete: ClassifierCompletionFn =
+    typeof registry.getProvider === "function"
+      ? (model, context, options) =>
+        completeSimpleWithRegistry(registry, model, context, options)
+      : async (model, context, options) =>
+        (await (fallbackPromise ??= fallbackLoader())).simpleComplete(
+          model,
+          context,
+          options,
+        );
+  return { rawComplete, simpleComplete };
+}
 
 export type RetryOptions = {
   maxAttempts?: number;
@@ -206,17 +269,16 @@ async function completeClassifierAttempt(
 
 /**
  * Run normalized Pi AI completion through the provider in Pi's runtime registry.
- * This temporary bridge is only valid until Pi exposes
- * `ctx.modelRegistry.completeSimple(...)` natively. Replace this function with
- * that API when the project's minimum supported Pi version includes it.
+ * Callers use this only when the registry exposes `getProvider`; legacy
+ * registries take the compat completion path instead.
  */
 async function completeSimpleWithRegistry(
-  ctx: ExtensionContext,
+  registry: RegistryCompletionApi,
   model: Model<any>,
   context: { systemPrompt: string; messages: UserMessage[] },
   options: Parameters<ClassifierCompletionFn>[2],
 ): Promise<AssistantMessage> {
-  const provider = ctx.modelRegistry.getProvider(model.provider);
+  const provider = registry.getProvider?.(model.provider);
   if (!provider) throw new Error(`Unknown provider: ${model.provider}`);
   return provider.streamSimple(model, context, options).result();
 }
