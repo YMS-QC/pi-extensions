@@ -676,7 +676,17 @@ test("Extension session shutdown without active lock lets process exit", async (
     };
     await handlers.get("session_start")?.({}, ctx);
     await handlers.get("session_shutdown")?.({}, ctx);
-    await rm(agentDir, { recursive: true, force: true });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rm(agentDir, { recursive: true, force: true });
+        break;
+      } catch (error) {
+        // fork: debounced state writes can land after shutdown and race the
+        // recursive removal on slow runners (ENOTEMPTY); retry briefly.
+        if (error?.code !== "ENOTEMPTY" || attempt >= 9) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+    }
   `);
 
   assert.equal(result.code, 0, result.stderr);
@@ -758,7 +768,17 @@ test("Extension session shutdown lets an active polling owner process exit", asy
     await handlers.get("session_start")?.({}, ctx);
     await new Promise((resolve) => setImmediate(resolve));
     await handlers.get("session_shutdown")?.({}, ctx);
-    await rm(agentDir, { recursive: true, force: true });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rm(agentDir, { recursive: true, force: true });
+        break;
+      } catch (error) {
+        // fork: debounced state writes can land after shutdown and race the
+        // recursive removal on slow runners (ENOTEMPTY); retry briefly.
+        if (error?.code !== "ENOTEMPTY" || attempt >= 9) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+    }
   `);
 
   assert.equal(result.code, 0, result.stderr);

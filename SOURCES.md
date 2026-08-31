@@ -7,7 +7,7 @@
 
 | 子包 | 上游仓库 | vendor 基线 | 本仓补丁（原 fork 仓 commit，已随 subtree 并入历史） |
 |---|---|---|---|
-| `pi-telegram` | github.com/llblab/pi-telegram | v0.40.0 (a56f6db) | `4dae784` stale-extension-ctx 崩溃修复：ctx 失效后 isIdle/cwd/model 等读取降级不抛错，session context store 自愈 |
+| `pi-telegram` | github.com/llblab/pi-telegram | v0.40.0 (a56f6db) | `4dae784` stale-extension-ctx 崩溃修复：ctx 失效后 isIdle/cwd/model 等读取降级不抛错，session context store 自愈；process-shutdown 测试临时目录清理加重试（CI runner ENOTEMPTY 竞态） |
 | `pi-automode` | github.com/czottmann/pi-automode | 1.15.0 (92615bb) | `7b3516f` 通知级别配置；`a682faf` bash 只读快路径；`78f3139` 决策 LRU 缓存 |
 | `pi-hermes-memory` | github.com/chandra447/pi-hermes-memory | main 44023cc (0.9.7+) | `69b3f92` PI_HERMES_* 环境变量覆盖 + /memory-reload 热切换 LLM 模型 |
 
