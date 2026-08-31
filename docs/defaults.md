@@ -96,7 +96,7 @@ Patterns support `~`, `$HOME`, and `${HOME}` expansion. The `*` wildcard matches
 - exposing local files, sockets, credentials, or internal services through a network service
 - outbound messages, purchases, bookings, subscriptions, or other real-world transactions
 
-Soft blocks can be overridden by a matching `allow` exception or direct user intent. A bounded authorization must name the task, one repository or worktree, permitted path scopes, and the allowed modification or deletion. The action must stay inside those bounds.
+Soft blocks can be overridden by a matching `allow` exception or direct user intent. For a pre-existing local file, direct user intent must name the task, one repository or worktree, permitted path scopes, and an allowed operation. The action must stay inside those bounds. Other soft blocks need direct user intent but do not require these file bounds. A later user instruction that narrows or revokes authorization controls.
 
 ### `hard_deny`
 
