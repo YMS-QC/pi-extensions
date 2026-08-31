@@ -24,10 +24,14 @@ import {
 	createFakePi,
 } from "./test-helpers.ts";
 
-test("classifier policy forbids invented deny rules", () => {
+test("classifier policy preserves bounded authorization requirements", () => {
 	assert.match(CLASSIFIER_SYSTEM_PROMPT, /Do not invent deny rules/);
 	assert.match(CLASSIFIER_SYSTEM_PROMPT, /does not need to appear in ALLOW/);
 	assert.match(CLASSIFIER_SYSTEM_PROMPT, /Copying a local app icon or other non-executable asset/);
+	assert.match(CLASSIFIER_SYSTEM_PROMPT, /direct user authorization covers the risky action/);
+	assert.match(CLASSIFIER_SYSTEM_PROMPT, /permitted path scopes/);
+	assert.match(CLASSIFIER_SYSTEM_PROMPT, /target stays inside a direct, bounded user authorization/);
+	assert.match(CLASSIFIER_SYSTEM_PROMPT, /target lies outside authorized scope/);
 });
 
 test("classifier JSON parser accepts valid decisions and rejects invalid output", () => {

@@ -88,7 +88,7 @@ Patterns support `~`, `$HOME`, and `${HOME}` expansion. The `*` wildcard matches
 - force push, remote branch deletion, remote history rewrite, or direct push to `main`, `master`, or the default branch
 - downloading and executing external code, including `curl | bash` and `wget | sh`
 - production deploys, production database migrations, or production infrastructure changes
-- deleting, truncating, or overwriting pre-existing local files unless the user named the specific target
+- deleting, truncating, or overwriting local files that existed before session start without a bounded user authorization
 - mass modification/deletion in cloud storage, ticketing systems, collaboration tools, or external APIs
 - writing through remote shells such as `ssh`, `kubectl exec`, or `docker exec` on shared or production hosts
 - changing shared or live infrastructure without its normal preview, plan, dry run, or review
@@ -96,7 +96,7 @@ Patterns support `~`, `$HOME`, and `${HOME}` expansion. The `*` wildcard matches
 - exposing local files, sockets, credentials, or internal services through a network service
 - outbound messages, purchases, bookings, subscriptions, or other real-world transactions
 
-Soft blocks can be overridden by a matching `allow` exception or by direct, specific user intent.
+Soft blocks can be overridden by a matching `allow` exception or direct user intent. A bounded authorization must name the task, one repository or worktree, permitted path scopes, and the allowed modification or deletion. The action must stay inside those bounds.
 
 ### `hard_deny`
 
