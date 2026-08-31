@@ -19,7 +19,7 @@ import { getTelegramVoiceTranscriptionProviders } from "./voice.ts";
 
 const DEFAULT_INBOUND_HANDLER_TIMEOUT_MS = 120_000;
 const INBOUND_HANDLER_REGISTRY_KEY = "__piTelegramInboundHandlers__";
-const MAX_INBOUND_HANDLER_OUTPUT_LENGTH = 12_000;
+const MAX_INBOUND_HANDLER_OUTPUT_LENGTH = 24_000;
 const MAX_INBOUND_HANDLER_FAILURE_STREAM_LENGTH = 4_000;
 
 type TelegramInboundCommandTemplateConfig =

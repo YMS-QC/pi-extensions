@@ -315,14 +315,15 @@ Queue and menu mutations are reachable through Telegram updates handled by the c
 
 ### Compaction And Typing Status
 
-Manual `/compact` requires inline confirmation because accidental taps are disruptive. Confirmed manual compaction and auto-compaction both set the bridge compaction flag, block queued prompt dispatch, retain that flag in explicit diagnostics, and clear it on compact completion, timeout fallback, or session shutdown. Pi owns its terminal compaction lifecycle; pi-telegram keeps `Active` scoped to Telegram-owned work and otherwise preserves the stable connected/leader/follower role.
+Manual `/compact` requires inline confirmation because accidental taps are disruptive. Confirmed manual compaction and auto-compaction both set the bridge compaction flag, block queued prompt dispatch, retain that flag in explicit diagnostics, and clear it on native compact completion or failure, timeout fallback, or session shutdown. Pi owns its terminal compaction lifecycle; pi-telegram keeps `Active` scoped to Telegram-owned work and otherwise preserves the stable connected/leader/follower role. Mid-run threshold compaction reports notices in place between tool output and the next assistant response; compaction observed after terminal assistant output waits for final Telegram delivery so transport chronology matches the terminal.
 
 Native typing during compaction follows connected-instance activity rather than terminal status:
 
 - Confirmed manual `/compact` starts a native `typing` keepalive in the command target and stops it on completion/failure.
 - Automatic/session compaction with an active Telegram turn reuses that turn's target.
 - Automatic/session compaction without an active Telegram turn uses the connected instance's assigned target; an unconnected instance sends nothing.
-- Thread-targeted typing is sent to the concrete thread and mirrored to `All` as the aggregate activity surface; completion, timeout, and shutdown stop the keyed loop.
+- Thread-targeted typing is sent to the concrete thread and mirrored to `All` as the aggregate activity surface; completion, native failure, timeout, and shutdown stop the keyed loop.
+- Pi `ui_prompt_start` pauses active-turn typing while an extension-owned local prompt waits for the operator; `ui_prompt_end` emits the matching Activity boundary and resumes typing.
 
 At every connected instance `agent_start`, the lifecycle binding starts Telegram's native `…typing` indicator in that instance's assigned target, whether the run came from Telegram, the local TUI, or an autonomous continuation such as Grow Loop. Terminal `Active` remains Telegram-turn-specific; the native indicator answers the separate question of whether the instance is doing agent work. Each loop keeps one action in flight, while the leader API runtime coalesces identical chat/thread/action calls across local and follower traffic for two seconds; expired gates prune opportunistically and at most 256 currently active keys are retained. A Telegram 429 response opens the exact action's shared `retry_after` suppression window without scheduling delayed retries or projecting expected activity throttling as a terminal status error. Assistant message start/update hooks still re-arm it during Telegram-owned turns so transient provider/model errors do not leave a continuing run without activity feedback, and agent/session completion stops it.
 

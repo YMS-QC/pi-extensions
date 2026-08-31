@@ -863,6 +863,9 @@ test("Lifecycle binding routes native typing, previews, and normalized activity"
         events.push(`activity:compact-end:${reason}`),
       onCompactionAbandoned: () =>
         events.push("activity:compact-abandoned"),
+      onUiPromptStart: (kind: string, title?: string) =>
+        events.push(`activity:ui-start:${kind}:${title ?? "none"}`),
+      onUiPromptEnd: () => events.push("activity:ui-end"),
       onAgentEnd: () => events.push("activity:agent-end"),
       onAgentSettled: () => events.push("activity:agent-settled"),
       onSessionShutdown: () => events.push("activity:shutdown"),
@@ -949,6 +952,14 @@ test("Lifecycle binding routes native typing, previews, and normalized activity"
     { abort: () => undefined } as ExtensionContext,
   );
   activeTurn = true;
+  await getRequiredBindingHandler(harness.handlers, "ui_prompt_start")(
+    { kind: "confirm", title: "Approve?" },
+    {} as ExtensionContext,
+  );
+  await getRequiredBindingHandler(harness.handlers, "ui_prompt_end")(
+    {},
+    {} as ExtensionContext,
+  );
   await getRequiredBindingHandler(harness.handlers, "message_start")(
     { message: {} },
     {} as ExtensionContext,
@@ -990,6 +1001,9 @@ test("Lifecycle binding routes native typing, previews, and normalized activity"
   assert.deepEqual(events, [
     "activity:agent-start:none",
     "typing:42:8",
+    "activity:ui-start:confirm:Approve?",
+    "activity:ui-end",
+    "typing:42:9",
     "typing:42:9",
     "preview:start",
     "typing:42:9",
@@ -1000,7 +1014,9 @@ test("Lifecycle binding routes native typing, previews, and normalized activity"
     "activity:tool-start:read",
     "activity:compact-start:unknown",
     "typing:42:9",
+    "send:**🗜 Compaction started.**",
     "activity:compact-end:unknown",
+    "send:**✅ Compaction completed.**",
     "activity:compact-start:unknown",
     "typing:42:8",
     "send:**🗜 Compaction started.**",

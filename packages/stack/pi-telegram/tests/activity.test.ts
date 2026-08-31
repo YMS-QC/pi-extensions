@@ -227,6 +227,45 @@ test("Activity normalizer classifies source and assistant segment placement", as
   assert.equal(new Set(received.map((event) => event.activityId)).size, 1);
 });
 
+test("Activity normalizer exposes coalesced UI prompt waiting boundaries", async () => {
+  const received: TelegramActivityEvent[] = [];
+  registerTelegramActivityHandler({
+    id: "ui-prompt-capture",
+    handle: (event) => {
+      received.push(event);
+    },
+  });
+  const runtime = createTelegramActivityRuntime({
+    generation: "ui-prompt-boundary",
+    dispatcher: createTelegramActivityDispatcher(),
+  });
+  runtime.recordInputSource("interactive");
+  runtime.onAgentStart();
+  runtime.onUiPromptStart("confirm", "Approve?");
+  runtime.onUiPromptStart("select", "Nested");
+  runtime.onUiPromptEnd();
+  runtime.onUiPromptEnd();
+  runtime.onAgentSettled();
+  await waitForActivityDispatch();
+
+  assert.deepEqual(
+    received.map((event) => event.type),
+    ["agent-start", "ui-prompt-start", "ui-prompt-end", "agent-settled"],
+  );
+  assert.deepEqual(
+    received.find((event) => event.type === "ui-prompt-start"),
+    {
+      type: "ui-prompt-start",
+      kind: "confirm",
+      title: "Approve?",
+      activityId: "ui-prompt-boundary:1",
+      sequence: 2,
+      source: "local",
+      timestamp: received[0]?.timestamp,
+    },
+  );
+});
+
 test("Activity normalizer exposes completed public blocks without reasoning or tools", async () => {
   const received: TelegramActivityEvent[] = [];
   registerTelegramActivityHandler({

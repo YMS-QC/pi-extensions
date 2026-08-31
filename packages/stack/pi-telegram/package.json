@@ -1,6 +1,6 @@
 {
   "name": "@llblab/pi-telegram",
-  "version": "0.39.5",
+  "version": "0.40.0",
   "private": false,
   "publishConfig": {
     "access": "public"
@@ -71,9 +71,9 @@
     "image": "https://raw.githubusercontent.com/llblab/pi-telegram/main/screenshot.png"
   },
   "peerDependencies": {
-    "@earendil-works/pi-agent-core": ">=0.80.6",
-    "@earendil-works/pi-ai": ">=0.80.6",
-    "@earendil-works/pi-coding-agent": ">=0.80.6",
+    "@earendil-works/pi-agent-core": ">=0.84.4",
+    "@earendil-works/pi-ai": ">=0.84.4",
+    "@earendil-works/pi-coding-agent": ">=0.84.4",
     "@sinclair/typebox": "*"
   },
   "devDependencies": {

@@ -240,7 +240,7 @@ test("Inbound handler output is bounded before entering prompts", async () => {
     handlers: [{ mime: "application/pdf", template: "/tools/ocr {file}" }],
     cwd: "/work",
     execCommand: async () => ({
-      stdout: "x".repeat(13_000),
+      stdout: "x".repeat(25_000),
       stderr: "",
       code: 0,
       killed: false,
@@ -248,7 +248,7 @@ test("Inbound handler output is bounded before entering prompts", async () => {
   });
 
   assert.equal(result.handlerOutputs.length, 1);
-  assert.equal(result.handlerOutputs[0]?.length, 12_024);
+  assert.equal(result.handlerOutputs[0]?.length, 24_024);
   assert.match(result.handlerOutputs[0] ?? "", /truncated 1000 chars/);
 });
 

@@ -14,11 +14,14 @@ import {
   type ExtensionCommandContext,
   type ExtensionContext,
   type InputEvent,
+  type MessageEndEvent,
   type SessionBeforeCompactEvent,
   type SessionCompactEvent,
   type SessionShutdownEvent,
   type SessionStartEvent,
   type SlashCommandInfo,
+  type UIPromptEndEvent,
+  type UIPromptStartEvent,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 
@@ -32,12 +35,24 @@ export type {
   ExtensionCommandContext,
   ExtensionContext,
   InputEvent,
+  MessageEndEvent,
   SessionBeforeCompactEvent,
   SessionCompactEvent,
   SessionShutdownEvent,
   SessionStartEvent,
   SlashCommandInfo,
+  UIPromptEndEvent,
+  UIPromptStartEvent,
 };
+
+export interface SessionCompactFailedEvent {
+  type: "session_compact_failed";
+  reason: "manual" | "threshold" | "overflow";
+  errorMessage?: string;
+  aborted: boolean;
+  willRetry: boolean;
+  fromExtension: boolean;
+}
 
 export interface ToolExecutionStartEvent {
   type: "tool_execution_start";

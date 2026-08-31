@@ -4430,12 +4430,64 @@ test("Extension runtime delivers the final answer before observed auto-compactio
       ctx,
     );
     await handlers.get("session_compact")?.({}, ctx);
+    await waitForCondition(() =>
+      runtimeEvents.includes("send:**✅ Compaction completed.**"),
+    );
+    const midTurnStartedIndex = runtimeEvents.indexOf(
+      "send:**🗜 Compaction started.**",
+    );
+    const midTurnCompletedIndex = runtimeEvents.indexOf(
+      "send:**✅ Compaction completed.**",
+    );
+    assert.equal(midTurnStartedIndex < midTurnCompletedIndex, true);
+    await handlers.get("session_before_compact")?.(
+      { signal: new AbortController().signal },
+      ctx,
+    );
+    await handlers.get("session_compact_failed")?.(
+      {
+        reason: "threshold",
+        aborted: false,
+        willRetry: false,
+        fromExtension: false,
+        errorMessage: "Auto-compaction failed: boom",
+      },
+      ctx,
+    );
+    await waitForCondition(() =>
+      runtimeEvents.includes("send:**⚠️ Compaction failed.**"),
+    );
     assert.equal(
-      runtimeEvents.includes("send:**🗜 Compaction started.**"),
+      runtimeEvents.lastIndexOf("send:**🗜 Compaction started.**") <
+        runtimeEvents.lastIndexOf("send:**⚠️ Compaction failed.**"),
+      true,
+    );
+    const noticeBaseline = runtimeEvents.length;
+    await handlers.get("message_end")?.(
+      {
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+          stopReason: "stop",
+        },
+      },
+      ctx,
+    );
+    await handlers.get("session_before_compact")?.(
+      { signal: new AbortController().signal },
+      ctx,
+    );
+    await handlers.get("session_compact")?.({}, ctx);
+    assert.equal(
+      runtimeEvents
+        .slice(noticeBaseline)
+        .includes("send:**🗜 Compaction started.**"),
       false,
     );
     assert.equal(
-      runtimeEvents.includes("send:**✅ Compaction completed.**"),
+      runtimeEvents
+        .slice(noticeBaseline)
+        .includes("send:**✅ Compaction completed.**"),
       false,
     );
     assert.equal(
@@ -4459,10 +4511,10 @@ test("Extension runtime delivers the final answer before observed auto-compactio
     const finalReplyIndex = runtimeEvents.findIndex(
       (event) => event === "send:done" || event === "edit:done",
     );
-    const compactionStartedIndex = runtimeEvents.indexOf(
+    const compactionStartedIndex = runtimeEvents.lastIndexOf(
       "send:**🗜 Compaction started.**",
     );
-    const compactionCompletedIndex = runtimeEvents.indexOf(
+    const compactionCompletedIndex = runtimeEvents.lastIndexOf(
       "send:**✅ Compaction completed.**",
     );
     assert.notEqual(finalReplyIndex, -1);
