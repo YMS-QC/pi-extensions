@@ -14,6 +14,10 @@ It is not a sandbox. Extensions run in the Pi process. A malicious extension can
 
 Pi-automode does not guard user `!` or `!!` shell commands. It guards only agent tool calls. Use it to reduce unsafe autonomous tool use. Do not use it as an OS security boundary.
 
+## Compatibility
+
+Pi-automode supports Pi and Oh My Pi (OMP) 18. It automatically uses OMP's legacy completion API. The integration needs no OMP-specific configuration.
+
 ## Install
 
 From npm:
@@ -107,7 +111,7 @@ The extension blocks these before any allow or classifier decision:
 - SSH `authorized_keys` writes
 - cron, launch agent, and system service persistence
 - TLS/certificate/auth weakening patterns
-- root, home, and system-path destructive deletes
+- root, home, and system-path destructive deletes. Subtrees of validated launcher-declared temp directories are treated as disposable. Declared roots that alias `HOME`, `/`, or a system root, or that contain `HOME`, are rejected instead.
 - edits to `.pi/automode*`, `.pi` auto-mode files, and this extension's safety-control files
 
 After these checks, pi-automode applies `permissions.allow`. Protected `write` and `edit` targets continue to the classifier.

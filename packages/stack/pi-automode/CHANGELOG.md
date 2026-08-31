@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+## [1.15.0] - 2026-08-28
+
+## Bug fixes
+
+- **OMP 18 classifier compatibility** — Support OMP 18 model registries that lack `complete()` and `getProvider()`. Load the legacy completion API only for these registries. Keep current Pi on its runtime registry path so extension-registered providers remain available. Thanks, @NarryG! (#29)
+
+## [1.14.0] - 2026-08-27
+
+## Bug fixes
+
+- **Classifier stream timeout** — Apply `classifierTimeoutMs` to the full response stream. Provider behavior cannot keep classifier calls pending after the deadline. Parent cancellation remains active. Reject values above the Node.js timer limit. (#30)
+- **OS temp-directory deletes** — Stop hard-denying recursive-delete subtrees under `os.tmpdir()` and `/tmp`. On macOS these resolve into `/private/tmp` and `/private/var/folders`, which matched the `/private` system root and blocked every temp cleanup. Deleting a temp root itself stays blocked. (#31)
+- **Validated temp-root declarations** — Derive the exempt temp roots only from launcher-declared values that stay safe: reject values such as `/`, empty strings, aliases of `HOME`, `/`, or a system root, and ancestors of `HOME`. Without validation, a malformed `TMPDIR` could disable deterministic denials for protected targets, and a broad `permissions.allow` rule could then allow the action without classifier review. Recompute candidates when the effective tmpdir changes. (#31)
+
 ## [1.13.0] - 2026-08-25
 
 ## New features
@@ -35,5 +51,8 @@ All notable changes to this project are documented in this file.
 - **Project config trust gate** — Ignore `.pi/automode.local.json` and `.pi/automode.json` until Pi trusts the project. Apply the trust gate during startup and config reloads. (#16)
 - **In-memory observability logs** — Write logs to an extension-owned directory (`~/.pi/agent/extensions/pi-automode/logs/`) instead of the launching project directory. Thanks, @HerbertGao! (#13)
 
+[Unreleased]: https://github.com/czottmann/pi-automode/compare/v1.15.0...HEAD
+[1.15.0]: https://github.com/czottmann/pi-automode/compare/v1.14.0...v1.15.0
+[1.14.0]: https://github.com/czottmann/pi-automode/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/czottmann/pi-automode/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/czottmann/pi-automode/compare/v1.11.0...v1.12.0

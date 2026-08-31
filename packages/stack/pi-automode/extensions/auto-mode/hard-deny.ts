@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   analyzeBash,
@@ -78,8 +79,114 @@ function matchesPathRoot(path: string, root: string): boolean {
 }
 
 /**
+ * Top-level directories whose deletion or wholesale modification is a
+ * system-wide event. Shared between candidate validation and path
+ * classification; do not inline copies.
+ */
+const SYSTEM_ROOTS: ReadonlyArray<string> = [
+  "/bin",
+  "/boot",
+  "/dev",
+  "/etc",
+  "/home",
+  "/lib",
+  "/lib64",
+  "/Library",
+  "/private",
+  "/proc",
+  "/root",
+  "/run",
+  "/sbin",
+  "/sys",
+  "/System",
+  "/usr",
+  "/var",
+];
+
+/**
+ * Normalize a proposed temp-root value into a comparable absolute path.
+ * Returns undefined for values that cannot denote a subdirectory: the
+ * empty string, `/`, and slash-only artifacts.
+ */
+function normalizeRootCandidate(value: string): string | undefined {
+  const stripped = value.replace(/\/+$/, "");
+  // An empty stripped value must not fall through to `resolve()`, which
+  // would silently turn `/` into the process working directory.
+  if (!stripped) return undefined;
+  const normalized = resolve(stripped);
+  if (normalized === "/") return undefined;
+  return normalized;
+}
+
+/**
+ * True when a candidate temp root would weaken the deterministic deny tiers:
+ * it aliases (exact, case-folded, or dev/inode) `HOME`, `/`, or any system
+ * root, or it is a proper ancestor of the canonical home directory.
+ *
+ * Dev/inode identity covers symlinked spellings of existing directories;
+ * string comparison alone handles candidates that do not exist yet. See
+ * issue #31: without these guards, `TMPDIR=/` reduced every absolute path
+ * below an empty-string prefix match, and `TMPDIR=/private` made
+ * `/private/etc/**` disposable.
+ */
+function conflictsWithProtectedRoots(candidate: string, home: string): boolean {
+  if (candidate === "/") return true;
+  for (const protectedRoot of ["/", home, ...SYSTEM_ROOTS]) {
+    const canonical = resolve(protectedRoot);
+    if (
+      candidate === canonical ||
+      candidate.toLowerCase() === canonical.toLowerCase()
+    ) {
+      return true;
+    }
+    if (isSameExistingPath(candidate, canonical)) return true;
+  }
+  const homeCanonical = resolvePathForPolicy(home) ?? resolve(home);
+  return homeCanonical.toLowerCase().startsWith(`${candidate.toLowerCase()}/`);
+}
+
+let cachedTempRoots: ReadonlyArray<string> | undefined;
+let cachedTmpdirValue: string | undefined;
+
+/**
+ * Validated launcher-declared temp-dir roots whose subtrees are treated as
+ * disposable by `isRootHomeOrSystemPath`: the platform tmpdir, plus `/tmp` on
+ * macOS where it exists independently of `os.tmpdir()`. Each root appears in
+ * canonical and resolved spelling because callers pass symlink-resolved
+ * policy paths (`/tmp` → `/private/tmp` on macOS) and unresolved fallbacks
+ * alike. Values from `os.tmpdir()` are not trusted blindly; see
+ * `conflictsWithProtectedRoots`. The roots themselves are never exempt:
+ * deleting one is a system-wide delete.
+ *
+ * The memoization keys on the effective `os.tmpdir()` return value so tests
+ * can mutate `TMPDIR`, `TMP`, or `TEMP` between calls.
+ */
+export function tempRootCandidates(): ReadonlyArray<string> {
+  const currentTmpdir = tmpdir();
+  if (cachedTempRoots && cachedTmpdirValue === currentTmpdir) {
+    return cachedTempRoots;
+  }
+  cachedTmpdirValue = currentTmpdir;
+  cachedTempRoots = (() => {
+    const roots = new Set<string>();
+    const consider = (value: string) => {
+      const candidate = normalizeRootCandidate(value);
+      if (!candidate || conflictsWithProtectedRoots(candidate, HOME)) return;
+      roots.add(candidate);
+      const resolved = resolvePathForPolicy(candidate);
+      if (resolved) roots.add(resolved);
+    };
+    consider(currentTmpdir);
+    if (process.platform === "darwin") consider("/tmp");
+    return [...roots];
+  })();
+  return cachedTempRoots;
+}
+
+/**
  * True for `/`, the user's home root, or a top-level system root such as
- * `/etc`, `/usr`, or `/var`. Excludes the home *subtree*.
+ * `/etc`, `/usr`, or `/var`. Excludes the home *subtree* and the subtrees of
+ * platform temp directories (`os.tmpdir()` and `/tmp` on macOS).
  *
  * On some distros (e.g. Fedora Silverblue) HOME lives under `/var`, which is
  * in `systemRoots`. Without the subtree exemption, `path.startsWith("/var/")`
@@ -87,32 +194,36 @@ function matchesPathRoot(path: string, root: string): boolean {
  * `rm -rf ~/...`. HOME itself is still matched below, so `rm -rf ~` stays
  * blocked. `home` is a parameter so this can be unit-tested with a synthetic
  * `/var/home/...` value.
+ *
+ * The temp exemption mirrors the home one and covers cleanup of directories
+ * created with `mktemp`, `os.tmpdir()`, or plain `/tmp` paths. On macOS these
+ * resolve into `/private/tmp` or `/private/var/folders`, which used to match
+ * the `/private` system root and hard-deny every temp cleanup. Deleting a
+ * temp root itself still returns true; `tempRoots` is injectable for tests.
+ *
+ * Protection order matters (issue #31): exact `/`, the exact home root, and
+ * system roots win over every exemption. Injected `tempRoots` values are
+ * validated per call so hostile or malformed candidates cannot weaken the
+ * deterministic tiers.
  */
-export function isRootHomeOrSystemPath(path: string, home: string): boolean {
-  const systemRoots = [
-    "/bin",
-    "/boot",
-    "/dev",
-    "/etc",
-    "/home",
-    "/lib",
-    "/lib64",
-    "/Library",
-    "/private",
-    "/proc",
-    "/root",
-    "/run",
-    "/sbin",
-    "/sys",
-    "/System",
-    "/usr",
-    "/var",
-  ];
+export function isRootHomeOrSystemPath(
+  path: string,
+  home: string,
+  tempRoots: ReadonlyArray<string> = tempRootCandidates(),
+): boolean {
+  if (path === "/") return true;
+  if (path === home || isSameExistingPath(path, home)) return true;
   if (matchesPathRoot(path, home) && path.length > home.length) return false;
+  for (const root of tempRoots) {
+    const candidate = normalizeRootCandidate(root);
+    if (!candidate || conflictsWithProtectedRoots(candidate, home)) continue;
+    if (!matchesPathRoot(path, candidate)) continue;
+    // Subtree: disposable. Exact match: the temp root stays protected.
+    return path.length > candidate.length ? false : true;
+  }
   return (
-    path === "/" ||
     matchesPathRoot(path, home) ||
-    systemRoots.some((root) => matchesPathRoot(path, root))
+    SYSTEM_ROOTS.some((root) => matchesPathRoot(path, root))
   );
 }
 

@@ -11,6 +11,7 @@ import {
 	classifyInStages,
 	classifyWithRetry,
 	createClassifierCompletionPlan,
+	createRegistryCompletionFns,
 	createPiAutomode,
 	defaultClassifyAction,
 	parseClassifierDecision,
@@ -246,6 +247,56 @@ test("classifier completion plan preserves server default and clamps explicit le
 	});
 });
 
+test("legacy model registries lazy-load and cache compat completion functions", async () => {
+	const rawCalls: unknown[] = [];
+	const simpleCalls: unknown[] = [];
+	let loadCalls = 0;
+	const legacyRaw = async (...args: unknown[]) => {
+		rawCalls.push(args);
+		return assistantWith("0");
+	};
+	const legacySimple = async (...args: unknown[]) => {
+		simpleCalls.push(args);
+		return assistantWith("0");
+	};
+	const completions = createRegistryCompletionFns({}, async () => {
+		loadCalls++;
+		return {
+			rawComplete: legacyRaw as never,
+			simpleComplete: legacySimple as never,
+		};
+	});
+
+	assert.equal(loadCalls, 0);
+	await completions.rawComplete({} as never, { systemPrompt: "", messages: [] }, { maxTokens: 1 });
+	await completions.simpleComplete({} as never, { systemPrompt: "", messages: [] }, { maxTokens: 1 });
+	assert.equal(loadCalls, 1);
+	assert.equal(rawCalls.length, 1);
+	assert.equal(simpleCalls.length, 1);
+});
+
+test("current model registries do not load compat completion functions", async () => {
+	let loadCalls = 0;
+	const provider = {
+		streamSimple: () => ({ result: async () => assistantWith("simple") }),
+	};
+	const registry = {
+		complete: async () => assistantWith("raw"),
+		getProvider: () => provider,
+	};
+	const completions = createRegistryCompletionFns(registry, async () => {
+		loadCalls++;
+		return {
+			rawComplete: async () => assistantWith("fallback"),
+			simpleComplete: async () => assistantWith("fallback"),
+		};
+	});
+
+	assert.equal((await completions.rawComplete({} as never, { systemPrompt: "", messages: [] }, { maxTokens: 1 })).content[0]?.type, "text");
+	assert.equal((await completions.simpleComplete({ provider: "test" } as never, { systemPrompt: "", messages: [] }, { maxTokens: 1 })).content[0]?.type, "text");
+	assert.equal(loadCalls, 0);
+});
+
 test("default classifier dispatches runtime-only models through the model registry", async () => {
 	const model = {
 		provider: "runtime-provider",
@@ -348,7 +399,8 @@ test("runtime provider simple completion preserves reasoning and header-only aut
 	assert.equal(simpleCalls[0]?.options.apiKey, undefined);
 	assert.deepEqual(simpleCalls[0]?.options.headers, { "x-runtime-auth": "secret" });
 	assert.deepEqual(simpleCalls[0]?.options.env, { RUNTIME_TOKEN: "secret" });
-	assert.equal(simpleCalls[0]?.options.signal, signal);
+	assert.ok(simpleCalls[0]?.options.signal instanceof AbortSignal);
+	assert.notEqual(simpleCalls[0]?.options.signal, signal);
 	assert.equal(simpleCalls[0]?.options.timeoutMs, 12_345);
 	assert.match(simpleCalls[0]?.options.sessionId, /^pi-automode-[a-f0-9]{32}$/);
 	assert.equal(simpleCalls[0]?.options.cacheRetention, "short");
@@ -663,6 +715,73 @@ test("classifyInStages forwards the timeout to fast and detailed calls", async (
 
 	assert.equal(decision.decision, "allow");
 	assert.deepEqual(calls.map((call) => call.timeoutMs), [5000, 5000]);
+});
+
+test("classifyInStages aborts a pending fast stage at the configured deadline", async () => {
+	const attempts: ClassifierIoAttempt[] = [];
+	let attemptSignal: AbortSignal | undefined;
+	const started = Date.now();
+	const decision = await classifyInStages(
+		async (_model, _prompt, options) => {
+			attemptSignal = options.signal;
+			return new Promise(() => {});
+		},
+		{ model: { provider: "test", id: "x" } },
+		stagedPrompt(),
+		undefined,
+		{
+			sessionId: "pi-automode:test-session",
+			timeoutMs: 10,
+			onAttempt: (attempt) => attempts.push(attempt),
+		},
+	);
+
+	assert.equal(decision.decision, "block");
+	assert.match(decision.reason, /timed out after 10 ms/i);
+	assert.ok(Date.now() - started < 500);
+	assert.equal(attemptSignal?.aborted, true);
+	assert.match(attempts[0]?.error ?? "", /timed out after 10 ms/i);
+});
+
+test("classifyInStages aborts a pending detailed stage at the configured deadline", async () => {
+	let call = 0;
+	const attempts: ClassifierIoAttempt[] = [];
+	const decision = await classifyInStages(
+		async (_model, _prompt, options) => {
+			call += 1;
+			if (call === 1) return assistantWith("1");
+			return new Promise(() => {});
+		},
+		{ model: { provider: "test", id: "x" } },
+		stagedPrompt(),
+		undefined,
+		{
+			sessionId: "pi-automode:test-session",
+			timeoutMs: 10,
+			onAttempt: (attempt) => attempts.push(attempt),
+		},
+	);
+
+	assert.equal(decision.decision, "block");
+	assert.match(decision.reason, /timed out after 10 ms/i);
+	assert.deepEqual(attempts.map((attempt) => attempt.stage), ["fast", "detailed"]);
+	assert.match(attempts[1]?.error ?? "", /timed out after 10 ms/i);
+});
+
+test("classifyInStages preserves parent cancellation with a classifier deadline", async () => {
+	const controller = new AbortController();
+	const result = classifyInStages(
+		async () => new Promise(() => {}),
+		{ model: { provider: "test", id: "x" } },
+		stagedPrompt(),
+		controller.signal,
+		{ sessionId: "pi-automode:test-session", timeoutMs: 1000 },
+	);
+	controller.abort(new Error("parent cancelled"));
+
+	const decision = await result;
+	assert.equal(decision.decision, "block");
+	assert.match(decision.reason, /parent cancelled/i);
 });
 
 test("classifyWithRetry forwards the timeout to every detailed attempt", async () => {

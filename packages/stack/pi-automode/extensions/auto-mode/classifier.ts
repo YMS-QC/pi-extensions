@@ -84,10 +84,9 @@ async function resolveClassifier(
     };
   }
 
-  const rawComplete: ClassifierCompletionFn = (callModel, context, options) =>
-    ctx.modelRegistry.complete(callModel, context, options);
-  const simpleComplete: ClassifierCompletionFn = (callModel, context, options) =>
-    completeSimpleWithRegistry(ctx, callModel, context, options);
+  const { rawComplete, simpleComplete } = createRegistryCompletionFns(
+    ctx.modelRegistry,
+  );
   const completionPlan = createClassifierCompletionPlan(
     model,
     config.classifierReasoningLevel,
@@ -125,6 +124,70 @@ export type ClassifierCompletionFn = (
   },
 ) => Promise<AssistantMessage>;
 
+type RegistryCompletionApi = {
+  complete?: ClassifierCompletionFn;
+  getProvider?: (provider: string) => {
+    streamSimple: (
+      model: Model<any>,
+      context: { systemPrompt: string; messages: UserMessage[] },
+      options: Parameters<ClassifierCompletionFn>[2],
+    ) => { result: () => Promise<AssistantMessage> };
+  } | undefined;
+};
+type ClassifierCompletionFallbacks = {
+  rawComplete: ClassifierCompletionFn;
+  simpleComplete: ClassifierCompletionFn;
+};
+
+type ClassifierCompletionFallbackLoader =
+  () => Promise<ClassifierCompletionFallbacks>;
+
+// Static import would initialize deprecated compat registries on current Pi;
+// OMP rewrites this literal dynamic import to its native pi-ai module.
+async function loadCompatCompletionFns(): Promise<ClassifierCompletionFallbacks> {
+  const { complete, completeSimple } = await import(
+    "@earendil-works/pi-ai/compat"
+  );
+  return {
+    rawComplete: complete as ClassifierCompletionFn,
+    simpleComplete: completeSimple as ClassifierCompletionFn,
+  };
+}
+
+/**
+ * Prefer the current runtime registry so extension-registered providers remain
+ * visible. Older Pi-family runtimes (including OMP 18) expose neither
+ * `complete` nor `getProvider`; lazily load the compat API they already use.
+ */
+export function createRegistryCompletionFns(
+  registry: RegistryCompletionApi,
+  fallbackLoader: ClassifierCompletionFallbackLoader =
+    loadCompatCompletionFns,
+): ClassifierCompletionFallbacks {
+  let fallbackPromise: Promise<ClassifierCompletionFallbacks> | undefined;
+  const rawComplete: ClassifierCompletionFn =
+    typeof registry.complete === "function"
+      ? (model, context, options) =>
+        registry.complete!.call(registry, model, context, options)
+      : async (model, context, options) =>
+        (await (fallbackPromise ??= fallbackLoader())).rawComplete(
+          model,
+          context,
+          options,
+        );
+  const simpleComplete: ClassifierCompletionFn =
+    typeof registry.getProvider === "function"
+      ? (model, context, options) =>
+        completeSimpleWithRegistry(registry, model, context, options)
+      : async (model, context, options) =>
+        (await (fallbackPromise ??= fallbackLoader())).simpleComplete(
+          model,
+          context,
+          options,
+        );
+  return { rawComplete, simpleComplete };
+}
+
 export type RetryOptions = {
   maxAttempts?: number;
   maxTokens?: number;
@@ -155,19 +218,67 @@ export type ClassifierCompletionPlan = {
   reasoningLevel?: Exclude<EffectiveClassifierReasoningLevel, "off">;
 };
 
+async function completeClassifierAttempt(
+  completeFn: ClassifierCompletionFn,
+  model: Model<any>,
+  prompt: Parameters<ClassifierCompletionFn>[1],
+  parentSignal: AbortSignal | undefined,
+  options: Omit<Parameters<ClassifierCompletionFn>[2], "signal">,
+): Promise<AssistantMessage> {
+  if (options.timeoutMs === undefined) {
+    return completeFn(model, prompt, {
+      ...options,
+      ...(parentSignal === undefined ? {} : { signal: parentSignal }),
+    });
+  }
+
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) onParentAbort();
+  else parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      const reason = controller.signal.reason;
+      reject(reason instanceof Error ? reason : new Error("Classifier request aborted."));
+    };
+    if (controller.signal.aborted) onAbort();
+    else controller.signal.addEventListener("abort", onAbort, { once: true });
+  });
+  const timer = setTimeout(() => {
+    controller.abort(
+      new Error(`Classifier request timed out after ${options.timeoutMs} ms.`),
+    );
+  }, options.timeoutMs);
+
+  try {
+    return await Promise.race([
+      completeFn(model, prompt, {
+        ...options,
+        signal: controller.signal,
+      }),
+      aborted,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) controller.signal.removeEventListener("abort", onAbort);
+    parentSignal?.removeEventListener("abort", onParentAbort);
+  }
+}
+
 /**
  * Run normalized Pi AI completion through the provider in Pi's runtime registry.
- * This temporary bridge is only valid until Pi exposes
- * `ctx.modelRegistry.completeSimple(...)` natively. Replace this function with
- * that API when the project's minimum supported Pi version includes it.
+ * Callers use this only when the registry exposes `getProvider`; legacy
+ * registries take the compat completion path instead.
  */
 async function completeSimpleWithRegistry(
-  ctx: ExtensionContext,
+  registry: RegistryCompletionApi,
   model: Model<any>,
   context: { systemPrompt: string; messages: UserMessage[] },
   options: Parameters<ClassifierCompletionFn>[2],
 ): Promise<AssistantMessage> {
-  const provider = ctx.modelRegistry.getProvider(model.provider);
+  const provider = registry.getProvider?.(model.provider);
   if (!provider) throw new Error(`Unknown provider: ${model.provider}`);
   return provider.streamSimple(model, context, options).result();
 }
@@ -435,14 +546,15 @@ export async function classifyWithRetry(
     const started = Date.now();
     let response: AssistantMessage;
     try {
-      response = await completeFn(
+      response = await completeClassifierAttempt(
+        completeFn,
         classifier.model,
         prompt,
+        signal,
         {
           apiKey: classifier.apiKey,
           headers: classifier.headers,
           env: classifier.env,
-          signal,
           maxTokens,
           ...(temperature === undefined ? {} : { temperature }),
           ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
@@ -505,7 +617,8 @@ export async function classifyInStages(
   const fastStarted = Date.now();
   let fastResponse: AssistantMessage;
   try {
-    fastResponse = await completeFn(
+    fastResponse = await completeClassifierAttempt(
+      completeFn,
       classifier.model,
       {
         systemPrompt: prompt.systemPrompt,
@@ -515,11 +628,11 @@ export async function classifyInStages(
           stageMessage(CLASSIFIER_FAST_INSTRUCTION),
         ],
       },
+      signal,
       {
         apiKey: classifier.apiKey,
         headers: classifier.headers,
         env: classifier.env,
-        signal,
         // Reasoning and OpenAI-compatible models may consume hidden reasoning,
         // control, and EOS tokens before emitting the required visible digit.
         maxTokens: options.fastClassifierMaxTokens ??
