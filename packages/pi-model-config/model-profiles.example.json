@@ -23,6 +23,18 @@
 			"thinking": "max",
 			"aux": "zai/glm-5.3",
 			"heavy": "zai/glm-5.3"
+		},
+		"ds": {
+			"main": "deepseek/deepseek-v4-pro",
+			"thinking": "high",
+			"aux": "deepseek/deepseek-v4-flash",
+			"heavy": "deepseek/deepseek-v4-pro"
+		},
+		"ds-cheap": {
+			"main": "deepseek/deepseek-v4-flash",
+			"thinking": "low",
+			"aux": "deepseek/deepseek-v4-flash",
+			"heavy": "deepseek/deepseek-v4-flash"
 		}
 	},
 	"active": "default",
