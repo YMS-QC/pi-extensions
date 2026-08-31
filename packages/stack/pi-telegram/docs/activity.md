@@ -96,7 +96,7 @@ Source classification follows evidence, not guesses:
 
 Automatic retries, overflow compaction retries, and tool continuations inherit the current activity identity/source until `agent_settled`. A new unrelated `agent_start` after settlement allocates a new activity id.
 
-A standalone compaction owns a temporary activity only until `session_compact`. Pi does not expose a sibling-extension cancellation/failure callback after `session_before_compact`, so pi-telegram abandons that temporary identity at the first provable fallback boundary: the next `agent_start`, a replacement compaction start, session shutdown, or the existing five-minute compaction-observer timeout. A late `session_compact` after abandonment is ignored and cannot attach to the next run. Compaction inside an existing agent activity never clears that agent's identity.
+A standalone compaction owns a temporary activity until `session_compact` or `session_compact_failed`. Native failure or cancellation immediately abandons that identity, clears compacting state, releases deferred queue work, and stops observer-owned typing; the five-minute observer timeout remains a compatibility fallback for a host that never emits a terminal compaction event. A late `session_compact` after abandonment is ignored and cannot attach to the next run. Compaction inside an existing agent activity never clears that agent's identity.
 
 ## Event Contract
 
@@ -151,6 +151,12 @@ export type TelegramActivityEvent = TelegramActivityEnvelope & (
       type: "compaction-end";
       reason: "manual" | "threshold" | "overflow" | "unknown";
     }
+  | {
+      type: "ui-prompt-start";
+      kind: "select" | "confirm" | "input" | "editor" | "custom";
+      title?: string;
+    }
+  | { type: "ui-prompt-end" }
   | { type: "agent-end" }
   | { type: "agent-settled" }
 );
@@ -250,7 +256,8 @@ The bridge maps Pi hooks as follows:
 - `agent_start`: allocate or reuse activity identity and emit `agent-start` after Telegram queue consumption establishes active-turn ownership.
 - `message_update.assistantMessageEvent`: normalize text/reasoning/provider boundaries.
 - `tool_execution_start/update/end`: emit executed tool events.
-- `session_before_compact` / `session_compact`: emit compaction boundaries and preserve activity identity across retry compaction; abandon an unterminated standalone compaction at the next lifecycle boundary or observer timeout rather than merging it into another run. A missing or unrecognized reason maps to `unknown` rather than guessing.
+- `session_before_compact` / `session_compact` / `session_compact_failed`: emit successful compaction boundaries, abandon failed or cancelled work immediately, and preserve activity identity across retry compaction. Mid-run threshold compaction stays between tool results and the next assistant response, while terminal assistant output awaiting transport keeps later notices behind its final reply. A missing or unrecognized reason maps to `unknown` rather than guessing.
+- `ui_prompt_start` / `ui_prompt_end`: emit one coalesced waiting span for extension-owned local UI, pause Telegram typing while Pi waits for the operator, and resume active-turn typing when the prompt closes.
 - `agent_end`: emit low-level run completion but keep identity alive for retry/follow-up work.
 - `agent_settled`: emit terminal settlement, flush pending terminal segments, and release activity identity.
 - `session_shutdown`: stop dispatch, clear pending normalization state, and invalidate delivery generation through the existing delivery lifecycle.

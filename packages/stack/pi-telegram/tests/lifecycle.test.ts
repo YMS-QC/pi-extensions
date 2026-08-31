@@ -259,6 +259,59 @@ test("Compaction observer keeps native typing for non-turn compaction", () => {
   ]);
 });
 
+test("Compaction observer settles immediately on the native failure event", () => {
+  const events: string[] = [];
+  const observer = createTelegramCompactionObserverRuntime({
+    setCompactionInProgress(inProgress) {
+      events.push(`compact:${String(inProgress)}`);
+    },
+    updateStatus() {
+      events.push("status");
+    },
+    startTypingLoop() {
+      events.push("typing:start");
+    },
+    stopTypingLoop() {
+      events.push("typing:stop");
+    },
+    requestDeferredDispatchNextQueuedTelegramTurn(dispatch) {
+      events.push("dispatch:request");
+      dispatch(createLifecycleContext());
+    },
+    dispatchNextQueuedTelegramTurn() {
+      events.push("dispatch");
+    },
+    onCompactionAbandoned() {
+      events.push("activity:compact-abandoned");
+    },
+  });
+  const ctx = createLifecycleContext();
+  observer.onSessionBeforeCompact({} as never, ctx);
+  observer.onSessionCompactFailed(
+    {
+      type: "session_compact_failed",
+      reason: "threshold",
+      aborted: false,
+      willRetry: false,
+      fromExtension: false,
+      errorMessage: "Auto-compaction failed: boom",
+    },
+    ctx,
+  );
+
+  assert.deepEqual(events, [
+    "compact:true",
+    "typing:start",
+    "status",
+    "compact:false",
+    "typing:stop",
+    "status",
+    "activity:compact-abandoned",
+    "dispatch:request",
+    "dispatch",
+  ]);
+});
+
 test("Compaction observer sends native typing to the resolved thread and All", async () => {
   const runtime = createTelegramBridgeRuntime();
   const actions: Array<string> = [];
@@ -454,6 +507,9 @@ test("Lifecycle helpers register pi hooks and delegate to handlers", async () =>
     onSessionCompact: () => {
       events.push("session-compact");
     },
+    onSessionCompactFailed: () => {
+      events.push("session-compact-failed");
+    },
     onBeforeAgentStart: (event) => {
       events.push("before-agent-start");
       return { systemPrompt: event.systemPrompt };
@@ -479,6 +535,15 @@ test("Lifecycle helpers register pi hooks and delegate to handlers", async () =>
     onMessageUpdate: async () => {
       events.push("message-update");
     },
+    onMessageEnd: () => {
+      events.push("message-end");
+    },
+    onUiPromptStart: () => {
+      events.push("ui-prompt-start");
+    },
+    onUiPromptEnd: () => {
+      events.push("ui-prompt-end");
+    },
     onAgentEnd: async () => {
       events.push("agent-end");
     },
@@ -491,6 +556,7 @@ test("Lifecycle helpers register pi hooks and delegate to handlers", async () =>
       "session_shutdown",
       "session_before_compact",
       "session_compact",
+      "session_compact_failed",
       "before_agent_start",
       "model_select",
       "agent_start",
@@ -499,6 +565,9 @@ test("Lifecycle helpers register pi hooks and delegate to handlers", async () =>
       "tool_execution_end",
       "message_start",
       "message_update",
+      "message_end",
+      "ui_prompt_start",
+      "ui_prompt_end",
       "agent_end",
       "agent_settled",
     ],
@@ -518,6 +587,10 @@ test("Lifecycle helpers register pi hooks and delegate to handlers", async () =>
     {},
     ctx,
   );
+  await getRequiredLifecycleHandler(
+    harness.handlers,
+    "session_compact_failed",
+  )({}, ctx);
   const beforeAgentStartResult = await getRequiredLifecycleHandler(
     harness.handlers,
     "before_agent_start",
@@ -541,6 +614,12 @@ test("Lifecycle helpers register pi hooks and delegate to handlers", async () =>
     {},
     ctx,
   );
+  await getRequiredLifecycleHandler(harness.handlers, "message_end")({}, ctx);
+  await getRequiredLifecycleHandler(harness.handlers, "ui_prompt_start")(
+    {},
+    ctx,
+  );
+  await getRequiredLifecycleHandler(harness.handlers, "ui_prompt_end")({}, ctx);
   await getRequiredLifecycleHandler(harness.handlers, "agent_end")({}, ctx);
   await getRequiredLifecycleHandler(harness.handlers, "agent_settled")({}, ctx);
   assert.deepEqual(beforeAgentStartResult, {
@@ -551,6 +630,7 @@ test("Lifecycle helpers register pi hooks and delegate to handlers", async () =>
     "session-shutdown",
     "session-before-compact",
     "session-compact",
+    "session-compact-failed",
     "before-agent-start",
     "model-select",
     "agent-start",
@@ -559,6 +639,9 @@ test("Lifecycle helpers register pi hooks and delegate to handlers", async () =>
     "tool-end",
     "message-start",
     "message-update",
+    "message-end",
+    "ui-prompt-start",
+    "ui-prompt-end",
     "agent-end",
   ]);
 });

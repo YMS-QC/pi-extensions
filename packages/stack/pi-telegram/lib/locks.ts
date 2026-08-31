@@ -423,7 +423,12 @@ function reclaimAbandonedDirectoryGuard(
     // Claim inside the still-occupied guard before making its stable path free.
     renameRecovery(sourcePath, reclaimPath);
   } catch (error) {
-    if ((error as { code?: unknown })?.code === "ENOENT") return false;
+    const code = (error as { code?: unknown })?.code;
+    if (code === "ENOENT") return false;
+    // macOS may report EINVAL instead of ENOENT when another process wins
+    // the same source rename. Only classify it as contention once the
+    // observed source is actually gone; preserve unrelated EINVAL failures.
+    if (code === "EINVAL" && !existsSync(sourcePath)) return false;
     throw error;
   }
 

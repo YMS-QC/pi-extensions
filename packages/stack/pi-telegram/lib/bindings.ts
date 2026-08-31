@@ -1012,8 +1012,9 @@ export function registerTelegramLifecycleRuntimeHooks({
   const agentStartWithDedupReset = Lifecycle.createAgentStartDedupHook(
     agentLifecycleHooks.onAgentStart,
   );
+  let uiPromptActive = false;
   const startAgentActivityTypingLoop = (ctx: Pi.ExtensionContext): boolean => {
-    if (!canSendAgentActivity(ctx)) return false;
+    if (uiPromptActive || !canSendAgentActivity(ctx)) return false;
     const turn = activeTurnRuntime.get();
     const target = turn?.target ?? proactivePushTargetGetter();
     promptDispatchRuntime.startTypingLoop(ctx, turn?.chatId ?? target?.chatId, {
@@ -1022,12 +1023,16 @@ export function registerTelegramLifecycleRuntimeHooks({
     return true;
   };
   const startActiveTurnTypingLoop = (ctx: Pi.ExtensionContext): void => {
+    if (uiPromptActive) return;
     const turn = activeTurnRuntime.get();
     promptDispatchRuntime.startTypingLoop(ctx, turn?.chatId, {
       target: turn?.target,
     });
   };
   let observedAutomaticCompaction = false;
+  let agentRunActive = false;
+  let terminalAssistantMessagePendingDelivery = false;
+  const deferredAutomaticCompactionNotices: string[] = [];
   const sendCompactionNotice = async (text: string): Promise<void> => {
     const turn = activeTurnRuntime.get();
     const target = turn?.target ?? proactivePushTargetGetter?.();
@@ -1042,6 +1047,10 @@ export function registerTelegramLifecycleRuntimeHooks({
       });
     }
   };
+  const flushDeferredAutomaticCompactionNotices = async (): Promise<void> => {
+    const notices = deferredAutomaticCompactionNotices.splice(0);
+    for (const notice of notices) await sendCompactionNotice(notice);
+  };
   const compactionObserver = Lifecycle.createTelegramCompactionObserverRuntime({
     isContextActive: isSessionContextActive,
     setCompactionInProgress: lifecycle.setCompactionInProgress,
@@ -1054,6 +1063,7 @@ export function registerTelegramLifecycleRuntimeHooks({
     recordRuntimeEvent,
     onCompactionAbandoned: () => {
       observedAutomaticCompaction = false;
+      deferredAutomaticCompactionNotices.length = 0;
       activityRuntime.onCompactionAbandoned();
     },
   });
@@ -1088,6 +1098,10 @@ export function registerTelegramLifecycleRuntimeHooks({
       activityVerbosityRuntime?.reset();
       assistantOutputRuntime.stop();
       observedAutomaticCompaction = false;
+      agentRunActive = false;
+      terminalAssistantMessagePendingDelivery = false;
+      uiPromptActive = false;
+      deferredAutomaticCompactionNotices.length = 0;
       compactionObserver.onSessionShutdown();
       if (event.reason === "quit" && disconnectOnQuit) {
         try {
@@ -1109,11 +1123,20 @@ export function registerTelegramLifecycleRuntimeHooks({
       activityRuntime.onCompactionStart(Pi.getSessionCompactionReason(event));
       compactionObserver.onSessionBeforeCompact(event, ctx);
       if (shouldNotify) {
-        await waitForActiveTurnDelivery();
-        if (!isSessionContextActive(ctx)) return;
-        await sendCompactionNotice(
-          Commands.TELEGRAM_COMPACTION_STARTED_MARKDOWN,
-        );
+        if (
+          activeTurnRuntime.has() &&
+          terminalAssistantMessagePendingDelivery
+        ) {
+          deferredAutomaticCompactionNotices.push(
+            Commands.TELEGRAM_COMPACTION_STARTED_MARKDOWN,
+          );
+        } else {
+          await waitForActiveTurnDelivery();
+          if (!isSessionContextActive(ctx)) return;
+          await sendCompactionNotice(
+            Commands.TELEGRAM_COMPACTION_STARTED_MARKDOWN,
+          );
+        }
       }
     },
     async onSessionCompact(event, ctx) {
@@ -1122,13 +1145,39 @@ export function registerTelegramLifecycleRuntimeHooks({
       compactionObserver.onSessionCompact(event, ctx);
       if (observedAutomaticCompaction) {
         observedAutomaticCompaction = false;
-        await sendCompactionNotice(
-          Commands.TELEGRAM_COMPACTION_COMPLETED_MARKDOWN,
-        );
+        if (deferredAutomaticCompactionNotices.length > 0) {
+          deferredAutomaticCompactionNotices.push(
+            Commands.TELEGRAM_COMPACTION_COMPLETED_MARKDOWN,
+          );
+        } else {
+          await sendCompactionNotice(
+            Commands.TELEGRAM_COMPACTION_COMPLETED_MARKDOWN,
+          );
+        }
+      }
+    },
+    async onSessionCompactFailed(event, ctx) {
+      if (!isSessionContextActive(ctx)) return;
+      const shouldNotify = observedAutomaticCompaction;
+      const deferredNotices = deferredAutomaticCompactionNotices.splice(0);
+      const shouldDefer =
+        deferredNotices.length > 0 ||
+        (activeTurnRuntime.has() && terminalAssistantMessagePendingDelivery);
+      compactionObserver.onSessionCompactFailed(event, ctx);
+      if (!shouldNotify) return;
+      const notice = event.aborted
+        ? "**⚠️ Compaction cancelled.**"
+        : "**⚠️ Compaction failed.**";
+      if (shouldDefer) {
+        deferredAutomaticCompactionNotices.push(...deferredNotices, notice);
+      } else {
+        await sendCompactionNotice(notice);
       }
     },
     async onAgentStart(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
+      agentRunActive = true;
+      terminalAssistantMessagePendingDelivery = false;
       await agentStartWithDedupReset(event, ctx);
       activityRuntime.onAgentStart(activeTurnRuntime.get()?.target);
       startAgentActivityTypingLoop(ctx);
@@ -1173,10 +1222,39 @@ export function registerTelegramLifecycleRuntimeHooks({
       }
       await messageActivityHooks.onMessageUpdate(event, ctx);
     },
+    onMessageEnd(event, ctx) {
+      if (!isSessionContextActive(ctx)) return;
+      terminalAssistantMessagePendingDelivery =
+        event.message.role === "assistant" &&
+        event.message.stopReason !== "toolUse" &&
+        event.message.stopReason !== "error" &&
+        event.message.stopReason !== "aborted";
+    },
+    onUiPromptStart(event, ctx) {
+      if (!isSessionContextActive(ctx)) return;
+      uiPromptActive = true;
+      typing.stop();
+      activityRuntime.onUiPromptStart(event.kind, event.title);
+      updateStatus(ctx);
+    },
+    onUiPromptEnd(_event, ctx) {
+      if (!isSessionContextActive(ctx)) return;
+      uiPromptActive = false;
+      activityRuntime.onUiPromptEnd();
+      if (agentRunActive) startAgentActivityTypingLoop(ctx);
+      updateStatus(ctx);
+    },
     async onAgentEnd(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
+      agentRunActive = false;
       activityRuntime.onAgentEnd();
       await agentLifecycleHooks.onAgentEnd(event, ctx);
+      if (deferredAutomaticCompactionNotices.length > 0) {
+        await waitForActiveTurnDelivery();
+        if (!isSessionContextActive(ctx)) return;
+        await flushDeferredAutomaticCompactionNotices();
+      }
+      terminalAssistantMessagePendingDelivery = false;
     },
     async onAgentSettled(event, ctx) {
       if (!isSessionContextActive(ctx)) return;

@@ -85,6 +85,12 @@ export type TelegramActivityPayload =
         type: "compaction-end";
         reason: "manual" | "threshold" | "overflow" | "unknown";
       }
+    | {
+        type: "ui-prompt-start";
+        kind: "select" | "confirm" | "input" | "editor" | "custom";
+        title?: string;
+      }
+    | { type: "ui-prompt-end" }
     | { type: "agent-end" }
   | { type: "agent-settled" };
 
@@ -440,6 +446,12 @@ export function createTelegramActivityBridgeRuntime(deps: {
     onCompactionAbandoned() {
       getRuntime()?.onCompactionAbandoned();
     },
+    onUiPromptStart(kind, title) {
+      getRuntime()?.onUiPromptStart(kind, title);
+    },
+    onUiPromptEnd() {
+      getRuntime()?.onUiPromptEnd();
+    },
     onAgentEnd() {
       getRuntime()?.onAgentEnd();
     },
@@ -502,6 +514,11 @@ export interface TelegramActivityRuntime {
     reason: "manual" | "threshold" | "overflow" | "unknown",
   ) => void;
   onCompactionAbandoned: () => void;
+  onUiPromptStart: (
+    kind: "select" | "confirm" | "input" | "editor" | "custom",
+    title?: string,
+  ) => void;
+  onUiPromptEnd: () => void;
   onAgentEnd: () => void;
   onAgentSettled: () => void;
   onSessionShutdown: () => void;
@@ -533,6 +550,7 @@ export function createTelegramActivityRuntime(deps: {
   let pendingAssistantSegment: PendingAssistantSegment | undefined;
   let compactionInProgress = false;
   let compactionOwnedActivity = false;
+  let uiPromptInProgress = false;
   const ensureActivity = (
     activeTelegramTarget?: TelegramActivityTarget,
   ): string => {
@@ -592,6 +610,7 @@ export function createTelegramActivityRuntime(deps: {
     pendingAssistantSegment = undefined;
     compactionInProgress = false;
     compactionOwnedActivity = false;
+    uiPromptInProgress = false;
   };
   const abandonCompaction = (): void => {
     if (!compactionInProgress) return;
@@ -684,6 +703,16 @@ export function createTelegramActivityRuntime(deps: {
     },
     onCompactionAbandoned() {
       abandonCompaction();
+    },
+    onUiPromptStart(kind, title) {
+      if (!activityId || uiPromptInProgress) return;
+      uiPromptInProgress = true;
+      emit({ type: "ui-prompt-start", kind, title });
+    },
+    onUiPromptEnd() {
+      if (!activityId || !uiPromptInProgress) return;
+      uiPromptInProgress = false;
+      emit({ type: "ui-prompt-end" });
     },
     onAgentEnd() {
       if (activityId) emit({ type: "agent-end" });

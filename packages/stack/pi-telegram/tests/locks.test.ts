@@ -629,6 +629,10 @@ test("Delayed stale recovery cannot claim a replacement generation", () => {
                 JSON.stringify(replacementOwner),
                 { mode: 0o600 },
               );
+              throw Object.assign(
+                new Error("injected macOS concurrent rename contention"),
+                { code: "EINVAL" },
+              );
             }
             renameSync(fromPath, toPath);
           },

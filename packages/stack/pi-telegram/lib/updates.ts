@@ -1782,6 +1782,7 @@ export interface TelegramUpdateWorkerRuntimeDeps<TContext> {
   classifyExecutionFailure?: (
     error: unknown,
   ) => TelegramUpdateExecutionFailureClassification;
+  settleTerminalExecutionFailure?: (error: unknown) => Promise<boolean>;
   scheduleRetry?: (callback: () => void, delayMs: number) => unknown;
   cancelRetry?: (handle: unknown) => void;
   batchSize?: number;
@@ -4833,13 +4834,20 @@ export function createTelegramUpdateAdmissionWorkerRuntime<
   });
   worker = createTelegramUpdateWorkerRuntime({
     ...deps,
-    executeUpdate: (update, ctx, signal) => {
+    async executeUpdate(update, ctx, signal) {
       const typedUpdate = update as TUpdate;
-      return executeUpdate(
-        deps.prepareUpdateForExecution?.(typedUpdate) ?? typedUpdate,
-        ctx,
-        signal,
-      );
+      try {
+        return await executeUpdate(
+          deps.prepareUpdateForExecution?.(typedUpdate) ?? typedUpdate,
+          ctx,
+          signal,
+        );
+      } catch (error) {
+        if (await deps.settleTerminalExecutionFailure?.(error)) {
+          return { kind: "complete" };
+        }
+        throw error;
+      }
     },
   });
   return worker;

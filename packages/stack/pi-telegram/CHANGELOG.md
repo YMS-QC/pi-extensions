@@ -2,6 +2,33 @@
 
 > Each release keeps at most 8 outcome records of at most 512 characters.
 
+## 0.40.0: Pi 0.84.4 Lifecycle Alignment
+
+- `Pi Compatibility`: Requires `@earendil-works/pi-coding-agent`, `pi-agent-core`, and `pi-ai` 0.84.4 or newer, aligning the bridge and its validation runtime with native compaction-failure, mid-run compaction, message-finalization, and UI-prompt lifecycle contracts.
+- `Compaction Failure`: Handles `session_compact_failed` immediately by clearing compacting state, stopping observer-owned typing, releasing deferred queue work, abandoning stale activity, and reporting automatic failure or cancellation without duplicating manual `/compact` errors.
+- `Compaction Chronology`: Distinguishes terminal assistant output awaiting Telegram delivery from mid-run tool continuation. Post-answer notices remain ordered after the final reply, while tool-result threshold compaction is reported in place before the next assistant response.
+- `Local UI Waiting`: Pauses Telegram typing while Pi waits on extension-owned local select, confirm, input, editor, or custom prompts and emits coalesced `ui-prompt-start` / `ui-prompt-end` Activity boundaries before resuming active-turn typing.
+- `Inbound Context`: Raises successful inbound handler and built-in text attachment output from 12,000 to 24,000 characters while retaining the 1 MB built-in file admission ceiling and explicit truncation evidence.
+
+## 0.39.5: Auto-Compaction Notice Chronology Hotfix
+
+- `Turn Chronology`: Defers observed automatic-compaction notices while a Telegram turn is still active, preserving the same causal order shown by the terminal: final answer, compaction started, then compaction completed. Abandoned compactions and session shutdown discard deferred notices instead of leaking them into a later turn.
+
+## 0.39.4: Headless Status Bar Hotfix
+
+- `Headless Hosts`: Skips status-bar rendering when a print, RPC, ACP, or other non-interactive host has not initialized its theme, preventing repeated extension errors during lifecycle status refreshes while preserving normal interactive status updates and error propagation.
+
+## 0.39.3: Windows IPC And Outbound Voice Hotfix
+
+- `Windows IPC Replacement`: Replaces an older same-process Named Pipe server before a new session generation listens on the stable endpoint, preventing `EADDRINUSE` during reload while keeping a late stop from invalidating its successor.
+- `Windows IPC Fencing`: Applies the ownership commit fence before publishing a Named Pipe, so a stale generation that loses authority cannot expose an endpoint or block its replacement.
+- `Windows Voice Commands`: Executes trusted `.cmd` and `.bat` outbound-handler wrappers through escaped `%ComSpec%` adaptation while preserving direct shell-free execution for native executables, bounded process controls, npm command-shim argument isolation, and paths containing spaces.
+- `Windows Template Paths`: Preserves backslashes in quoted and unquoted Windows executable and artifact paths without breaking intentional escaped whitespace or quotes, allowing configured TTS handlers to produce and upload OGG/Opus voice replies through direct and follower transport.
+
+## 0.39.2: Deleted Thread Receipt Hotfix
+
+- `Deleted Thread Receipt`: Terminally settles the currently executing durable update when Telegram returns exact HTTP 400 stale/deleted-thread evidence for its `{chatId, threadId}`, including leader-first shared-store invalidation followed by follower settlement. Transient, ambiguous, unrelated, and stale-looking HTTP 5xx failures retain indefinite retry authority; persisted follower records remain restart hints rather than speculative live registrations.
+
 ## 0.39.1: Compaction Failure Formatting Hotfix
 
 - `Compaction Failure Formatting`: Preserves the HTML parse mode when a confirmed `/compact` callback reports asynchronous failure, preventing bold standalone failure headings from appearing as literal `<b>…</b>` markup in Telegram.

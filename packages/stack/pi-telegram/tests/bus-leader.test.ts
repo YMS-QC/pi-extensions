@@ -32,7 +32,10 @@ import {
   type TelegramBusLeaderRuntimeDeps,
 } from "../lib/bus-leader.ts";
 import { createTelegramTopicTargetStore } from "../lib/threads.ts";
-import { TelegramApiCommitUnknownError } from "../lib/telegram-api.ts";
+import {
+  TelegramApiCommitUnknownError,
+  TelegramApiStaleTargetError,
+} from "../lib/telegram-api.ts";
 
 const TEST_BUS_PROTOCOL_IDENTITY = createTelegramBusProtocolIdentity({
   runtimeBuild: "test",
@@ -1962,6 +1965,47 @@ test("Bus leader handles follower API call envelopes for registered followers", 
   );
 });
 
+test("Bus leader returns exact stale-target evidence to the owning follower", async () => {
+  const registry = createTelegramBusFollowerRegistry();
+  registry.register({
+    instanceId: "inst-a",
+    registrationGeneration: "generation-a",
+    connectedAtMs: 1000,
+  });
+  const handleEnvelope = createTelegramBusLeaderEnvelopeHandler({
+    followerRegistry: registry,
+    callApi() {
+      throw new TelegramApiStaleTargetError(
+        "Telegram API sendMessage failed: HTTP 400: Bad Request: message thread not found",
+        { chatId: 1, threadId: 42 },
+      );
+    },
+  });
+
+  assert.deepEqual(
+    await handleEnvelope({
+      kind: "follower.callApi",
+      requestId: "inst-a:stale:1",
+      instanceId: "inst-a",
+      registrationGeneration: "generation-a",
+      method: "call",
+      args: [
+        "sendMessage",
+        { chat_id: 1, message_thread_id: 42, text: "private" },
+      ],
+      sentAtMs: 4000,
+    }),
+    {
+      kind: "bus.ack",
+      requestId: "inst-a:stale:1",
+      ok: false,
+      message:
+        "Telegram API sendMessage failed: HTTP 400: Bad Request: message thread not found",
+      error: { code: "stale-target", chatId: 1, threadId: 42 },
+    },
+  );
+});
+
 test("Bus leader rejects delayed API calls from a replaced follower generation", async () => {
   const registry = createTelegramBusFollowerRegistry();
   registry.register({
@@ -2270,10 +2314,12 @@ test("Bus leader authorizes scoped follower API calls", async () => {
       const body = args[1] as Record<string, unknown> | undefined;
       return (
         follower.target?.chatId === 100 &&
-        method === "call" &&
-        args[0] === "sendMessage" &&
         body?.chat_id === 100 &&
-        body?.message_thread_id === 42
+        body?.message_thread_id === 42 &&
+        (
+          (method === "call" && args[0] === "sendMessage") ||
+          (method === "callMultipart" && args[0] === "sendVoice")
+        )
       );
     },
     callApi(method, args) {
@@ -2302,6 +2348,29 @@ test("Bus leader authorizes scoped follower API calls", async () => {
   assert.deepEqual(
     await handleEnvelope({
       kind: "follower.callApi",
+      requestId: "inst-a:voice",
+      instanceId: "inst-a",
+      registrationGeneration: "generation-a",
+      method: "callMultipart",
+      args: [
+        "sendVoice",
+        { chat_id: 100, message_thread_id: 42 },
+        "voice",
+        "C:\\Temp\\voice output.ogg",
+        "voice output.ogg",
+      ],
+      sentAtMs: 2500,
+    }),
+    {
+      kind: "bus.ack",
+      requestId: "inst-a:voice",
+      ok: true,
+      result: { ok: true },
+    },
+  );
+  assert.deepEqual(
+    await handleEnvelope({
+      kind: "follower.callApi",
       requestId: "inst-a:denied",
       instanceId: "inst-a",
       registrationGeneration: "generation-a",
@@ -2320,6 +2389,16 @@ test("Bus leader authorizes scoped follower API calls", async () => {
     {
       method: "call",
       args: ["sendMessage", { chat_id: 100, message_thread_id: 42 }],
+    },
+    {
+      method: "callMultipart",
+      args: [
+        "sendVoice",
+        { chat_id: 100, message_thread_id: 42 },
+        "voice",
+        "C:\\Temp\\voice output.ogg",
+        "voice output.ogg",
+      ],
     },
   ]);
 });

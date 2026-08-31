@@ -4,9 +4,19 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
+import { execCommandTemplate } from "../lib/command-templates.ts";
+import type { TelegramOutboundHandlerConfig } from "../lib/config.ts";
+import {
+  findTelegramOutboundHandlers,
+  generateTelegramVoiceReplyFile,
+} from "../lib/outbound.ts";
 import { createTelegramVoiceReplySender } from "../lib/outbound-voice.ts";
+import { resetTransportReplyDedup } from "../lib/replies.ts";
 import { createTelegramThreadTarget } from "../lib/target.ts";
 import {
   clearTelegramVoiceSynthesisProviders,
@@ -15,7 +25,71 @@ import {
 
 test.beforeEach(() => {
   clearTelegramVoiceSynthesisProviders();
+  resetTransportReplyDedup();
 });
+
+test(
+  "Outbound voice sender executes a Windows cmd handler and uploads its ogg artifact",
+  { skip: process.platform !== "win32" },
+  async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-telegram-outbound-voice-cmd-"));
+    const scriptPath = join(tempDir, "voice-writer.cmd");
+    await writeFile(
+      scriptPath,
+      "@echo off\r\n>\"%~1\" echo OggS\r\n",
+      "utf8",
+    );
+    const handlers = [{
+      type: "voice",
+      template: `"${scriptPath}" {ogg}`,
+      output: "ogg",
+    }];
+    const uploads: Array<{ filePath: string; content: string }> = [];
+    const diagnostics: string[] = [];
+    const sendVoice = createTelegramVoiceReplySender(
+      {
+        execCommand: execCommandTemplate,
+        getHandlers: () => handlers,
+        tempDir,
+        sendMultipart: async (_method, _fields, _fileField, filePath) => {
+          uploads.push({
+            filePath,
+            content: await readFile(filePath, "utf8"),
+          });
+        },
+        recordRuntimeEvent: (_category, error, details) => {
+          diagnostics.push(
+            `${String(details?.phase)}:${error instanceof Error ? error.message : String(error)}`,
+          );
+        },
+      },
+      {
+        findVoiceHandlers: (configured) =>
+          findTelegramOutboundHandlers(
+            configured as TelegramOutboundHandlerConfig[] | undefined,
+            "voice",
+          ),
+        generateVoiceFile: (text, options) =>
+          generateTelegramVoiceReplyFile(text, options),
+      },
+    );
+    try {
+      await sendVoice(
+        { chatId: 901, replyToMessageId: 902 },
+        "hello from Windows",
+      ).catch((error) => {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}; diagnostics=${JSON.stringify(diagnostics)}`,
+        );
+      });
+      assert.equal(uploads.length, 1);
+      assert.match(uploads[0]?.filePath ?? "", /-voice\.ogg$/u);
+      assert.equal(uploads[0]?.content, "OggS\r\n");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("Outbound voice sender uploads provider opus result with reply markup", async () => {
   registerTelegramVoiceSynthesisProvider(

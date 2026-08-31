@@ -30,6 +30,7 @@ import {
   createTelegramNativeMarkdownDraftSender,
   downloadTelegramFile,
   fetchTelegramBotIdentity,
+  getTelegramApiErrorRequestTarget,
   getTelegramInboundFileByteLimitFromEnv,
   isTelegramApiCommitUnknownError,
   isTelegramMessageNotModifiedError,
@@ -40,6 +41,7 @@ import {
   type TelegramApiClient,
   type TelegramInputRichMessage,
 } from "../lib/telegram-api.ts";
+import { isTelegramTopicTargetStaleError } from "../lib/threads.ts";
 
 function createApiResponseBody(result: unknown): { ok: true; result: unknown } {
   return { ok: true, result };
@@ -741,6 +743,52 @@ test("Retry-safe Telegram API transport falls back to IPv4 once", async () => {
     restoreHttpsFetch();
     restoreFetch();
     restoreEnv();
+  }
+});
+
+test("Telegram API HTTP errors retain only the exact threaded request target", async () => {
+  const restoreFetch = setApiTestFetch(async () => {
+    return createApiErrorResponse(400, "Bad Request: message thread not found");
+  });
+  try {
+    const error = await callTelegram(
+      "123:abc",
+      "sendMessage",
+      {
+        chat_id: 42,
+        message_thread_id: 7,
+        text: "private payload",
+      },
+      { maxAttempts: 1 },
+    ).catch((failure: unknown) => failure);
+    assert.deepEqual(getTelegramApiErrorRequestTarget(error), {
+      chatId: 42,
+      threadId: 7,
+    });
+    assert.doesNotMatch(String(error), /private payload/u);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("Telegram API stale-looking HTTP 500 errors remain transient", async () => {
+  const restoreFetch = setApiTestFetch(async () => {
+    return createApiErrorResponse(500, "message thread not found");
+  });
+  try {
+    const error = await callTelegram(
+      "123:abc",
+      "sendChatAction",
+      { chat_id: 42, message_thread_id: 7, action: "typing" },
+      { maxAttempts: 1 },
+    ).catch((failure: unknown) => failure);
+    assert.equal(isTelegramTopicTargetStaleError(error), false);
+    assert.deepEqual(getTelegramApiErrorRequestTarget(error), {
+      chatId: 42,
+      threadId: 7,
+    });
+  } finally {
+    restoreFetch();
   }
 });
 

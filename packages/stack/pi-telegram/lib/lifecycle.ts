@@ -16,13 +16,17 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   InputEvent,
+  MessageEndEvent,
   SessionBeforeCompactEvent,
   SessionCompactEvent,
+  SessionCompactFailedEvent,
   SessionShutdownEvent,
   SessionStartEvent,
   ToolExecutionEndEvent,
   ToolExecutionStartEvent,
   ToolExecutionUpdateEvent,
+  UIPromptEndEvent,
+  UIPromptStartEvent,
 } from "./pi.ts";
 
 let resetTransportReplyDedupFn: (() => void) | undefined;
@@ -78,6 +82,10 @@ export interface TelegramLifecycleRegistrationDeps {
     event: SessionCompactEvent,
     ctx: ExtensionContext,
   ) => Promise<void> | void;
+  onSessionCompactFailed?: (
+    event: SessionCompactFailedEvent,
+    ctx: ExtensionContext,
+  ) => Promise<void> | void;
   onBeforeAgentStart: (
     event: TelegramBeforeAgentStartEvent,
     ctx: ExtensionContext,
@@ -113,6 +121,18 @@ export interface TelegramLifecycleRegistrationDeps {
     },
     ctx: ExtensionContext,
   ) => Promise<void>;
+  onMessageEnd?: (
+    event: MessageEndEvent,
+    ctx: ExtensionContext,
+  ) => Promise<void> | void;
+  onUiPromptStart?: (
+    event: UIPromptStartEvent,
+    ctx: ExtensionContext,
+  ) => Promise<void> | void;
+  onUiPromptEnd?: (
+    event: UIPromptEndEvent,
+    ctx: ExtensionContext,
+  ) => Promise<void> | void;
   onAgentEnd: (event: AgentEndEvent, ctx: ExtensionContext) => Promise<void>;
   onAgentSettled?: (
     event: AgentSettledEvent,
@@ -475,6 +495,10 @@ export interface TelegramCompactionObserverRuntime<TContext> {
     ctx: TContext,
   ) => void;
   onSessionCompact: (event: SessionCompactEvent, ctx: TContext) => void;
+  onSessionCompactFailed: (
+    event: SessionCompactFailedEvent,
+    ctx: TContext,
+  ) => void;
   onSessionShutdown: () => void;
 }
 
@@ -528,6 +552,16 @@ export function createTelegramCompactionObserverRuntime<TContext>(
       if (typingStartedByObserver) deps.stopTypingLoop?.();
       typingStartedByObserver = false;
       deps.updateStatus(ctx);
+      requestDispatch();
+    },
+    onSessionCompactFailed: (_event, ctx) => {
+      clearFallbackTimer();
+      if (deps.isContextActive && !deps.isContextActive(ctx)) return;
+      deps.setCompactionInProgress(false);
+      if (typingStartedByObserver) deps.stopTypingLoop?.();
+      typingStartedByObserver = false;
+      deps.updateStatus(ctx);
+      deps.onCompactionAbandoned?.();
       requestDispatch();
     },
     onSessionShutdown: () => {
@@ -649,6 +683,10 @@ export function registerTelegramLifecycleHooks(
     if (!isActive(ctx)) return;
     await deps.onSessionCompact?.(event, ctx);
   });
+  pi.on("session_compact_failed", async (event, ctx) => {
+    if (!isActive(ctx)) return;
+    await deps.onSessionCompactFailed?.(event, ctx);
+  });
   // The Pi SDK still types this result as a string; compatible runtimes may
   // preserve ordered system prompt blocks through the same public hook.
   const registerBeforeAgentStart = pi.on.bind(pi) as unknown as (
@@ -688,6 +726,18 @@ export function registerTelegramLifecycleHooks(
   pi.on("message_update", async (event, ctx) => {
     if (!isActive(ctx)) return;
     await deps.onMessageUpdate(event, ctx);
+  });
+  pi.on("message_end", async (event, ctx) => {
+    if (!isActive(ctx)) return;
+    await deps.onMessageEnd?.(event, ctx);
+  });
+  pi.on("ui_prompt_start", async (event, ctx) => {
+    if (!isActive(ctx)) return;
+    await deps.onUiPromptStart?.(event, ctx);
+  });
+  pi.on("ui_prompt_end", async (event, ctx) => {
+    if (!isActive(ctx)) return;
+    await deps.onUiPromptEnd?.(event, ctx);
   });
   pi.on("agent_end", async (event, ctx) => {
     if (!isActive(ctx)) return;

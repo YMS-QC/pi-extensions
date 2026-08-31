@@ -2882,6 +2882,11 @@ export function getTelegramTargetFromApiBody(
 
 export function isTelegramTopicTargetStaleError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+  const status =
+    "status" in error && typeof error.status === "number"
+      ? error.status
+      : undefined;
+  if (status !== undefined && status !== 400) return false;
   const message = error.message.toLowerCase();
   return (
     message.includes("topic_id_invalid") ||

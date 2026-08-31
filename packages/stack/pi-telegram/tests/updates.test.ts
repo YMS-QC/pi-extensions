@@ -2395,6 +2395,49 @@ test("Admission handle rejects a public consume verdict after its generation is 
   assert.equal(defaultEffectCount, 0);
 });
 
+test("Admission worker settles an exactly classified terminal delivery failure", async () => {
+  const storage = createTestUpdateWorkerJournal([{ update_id: 75 }]);
+  const failure = new Error("message thread not found");
+  let settlementCalls = 0;
+  const worker = createTelegramUpdateAdmissionWorkerRuntime({
+    journal: storage.journal,
+    hasAuthority: () => true,
+    defaultHandle: async () => {
+      throw failure;
+    },
+    async settleTerminalExecutionFailure(error) {
+      settlementCalls += 1;
+      assert.equal(error, failure);
+      return true;
+    },
+  });
+
+  worker.start("ctx");
+  await worker.waitForDrain();
+  assert.equal(settlementCalls, 1);
+  assert.deepEqual(storage.getUpdateIds(), []);
+  assert.equal(worker.getState().retryWaitCount, 0);
+  await worker.stop();
+});
+
+test("Admission worker preserves retry authority when terminal settlement is rejected", async () => {
+  const storage = createTestUpdateWorkerJournal([{ update_id: 76 }]);
+  const worker = createTelegramUpdateAdmissionWorkerRuntime({
+    journal: storage.journal,
+    hasAuthority: () => true,
+    defaultHandle: async () => {
+      throw new Error("transient delivery failure");
+    },
+    settleTerminalExecutionFailure: async () => false,
+  });
+
+  worker.start("ctx");
+  await worker.waitForDrain();
+  assert.deepEqual(storage.getUpdateIds(), [76]);
+  assert.equal(storage.getEntries()[0]?.state, "retry-wait");
+  await worker.stop();
+});
+
 test("Admission worker delays replacement public effects until the superseded handler settles", async () => {
   const storage = createTestUpdateWorkerJournal([{ update_id: 75 }]);
   const effects: string[] = [];
