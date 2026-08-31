@@ -14,6 +14,14 @@ This is not a sandbox. Do not describe it as one.
 - `README.md` — user-facing documentation and install/config reference.
 - `package.json` — npm package metadata, Pi manifest, scripts, peer/dev dependencies.
 
+## Issue tracking
+
+Track issues in [GitHub](https://github.com/czottmann/pi-automode/issues). Use the `gh` CLI for issue operations.
+
+GitHub Issues has no `Draft` state. Create captured tickets as open issues and state that they are Drafts in the description.
+
+Use `bug` for defects, `enhancement` for behavior changes, and `documentation` for documentation-only work.
+
 ## Development commands
 
 Run these before handing off code changes:
