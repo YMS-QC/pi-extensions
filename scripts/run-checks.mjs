@@ -3,11 +3,10 @@
 import concurrently from "concurrently";
 
 const checks = ["biome:check", "check:boundaries", "typecheck", "test", "stack-checks"];
-const env = { ...process.env, PI_EXTENSIONS_BUILD_READY: "1" };
 
 console.log(`Running checks in parallel: ${checks.join(", ")}`);
 const { result } = concurrently(
-	checks.map((check) => ({ command: `npm:${check}`, name: check, env })),
+	checks.map((check) => ({ command: `npm:${check}`, name: check })),
 	{ prefix: "name", prefixColors: ["auto"] },
 );
 

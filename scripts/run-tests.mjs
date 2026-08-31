@@ -36,7 +36,6 @@ console.log(
 		: `Running affected tests for ${selection.workspaceDirectories.join(", ") || "root only"}: ${selection.reason}.`,
 );
 
-if (process.env.PI_EXTENSIONS_BUILD_READY !== "1") runNpm(["run", "build"]);
 fs.rmSync(outDir, { recursive: true, force: true });
 run(tsc, ["-p", "tsconfig.test.json"]);
 

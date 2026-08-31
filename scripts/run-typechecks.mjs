@@ -22,10 +22,6 @@ if (!hasWorkspace) {
 	process.exit(0);
 }
 
-if (process.env.PI_EXTENSIONS_BUILD_READY !== "1") {
-	runNpm(["run", "build"]);
-	process.env.PI_EXTENSIONS_BUILD_READY = "1";
-}
 runNpm(["--workspaces", "--if-present", "run", "typecheck"]);
 
 function runNpm(args) {

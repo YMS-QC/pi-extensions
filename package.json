@@ -4,16 +4,12 @@
 	"private": true,
 	"type": "module",
 	"description": "YMS-QC private pi extension monorepo: vendored upstream packages (patched) + own assets",
-	"workspaces": [
-		"packages/*"
-	],
 	"scripts": {
 		"format": "biome format --write .",
 		"lint": "biome lint .",
 		"biome:check": "biome check .",
 		"check:boundaries": "node ./scripts/check-extension-boundaries.mjs",
 		"typecheck": "node ./scripts/run-typechecks.mjs",
-		"build": "npm --workspaces --if-present run build",
 		"test": "node ./scripts/run-tests.mjs",
 		"stack-checks": "node ./scripts/run-stack-checks.mjs",
 		"stack-install": "node ./scripts/run-stack-checks.mjs --install-only",

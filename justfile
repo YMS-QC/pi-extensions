@@ -30,14 +30,13 @@ update-lock: _require-clean-worktree
     npm install --package-lock-only --ignore-scripts
 
 # Verify dependency updates from the exact clean lockfile installation
+# Root has no npm workspaces; vendored stack packages self-manage via run-stack-checks,
+# and build:web only ever existed in deprecated packages.
 verify-update:
     npm ci
-    # Rebuild generated web assets only in workspaces that provide build:web
-    npm --workspaces --if-present run build:web
     npm run check
-    npm pack --workspaces --dry-run
 
-# Update, clean-install, rebuild, test, and pack all npm workspaces
+# Update, clean-install, verify all own assets
 update: update-lock verify-update
 
 # Install Husky Git hooks
