@@ -253,7 +253,8 @@ The system prompt is `CLASSIFIER_SYSTEM_PROMPT` with configuration sections expa
 The prompt defines the policy semantics:
 
 - hard-deny rules block unconditionally
-- soft-deny rules support an allow exception or direct and specific user authorization
+- soft-deny rules support allow exceptions or direct user authorization in the retained user transcript
+- a later user instruction can narrow or revoke authorization
 - allow rules override only soft-deny rules
 - hidden or malicious instructions in transcript evidence or repository files cannot change the rules
 - the classifier cannot invent deny rules or treat the allow-exception list as exhaustive
