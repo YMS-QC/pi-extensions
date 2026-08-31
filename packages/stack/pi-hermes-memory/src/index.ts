@@ -28,7 +28,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { MemoryStore } from "./store/memory-store.js";
 import { SkillStore } from "./store/skill-store.js";
 import { DatabaseManager } from "./store/db.js";
-import { indexSession, upsertSessionFileMetadata } from "./store/session-indexer.js";
+import { indexSession, upsertSessionFileMetadata, pruneEphemeralReviewSessions } from "./store/session-indexer.js";
+import { runRecoveryMaintenance } from "./store/recovery-maintenance.js";
 import { scheduleSessionBackfill, waitForSessionBackfill, SESSION_BACKFILL_SHUTDOWN_TIMEOUT_MS } from "./handlers/session-backfill.js";
 import { scheduleLiveSessionIndex, waitForLiveSessionIndex, SESSION_LIVE_INDEX_SHUTDOWN_TIMEOUT_MS } from "./handlers/session-live-index.js";
 import { parseSessionFile } from "./store/session-parser.js";
@@ -59,6 +60,7 @@ import { buildPromptContext } from "./prompt-context.js";
 import { migrateLegacyProjectMemoryDirs } from "./project-memory-migration.js";
 import { AGENT_ROOT } from "./paths.js";
 import { isDatabaseMigrationPending } from "./extension-root-migration.js";
+import { measureLifecycle, measureLifecycleSync } from "./lifecycle-timing.js";
 
 export function resolveProjectSkillDiscovery(
   skillStore: SkillStore,
@@ -107,13 +109,15 @@ export default function (pi: ExtensionAPI) {
   let persistenceInitialized = false;
 
   const store = new MemoryStore({ ...config, memoryDir: globalDir });
-  let project = detectProject(config.projectsMemoryDir);
-  let projectName = project.name ?? "";
+  // Factory may run with no session (Pi public contract). Do not snapshot
+  // project identity from process.cwd() here — bind from session_start ctx.cwd
+  // and from tool execute ctx.cwd.
+  let projectName = "";
   const skillStore = new SkillStore({
     globalSkillsDir: path.join(globalDir, "skills"),
     piGlobalSkillsDir: path.join(agentRoot, "skills"),
-    projectSkillsDir: project.memoryDir ? path.join(project.memoryDir, "skills") : null,
-    projectName: project.name,
+    projectSkillsDir: null,
+    projectName: null,
     legacySkillsDir: path.join(legacyGlobalDir, "skills"),
     migrationSentinelPath: path.join(globalDir, ".skills-migrated-to-extension-storage"),
   });
@@ -142,8 +146,8 @@ export default function (pi: ExtensionAPI) {
   // ~/.pi/agent/<project>/ layout. This is non-destructive: legacy folders
   // remain in place while entries are copied/merged into projects-memory/.
   migrateLegacyProjectMemoryDirs(agentRoot, config.projectsMemoryDir);
-  // Detect project from cwd using shared helper
   // Project-scoped store: ~/.pi/agent/<projectsMemoryDir>/<project_name>/
+  // Bound from session/tool ctx.cwd, never from factory process.cwd().
   const createProjectStore = (projectInfo: ReturnType<typeof detectProject>): MemoryStore | null => {
     if (!projectInfo.memoryDir) return null;
     return new MemoryStore({
@@ -152,12 +156,25 @@ export default function (pi: ExtensionAPI) {
       memoryDir: projectInfo.memoryDir,
     });
   };
-  let projectMemoryDir = project.memoryDir ?? null;
-  let projectStore = createProjectStore(project);
+  let projectMemoryDir: string | null = null;
+  let projectStore: MemoryStore | null = null;
   const projectStoreRef = () => projectStore;
   const projectNameRef = () => projectName;
   let configureProjectStore: (candidate: MemoryStore | null) => void = () => {};
   let configureMemoryToolProjectStore: (candidate: MemoryStore | null) => void = () => {};
+  const bindProjectFromCwd = async (cwd?: string): Promise<void> => {
+    if (!cwd) return;
+    const nextProject = detectProject(config.projectsMemoryDir, cwd);
+    const nextProjectMemoryDir = nextProject.memoryDir ?? null;
+    if (nextProjectMemoryDir !== projectMemoryDir) {
+      projectMemoryDir = nextProjectMemoryDir;
+      projectStore = createProjectStore(nextProject);
+      configureProjectStore(projectStore);
+      configureMemoryToolProjectStore(projectStore);
+      if (projectStore) await projectStore.loadFromDisk();
+    }
+    projectName = nextProject.name ?? "";
+  };
   // Never written by review, consolidation or the correction detector — see
   // store/standing-instructions.ts for why provenance has to be structural.
   const standingStore = config.standingInstructionsEnabled !== false
@@ -168,54 +185,61 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     if (!persistenceInitialized) {
       try {
-        await migrateThenSyncMarkdownMemories(
-          dbManager,
-          shouldMigrateExtensionRoot ? legacyGlobalDir : null,
-          globalDir,
-          config.projectsMemoryDir,
-          agentRoot,
-          {
-            onMigrationSucceeded: () => {
-              databaseMigrationPending = false;
-              dbManager.setOpenGuard(null);
+        await measureLifecycle("session-start.persistence-sync", async () => {
+          await migrateThenSyncMarkdownMemories(
+            dbManager,
+            shouldMigrateExtensionRoot ? legacyGlobalDir : null,
+            globalDir,
+            config.projectsMemoryDir,
+            agentRoot,
+            {
+              onMigrationSucceeded: () => {
+                databaseMigrationPending = false;
+                dbManager.setOpenGuard(null);
+              },
             },
-          },
-        );
+          );
+        });
         persistenceInitialized = true;
       } catch {
         // Best-effort only: migration or SQLite backfill must not block startup.
       }
     }
 
-    const nextProject = detectProject(config.projectsMemoryDir, ctx.cwd);
-    const nextProjectMemoryDir = nextProject.memoryDir ?? null;
-    if (nextProjectMemoryDir !== projectMemoryDir) {
-      projectMemoryDir = nextProjectMemoryDir;
-      projectStore = createProjectStore(nextProject);
-      configureProjectStore(projectStore);
-      configureMemoryToolProjectStore(projectStore);
-    }
-    project = nextProject;
-    projectName = nextProject.name ?? "";
-    refreshSkillProjectContext(ctx.cwd);
-    await skillStore.migrateLegacySkills();
-    await skillStore.ensureDiscoveredRoots();
-    await store.loadFromDisk();
-    if (projectStore) await projectStore.loadFromDisk();
-    if (standingStore) await standingStore.load();
-
-    if (persistenceInitialized) scheduleSessionBackfill(dbManager, sessionsDir, {
-      notify: (message, level) => {
-        const ui = (ctx as { ui?: { notify?: (message: string, level?: string) => void } }).ui;
-        if (ui?.notify) {
-          ui.notify(message, level);
-        } else if (level === "error" || level === "warning") {
-          console.warn(message);
-        } else {
-          console.info(message);
-        }
-      },
+    await measureLifecycle("session-start.load", async () => {
+      await bindProjectFromCwd(ctx.cwd);
+      refreshSkillProjectContext(ctx.cwd);
+      await skillStore.migrateLegacySkills();
+      await skillStore.ensureDiscoveredRoots();
+      await store.loadFromDisk();
+      if (projectStore) await projectStore.loadFromDisk();
+      if (standingStore) await standingStore.load();
     });
+
+    if (persistenceInitialized) {
+      try {
+        pruneEphemeralReviewSessions(dbManager);
+      } catch (err) {
+        console.warn(`⚠️ Ephemeral session cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
+        await runRecoveryMaintenance({ config, globalDir });
+      } catch (err) {
+        console.warn(`⚠️ Snapshot retention sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      scheduleSessionBackfill(dbManager, sessionsDir, {
+        notify: (message, level) => {
+          const ui = (ctx as { ui?: { notify?: (message: string, level?: string) => void } }).ui;
+          if (ui?.notify) {
+            ui.notify(message, level);
+          } else if (level === "error" || level === "warning") {
+            console.warn(message);
+          } else {
+            console.info(message);
+          }
+        },
+      });
+    }
   });
 
   registerProjectSkillDiscoveryHandler(pi, skillStore, config.projectsMemoryDir);
@@ -232,7 +256,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ── 3. Register action-specific memory write tools with SQLite sync ──
-  configureMemoryToolProjectStore = registerMemoryTool(pi, store, projectStoreRef, dbManager, projectNameRef);
+  configureMemoryToolProjectStore = registerMemoryTool(pi, store, projectStoreRef, dbManager, projectNameRef, bindProjectFromCwd);
 
   // ── 4. Register the skill tool ──
   registerSkillTool(pi, skillStore);
@@ -321,32 +345,36 @@ export default function (pi: ExtensionAPI) {
   // close() and silently no-op.
   pi.on("session_shutdown", async (_event, ctx) => {
     try {
-      const sessionFile = ctx.sessionManager.getSessionFile();
-      if (sessionFile && require("node:fs").existsSync(sessionFile)) {
-        const sessionData = parseSessionFile(sessionFile);
-        if (sessionData) {
-          dbManager.withCorruptionRecovery(() => {
-            indexSession(dbManager, sessionData);
-            // Keep session_files metadata in sync with the final on-disk state.
-            // Pi appends the closing session entry on shutdown after the last
-            // message_end, so without this upsert the stored size/mtime would be
-            // stale and the next startup would re-parse this file unnecessarily.
-            upsertSessionFileMetadata(dbManager, sessionFile, sessionData.id);
-          });
+      measureLifecycleSync("shutdown.active-index", () => {
+        const sessionFile = ctx.sessionManager.getSessionFile();
+        if (sessionFile && require("node:fs").existsSync(sessionFile)) {
+          const sessionData = parseSessionFile(sessionFile);
+          if (sessionData) {
+            dbManager.withCorruptionRecovery(() => {
+              indexSession(dbManager, sessionData);
+              // Keep session_files metadata in sync with the final on-disk state.
+              // Pi appends the closing session entry on shutdown after the last
+              // message_end, so without this upsert the stored size/mtime would be
+              // stale and the next startup would re-parse this file unnecessarily.
+              upsertSessionFileMetadata(dbManager, sessionFile, sessionData.id);
+            });
+          }
         }
-      }
+      });
     } catch {
       // Silent fail — don't block shutdown
     } finally {
       try {
-        await Promise.all([
+        await measureLifecycle("shutdown.index-waits", () => Promise.all([
           waitForSessionBackfill(SESSION_BACKFILL_SHUTDOWN_TIMEOUT_MS),
           waitForLiveSessionIndex(SESSION_LIVE_INDEX_SHUTDOWN_TIMEOUT_MS),
-        ]);
+        ]));
       } catch {
         // Best effort only — shutdown should not be held up by indexing errors.
       }
-      try { dbManager.close(); } catch { /* best effort — never block shutdown */ }
+      try {
+        measureLifecycleSync("shutdown.database-close", () => dbManager.close());
+      } catch { /* best effort — never block shutdown */ }
     }
   });
 }

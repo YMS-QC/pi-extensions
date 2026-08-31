@@ -157,6 +157,21 @@ function buildScopeConditions(params: unknown[], target?: string, project?: stri
   return conditions;
 }
 
+/** Maps memory_search target filters onto SQLite columns (search paths only). */
+function buildSearchTargetConditions(params: unknown[], target: string | undefined, tablePrefix: string): string[] {
+  const conditions: string[] = [];
+
+  if (target === 'project') {
+    conditions.push(`${tablePrefix}.target = 'memory'`);
+    conditions.push(`${tablePrefix}.project IS NOT NULL`);
+  } else if (target) {
+    conditions.push(`${tablePrefix}.target = ?`);
+    params.push(target);
+  }
+
+  return conditions;
+}
+
 function getMemoryById(dbManager: DatabaseManager, id: number): SqliteMemoryEntry | null {
   const db = dbManager.getDb();
   const row = db.prepare(`
@@ -727,10 +742,7 @@ export function searchMemories(
       }
     }
 
-    if (target) {
-      conditions.push('m.target = ?');
-      params.push(target);
-    }
+    conditions.push(...buildSearchTargetConditions(params, target, 'm'));
 
     if (category) {
       conditions.push('m.category = ?');
@@ -786,10 +798,8 @@ export function searchMemories(
         params.push(project);
       }
     }
-    if (target) {
-      conditions.push('m.target = ?');
-      params.push(target);
-    }
+    conditions.push(...buildSearchTargetConditions(params, target, 'm'));
+
     if (category) {
       conditions.push('m.category = ?');
       params.push(category);
