@@ -366,6 +366,7 @@ export function extractTelegramReplyContextText(
 export function buildTelegramReplyContextBlock(
   message: TelegramMediaMessage,
   replyFiles: Pick<DownloadedTelegramFile, "path">[] = [],
+  replyOutputs: readonly string[] = [],
 ): string {
   const from = formatTelegramUser(message.reply_to_message?.from);
   const header = from ? `[reply|from:${from}]` : "[reply]";
@@ -379,10 +380,19 @@ export function buildTelegramReplyContextBlock(
     ? replyFiles.map((file) => `- /${basename(file.path)}`)
     : replyFiles.map((file) => `- ${file.path}`);
   const replyBlock = text ? `${header} ${text}` : header;
+  const sections = [replyBlock];
   if (fileLines.length > 0) {
-    return `${replyBlock}\n\n${attachmentHeader}\n${fileLines.join("\n")}`;
+    sections.push(`${attachmentHeader}\n${fileLines.join("\n")}`);
   }
-  if (text) return replyBlock;
+  if (replyOutputs.length > 0) {
+    const outputHeader = `[outputs${from ? `|from:${from}` : ""}]`;
+    sections.push(
+      `${outputHeader}\n${replyOutputs.map((output) => `- ${output}`).join("\n")}`,
+    );
+  }
+  if (text || fileLines.length > 0 || replyOutputs.length > 0) {
+    return sections.join("\n\n");
+  }
   return "";
 }
 

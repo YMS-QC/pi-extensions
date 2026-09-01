@@ -1049,6 +1049,9 @@ export interface TelegramCommandRuntimeDeps<
     text: string,
     options?: { parseMode?: "HTML" },
   ) => Promise<void>;
+  getActiveTurnReply?: () =>
+    | ((text: string, options?: { parseMode?: "HTML" }) => Promise<void>)
+    | undefined;
   sendInteractiveMessage?: TelegramCompactConfirmationDeps["sendInteractiveMessage"];
   assertExecutionCurrent?: (message: TMessage) => void;
 }
@@ -1272,6 +1275,9 @@ export async function handleTelegramNextCommand(deps: {
     text: string,
     options?: { parseMode?: "HTML" },
   ) => Promise<void>;
+  getActiveTurnReply?: () =>
+    | ((text: string, options?: { parseMode?: "HTML" }) => Promise<void>)
+    | undefined;
 }): Promise<void> {
   deps.clearPendingModelSwitch();
   if (!deps.hasQueuedItems()) {
@@ -1282,16 +1288,19 @@ export async function handleTelegramNextCommand(deps: {
     return;
   }
   if (!deps.isIdle() && deps.hasAbortHandler()) {
+    const activeTurnReply = deps.getActiveTurnReply?.();
     deps.clearFoldForDispatch();
     deps.abortCurrentTurn();
     deps.updateStatus();
-    await deps.sendTextReply(
-      formatTelegramInformationHeading(
-        "⏩",
-        "Aborted! Dispatching next queued turn.",
-      ),
-      { parseMode: "HTML" },
+    const notice = formatTelegramInformationHeading(
+      "⏩",
+      "Operation aborted. Dispatching next queued turn.",
     );
+    if (activeTurnReply) {
+      await activeTurnReply(notice, { parseMode: "HTML" });
+    } else {
+      await deps.sendTextReply(notice, { parseMode: "HTML" });
+    }
     return;
   }
   if (!deps.isIdle()) {
@@ -1799,6 +1808,7 @@ async function handleTelegramCommandRuntime<
             deps.setFoldQueuedPromptsIntoHistory(false),
           updateStatus: updateStatusFor(commandCtx),
           sendTextReply: sendReplyFor(nextMessage),
+          getActiveTurnReply: deps.getActiveTurnReply,
         });
       },
       handleContinue: async (nextMessage, commandCtx) => {

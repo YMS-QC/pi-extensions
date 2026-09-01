@@ -1494,17 +1494,22 @@ function buildUsageSummary(stats: TelegramUsageStats): string | undefined {
   const tokenParts: string[] = [];
   if (stats.totalInput) tokenParts.push(`↑${formatTokens(stats.totalInput)}`);
   if (stats.totalOutput) tokenParts.push(`↓${formatTokens(stats.totalOutput)}`);
+  return tokenParts.length > 0 ? tokenParts.join(" ") : undefined;
+}
+
+function buildCacheSummary(stats: TelegramUsageStats): string | undefined {
+  const cacheParts: string[] = [];
   if (stats.totalCacheRead)
-    tokenParts.push(`R${formatTokens(stats.totalCacheRead)}`);
+    cacheParts.push(`R${formatTokens(stats.totalCacheRead)}`);
   if (stats.totalCacheWrite)
-    tokenParts.push(`W${formatTokens(stats.totalCacheWrite)}`);
+    cacheParts.push(`W${formatTokens(stats.totalCacheWrite)}`);
   if (
     (stats.totalCacheRead > 0 || stats.totalCacheWrite > 0) &&
     stats.latestCacheHitRate !== undefined
   ) {
-    tokenParts.push(`CH${stats.latestCacheHitRate.toFixed(1)}%`);
+    cacheParts.push(`CH${stats.latestCacheHitRate.toFixed(1)}%`);
   }
-  return tokenParts.length > 0 ? tokenParts.join(" ") : undefined;
+  return cacheParts.length > 0 ? cacheParts.join(" ") : undefined;
 }
 
 function buildCostSummary(
@@ -1557,9 +1562,13 @@ export function buildStatusHtml(
     ),
   ];
   const usageSummary = buildUsageSummary(stats);
+  const cacheSummary = buildCacheSummary(stats);
   const costSummary = buildCostSummary(stats, usesSubscription);
   if (usageSummary) {
     lines.push(buildStatusRow("Tokens", usageSummary));
+  }
+  if (cacheSummary) {
+    lines.push(buildStatusRow("Cache", cacheSummary));
   }
   if (costSummary) {
     lines.push(buildStatusRow("Cost", costSummary));

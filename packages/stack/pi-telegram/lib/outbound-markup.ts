@@ -153,63 +153,158 @@ export function parseTopLevelTelegramComment(
   };
 }
 
-function parseCanonicalTelegramActionAttributes(
+function parseTolerantTelegramAttributes(
   source: string,
+  names: readonly string[],
 ): Record<string, string> | undefined {
   const attributes: Record<string, string> = {};
-  const pattern = /\s*([A-Za-z_][A-Za-z0-9_-]*)="([^"]*)"/y;
-  let offset = 0;
-  while (offset < source.length) {
-    pattern.lastIndex = offset;
-    const match = pattern.exec(source);
-    if (!match) return undefined;
-    const value = match[2].trim();
-    if (value) attributes[match[1]] = value;
-    offset = pattern.lastIndex;
+  const namePattern = names.join("|");
+  const pattern = new RegExp(
+    `\\b(${namePattern})\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s]+))`,
+    "gu",
+  );
+  for (const match of source.matchAll(pattern)) {
+    const value = (match[2] ?? match[3] ?? match[4] ?? "").trim();
+    if (value) attributes[match[1]!] = value;
   }
   return Object.keys(attributes).length > 0 ? attributes : undefined;
-}
-
-function getTelegramActionPayloadSource(
-  comment: TelegramTopLevelHtmlComment,
-  command: string,
-): { source: string; hasBody: boolean } | undefined {
-  const parsed = parseTopLevelTelegramComment(comment, command);
-  if (!parsed || parsed.head.trimStart().startsWith(":")) return undefined;
-  const source = [parsed.head, parsed.body]
-    .filter((part): part is string => part !== undefined)
-    .join("\n")
-    .trim();
-  return source ? { source, hasBody: parsed.body !== undefined } : undefined;
 }
 
 function isTelegramActionPayload(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function removeTelegramJsonTrailingCommas(source: string): string {
+  let normalized = "";
+  let inString = false;
+  let escaped = false;
+  for (let offset = 0; offset < source.length; offset += 1) {
+    const character = source[offset]!;
+    if (inString) {
+      normalized += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      normalized += character;
+      continue;
+    }
+    if (character === ",") {
+      let next = offset + 1;
+      while (/\s/u.test(source[next] ?? "")) next += 1;
+      if (source[next] === "}" || source[next] === "]") continue;
+    }
+    normalized += character;
+  }
+  return normalized;
+}
+
+function parseTelegramJsonObjectCandidate(
+  source: string,
+): Record<string, unknown> | undefined {
+  const normalized = removeTelegramJsonTrailingCommas(source);
+  for (const candidate of normalized === source ? [source] : [source, normalized]) {
+    try {
+      const value: unknown = JSON.parse(candidate);
+      if (isTelegramActionPayload(value)) return value;
+    } catch {
+      // Try the bounded trailing-comma normalization before rejecting JSON.
+    }
+  }
+  return undefined;
+}
+
+function looksLikeTelegramNamedJsonObject(
+  source: string,
+  offset: number,
+): boolean {
+  return /^\{\s*"(?:[^"\\]|\\.)*"\s*:/u.test(source.slice(offset));
+}
+
 export function parseTelegramActionPayload(
   comment: TelegramTopLevelHtmlComment,
   command: string,
 ): Record<string, unknown> | undefined {
-  const payload = getTelegramActionPayloadSource(comment, command);
-  if (!payload) return undefined;
-  if (payload.source.startsWith("{")) {
-    try {
-      const value: unknown = JSON.parse(payload.source);
-      return isTelegramActionPayload(value) ? value : undefined;
-    } catch {
-      return undefined;
+  let content = comment.content.replace(/^\s+/, "").replace(/^!/, "");
+  if (!content.startsWith(command)) return undefined;
+  content = content.slice(command.length);
+  let attributeEnvelope = content;
+  for (let offset = 0; offset < content.length; offset += 1) {
+    if (content[offset] !== "{" && content[offset] !== "[") continue;
+    if (
+      content[offset] === "[" &&
+      !isPlausibleTelegramMatrixStart(content, offset)
+    ) {
+      const noiseEnd = findTelegramStructuredPayloadEnd(content, offset);
+      if (noiseEnd !== undefined) {
+        attributeEnvelope = `${attributeEnvelope.slice(0, offset)}${" ".repeat(noiseEnd - offset)}${attributeEnvelope.slice(noiseEnd)}`;
+        offset = noiseEnd - 1;
+      }
+      continue;
     }
+    if (content[offset] === "{") {
+      const parsed = parseTelegramAdaptiveActionPayloadRows(
+        content.slice(offset),
+        parseTelegramVoiceCompactActionPayload,
+        { allowTrailing: true },
+      );
+      if (parsed) return parsed.rows[0]![0];
+    }
+    const end = findTelegramStructuredPayloadEnd(content, offset);
+    if (end === undefined) continue;
+    attributeEnvelope = `${attributeEnvelope.slice(0, offset)}${" ".repeat(end - offset)}${attributeEnvelope.slice(end)}`;
+    offset = end - 1;
   }
-  if (payload.hasBody) return undefined;
-  return parseCanonicalTelegramActionAttributes(payload.source);
+  return parseTolerantTelegramAttributes(attributeEnvelope, [
+    "text",
+    "value",
+    "lang",
+    "rate",
+  ]);
 }
 
 const TELEGRAM_COMPACT_ACTION_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
 
+type TelegramCompactActionPayloadParser = (
+  atoms: readonly string[],
+) => Record<string, unknown> | undefined;
+
+function parseTelegramButtonCompactActionPayload(
+  atoms: readonly string[],
+): Record<string, unknown> | undefined {
+  const [label, prompt, selectedStyle] = atoms;
+  if (atoms.length === 1) return label ? { value: label } : undefined;
+  if (!prompt) return undefined;
+  const action = label ? { label, prompt } : { prompt };
+  if (atoms.length === 2) return action;
+  if (
+    selectedStyle !== "primary" &&
+    selectedStyle !== "success" &&
+    selectedStyle !== "danger"
+  ) return undefined;
+  return { ...action, selected_style: selectedStyle };
+}
+
+function parseTelegramVoiceCompactActionPayload(
+  atoms: readonly string[],
+): Record<string, unknown> | undefined {
+  const [text, lang, rate] = atoms;
+  if (!text) return undefined;
+  if (atoms.length === 1) return { text };
+  if (!lang) return undefined;
+  if (atoms.length === 2) return { text, lang };
+  if (!rate) return undefined;
+  return { text, lang, rate };
+}
+
 function parseTelegramAdaptiveActionPayloadRows(
   source: string,
-): Record<string, unknown>[][] | undefined {
+  parseCompactPayload: TelegramCompactActionPayloadParser,
+  options: { allowTrailing?: boolean } = {},
+): { rows: Record<string, unknown>[][]; end: number } | undefined {
   let offset = 0;
   const isStructuralWhitespace = (character: string | undefined): boolean =>
     character === " " ||
@@ -224,11 +319,11 @@ function parseTelegramAdaptiveActionPayloadRows(
     if (source[offset] !== ",") return true;
     offset += 1;
     skipWhitespace();
-    return source[offset] !== "," && source[offset] !== "]";
+    return source[offset] !== ",";
   };
   const normalizeAtom = (value: string): string | undefined => {
     const normalized = value.trim();
-    return normalized && !TELEGRAM_COMPACT_ACTION_CONTROL_PATTERN.test(normalized)
+    return !TELEGRAM_COMPACT_ACTION_CONTROL_PATTERN.test(normalized)
       ? normalized
       : undefined;
   };
@@ -259,15 +354,7 @@ function parseTelegramAdaptiveActionPayloadRows(
           normalizeAtom(atom.join("")),
         );
         if (atoms.some((atom) => atom === undefined)) return undefined;
-        const [label, prompt, selectedStyle] = atoms as string[];
-        if (atoms.length === 1) return { value: label };
-        if (atoms.length === 2) return { label, prompt };
-        if (
-          selectedStyle !== "primary" &&
-          selectedStyle !== "success" &&
-          selectedStyle !== "danger"
-        ) return undefined;
-        return { label, prompt, selected_style: selectedStyle };
+        return parseCompactPayload(atoms as string[]);
       }
       atomSources.at(-1)!.push(character);
       offset += 1;
@@ -304,14 +391,10 @@ function parseTelegramAdaptiveActionPayloadRows(
       ) return undefined;
       if (stack.length > 0) continue;
       const candidate = source.slice(start, index + 1);
-      try {
-        const value: unknown = JSON.parse(candidate);
-        if (!isTelegramActionPayload(value)) return undefined;
-        offset = index + 1;
-        return value;
-      } catch {
-        return undefined;
-      }
+      const value = parseTelegramJsonObjectCandidate(candidate);
+      if (!value) return undefined;
+      offset = index + 1;
+      return value;
     }
     return undefined;
   };
@@ -320,6 +403,7 @@ function parseTelegramAdaptiveActionPayloadRows(
     const jsonCell = parseJsonObjectCell();
     if (jsonCell) return jsonCell;
     offset = start;
+    if (looksLikeTelegramNamedJsonObject(source, start)) return undefined;
     return parseCompactCell();
   };
   const parseRow = (): Record<string, unknown>[] | undefined => {
@@ -377,42 +461,92 @@ function parseTelegramAdaptiveActionPayloadRows(
   }
   if (!rows) return undefined;
   skipWhitespace();
-  return offset === source.length ? rows : undefined;
+  if (!options.allowTrailing && offset !== source.length) return undefined;
+  return { rows, end: offset };
+}
+
+function findTelegramStructuredPayloadEnd(
+  source: string,
+  start: number,
+): number | undefined {
+  const stack: string[] = [source[start]!];
+  let inString = false;
+  let escaped = false;
+  for (let offset = start + 1; offset < source.length; offset += 1) {
+    const character = source[offset]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "[" || character === "{") {
+      stack.push(character);
+      continue;
+    }
+    if (character !== "]" && character !== "}") continue;
+    const expected = character === "]" ? "[" : "{";
+    if (stack.at(-1) === expected) stack.pop();
+    if (stack.length === 0) return offset + 1;
+  }
+  return undefined;
+}
+
+function isPlausibleTelegramMatrixStart(
+  source: string,
+  start: number,
+): boolean {
+  let offset = start + 1;
+  while (/\s/u.test(source[offset] ?? "")) offset += 1;
+  return (
+    source[offset] === "{" ||
+    source[offset] === "[" ||
+    source[offset] === "]"
+  );
 }
 
 export function parseTelegramActionPayloadRows(
   comment: TelegramTopLevelHtmlComment,
   command: string,
 ): Record<string, unknown>[][] | undefined {
-  const payload = getTelegramActionPayloadSource(comment, command);
-  if (!payload) return undefined;
-  if (payload.source.startsWith("[") || payload.source.startsWith("{")) {
-    try {
-      const value: unknown = JSON.parse(payload.source);
-      if (isTelegramActionPayload(value)) return [[value]];
-      if (!Array.isArray(value)) return undefined;
-      const rows: Record<string, unknown>[][] = [];
-      for (const entry of value) {
-        if (isTelegramActionPayload(entry)) {
-          rows.push([entry]);
-          continue;
-        }
-        if (
-          !Array.isArray(entry) ||
-          entry.length === 0 ||
-          !entry.every(isTelegramActionPayload)
-        ) {
-          return undefined;
-        }
-        rows.push(entry);
+  let content = comment.content.replace(/^\s+/, "").replace(/^!/, "");
+  if (!content.startsWith(command)) return undefined;
+  content = content.slice(command.length);
+  let attributeEnvelope = content;
+  for (let offset = 0; offset < content.length; offset += 1) {
+    if (content[offset] !== "[" && content[offset] !== "{") continue;
+    if (
+      content[offset] === "[" &&
+      !isPlausibleTelegramMatrixStart(content, offset)
+    ) {
+      const noiseEnd = findTelegramStructuredPayloadEnd(content, offset);
+      if (noiseEnd !== undefined) {
+        attributeEnvelope = `${attributeEnvelope.slice(0, offset)}${" ".repeat(noiseEnd - offset)}${attributeEnvelope.slice(noiseEnd)}`;
+        offset = noiseEnd - 1;
       }
-      return rows;
-    } catch {
-      return parseTelegramAdaptiveActionPayloadRows(payload.source);
+      continue;
     }
+    const parsed = parseTelegramAdaptiveActionPayloadRows(
+      content.slice(offset),
+      parseTelegramButtonCompactActionPayload,
+      { allowTrailing: true },
+    );
+    if (parsed) return parsed.rows;
+    const end = findTelegramStructuredPayloadEnd(content, offset);
+    if (end === undefined) continue;
+    attributeEnvelope = `${attributeEnvelope.slice(0, offset)}${" ".repeat(end - offset)}${attributeEnvelope.slice(end)}`;
+    offset = end - 1;
   }
-  if (payload.hasBody) return undefined;
-  const attributes = parseCanonicalTelegramActionAttributes(payload.source);
+  const attributes = parseTolerantTelegramAttributes(attributeEnvelope, [
+    "label",
+    "prompt",
+    "value",
+    "selected_style",
+  ]);
   return attributes ? [[attributes]] : undefined;
 }
 
@@ -422,8 +556,40 @@ export function normalizeMarkdownAfterVoiceExtraction(
   return markdown.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function isTelegramCommentOnlyLinePrefix(value: string): boolean {
+  return /^[ \t]*(?:(?:>[ \t]*)+)?(?:(?:[-+*]|\d+[.)])[ \t]+)?$/u.test(
+    value,
+  );
+}
+
+function stripTelegramHtmlCommentBlocks(markdown: string): string {
+  let result = "";
+  let offset = 0;
+  while (offset < markdown.length) {
+    const start = markdown.indexOf("<!--", offset);
+    if (start === -1) return result + markdown.slice(offset);
+    const close = markdown.indexOf("-->", start + 4);
+    const lineStart = markdown.lastIndexOf("\n", start - 1) + 1;
+    const afterComment = close === -1 ? markdown.length : close + 3;
+    const newlineAfterComment = markdown.indexOf("\n", afterComment);
+    const lineEnd =
+      newlineAfterComment === -1 ? markdown.length : newlineAfterComment;
+    const commentOwnsLine =
+      isTelegramCommentOnlyLinePrefix(markdown.slice(lineStart, start)) &&
+      markdown.slice(afterComment, lineEnd).trim().length === 0;
+    result += markdown.slice(offset, commentOwnsLine ? lineStart : start);
+    if (close === -1) return result;
+    offset = commentOwnsLine
+      ? newlineAfterComment === -1
+        ? markdown.length
+        : newlineAfterComment + 1
+      : afterComment;
+  }
+  return result;
+}
+
 export function stripTelegramCommentMarkupForPreview(markdown: string): string {
-  const withoutClosedBlocks = replaceTopLevelHtmlComments(markdown, () => "");
+  const withoutClosedBlocks = stripTelegramHtmlCommentBlocks(markdown);
   const openBlockIndex =
     findTopLevelOpenOrPartialHtmlCommentIndex(withoutClosedBlocks);
   const previewMarkdown =
@@ -436,7 +602,7 @@ export function stripTelegramCommentMarkupForPreview(markdown: string): string {
 export function stripTelegramCommentMarkupForDelivery(
   markdown: string,
 ): string {
-  const withoutClosedBlocks = replaceTopLevelHtmlComments(markdown, () => "");
+  const withoutClosedBlocks = stripTelegramHtmlCommentBlocks(markdown);
   const openBlockIndex =
     findTopLevelOpenOrPartialHtmlCommentIndex(withoutClosedBlocks);
   const deliveryMarkdown =
@@ -481,9 +647,10 @@ export function planTelegramVoiceReply(
   let lang: string | undefined;
   let rate: string | undefined;
   const stripped = replaceTopLevelHtmlComments(markdown, (comment) => {
-    const command = parseTopLevelTelegramComment(comment, "telegram_voice");
-    if (!command) return comment.raw;
-    const payload = parseTelegramActionPayload(comment, "telegram_voice");
+    const command = "telegram_voice";
+    const normalizedContent = comment.content.replace(/^\s+/, "").replace(/^!/, "");
+    if (!normalizedContent.startsWith(command)) return comment.raw;
+    const payload = parseTelegramActionPayload(comment, command);
     if (!payload) return "";
     const text =
       getTelegramActionString(payload, "text") ??

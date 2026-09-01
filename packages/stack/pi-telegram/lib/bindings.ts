@@ -1218,6 +1218,9 @@ export function registerTelegramLifecycleRuntimeHooks({
     },
     onMessageEnd(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
+      if (event.message.role === "assistant") {
+        activityRuntime.onAssistantMessageEnd(event.message.stopReason);
+      }
       terminalAssistantMessagePendingDelivery =
         event.message.role === "assistant" &&
         event.message.stopReason !== "toolUse" &&

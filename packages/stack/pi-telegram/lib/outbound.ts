@@ -26,6 +26,7 @@ import {
 } from "./outbound-buttons.ts";
 import {
   planTelegramVoiceReply,
+  stripTelegramCommentMarkupForDelivery,
   type TelegramVoiceReplyItem,
 } from "./outbound-markup.ts";
 import { createTelegramVoiceReplySender as createTelegramVoiceReplySenderWithPorts } from "./outbound-voice.ts";
@@ -698,7 +699,9 @@ export function createTelegramOutboundTextReplyRuntime<TReplyMarkup = unknown>(
       return deps.sendTextReply(chatId, replyToMessageId, transformed, options);
     },
     sendMarkdownReply: async (chatId, replyToMessageId, markdown, options) => {
-      const transformed = await transformTelegramOutboundTextReply(markdown, {
+      const deliveryMarkdown = stripTelegramCommentMarkupForDelivery(markdown);
+      if (!deliveryMarkdown) return undefined;
+      const transformed = await transformTelegramOutboundTextReply(deliveryMarkdown, {
         handlers: deps.getHandlers?.(),
         cwd: deps.cwd,
         execCommand: deps.execCommand,

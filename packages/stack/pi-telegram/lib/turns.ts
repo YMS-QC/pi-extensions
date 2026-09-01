@@ -468,8 +468,17 @@ export function createTelegramPromptTurnRuntimeBuilder<
         )
       : [];
     if (firstMessage) deps.assertExecutionCurrent?.(firstMessage);
+    const processedReply =
+      deps.processAttachments && replyFiles.length > 0
+        ? await deps.processAttachments(replyFiles, "", ctx as TContext)
+        : undefined;
+    if (firstMessage) deps.assertExecutionCurrent?.(firstMessage);
     const replyContext = firstMessage
-      ? buildTelegramReplyContextBlock(firstMessage, replyFiles)
+      ? buildTelegramReplyContextBlock(
+          firstMessage,
+          processedReply?.promptFiles ?? replyFiles,
+          processedReply?.handlerOutputs,
+        )
       : "";
     const forwardEntries = messages.flatMap((message) => {
       const context = extractTelegramForwardContextText(

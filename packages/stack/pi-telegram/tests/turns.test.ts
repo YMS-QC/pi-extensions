@@ -544,6 +544,47 @@ test("Turn runtime builder includes reply block for attachment-only replied mess
   );
 });
 
+test("Turn runtime builder keeps replied voice transcription inside reply context", async () => {
+  const buildTurn = createTelegramPromptTurnRuntimeBuilder({
+    allocateQueueOrder: () => 1,
+    downloadFile: async (_fileId, fileName) => `/tmp/${fileName}`,
+    processAttachments: async (files, rawText) => ({
+      rawText,
+      promptFiles: files,
+      handlerOutputs: files.some((file) => file.kind === "voice")
+        ? ["replied voice transcript"]
+        : [],
+    }),
+  });
+  const turn = await buildTurn([
+    {
+      message_id: 12,
+      chat: { id: 5 },
+      text: "respond to this",
+      reply_to_message: {
+        message_id: 11,
+        from: { id: 200, username: "alice" },
+        voice: { file_id: "voice-1", mime_type: "audio/ogg" },
+      },
+    },
+  ]);
+
+  assert.equal(
+    (turn.content[0] as { type: "text"; text: string }).text,
+    [
+      "[telegram] respond to this",
+      "",
+      "[reply|from:alice]",
+      "",
+      "[attachments|from:alice] /tmp",
+      "- /voice-11.ogg",
+      "",
+      "[outputs|from:alice]",
+      "- replied voice transcript",
+    ].join("\n"),
+  );
+});
+
 test("Turn runtime builder routes inbound handler output into prompt text", async () => {
   const buildTurn = createTelegramPromptTurnRuntimeBuilder<
     {

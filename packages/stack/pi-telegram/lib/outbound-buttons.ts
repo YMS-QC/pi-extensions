@@ -12,7 +12,6 @@ import type {
 } from "./keyboard.ts";
 import {
   parseTelegramActionPayloadRows,
-  parseTopLevelTelegramComment,
   replaceTopLevelHtmlComments,
 } from "./outbound-markup.ts";
 import {
@@ -113,8 +112,10 @@ function parseTelegramButtonAction(
   payload: Record<string, unknown>,
 ): TelegramOutboundButtonAction | undefined {
   const value = getTelegramButtonString(payload, "value");
-  const label = getTelegramButtonString(payload, "label") ?? value;
-  const prompt = getTelegramButtonString(payload, "prompt") ?? value;
+  const explicitLabel = getTelegramButtonString(payload, "label");
+  const explicitPrompt = getTelegramButtonString(payload, "prompt");
+  const label = explicitLabel ?? value ?? explicitPrompt;
+  const prompt = explicitPrompt ?? value ?? explicitLabel;
   if (!label || !prompt) return undefined;
   const selectedStyle = payload.selected_style;
   return {
@@ -179,10 +180,9 @@ export function planTelegramButtonReply(
 ): TelegramButtonReplyPlan {
   const keyboard: TelegramOutboundButtonMarkup["inline_keyboard"] = [];
   const stripped = replaceTopLevelHtmlComments(markdown, (comment) => {
-    const command = ["telegram_button", "telegram_buttons"].find((candidate) =>
-      parseTopLevelTelegramComment(comment, candidate),
-    );
-    if (!command) return comment.raw;
+    const command = "telegram_button";
+    const normalizedContent = comment.content.replace(/^\s+/, "").replace(/^!/, "");
+    if (!normalizedContent.startsWith(command)) return comment.raw;
     const payloadRows = parseTelegramActionPayloadRows(comment, command);
     if (!payloadRows) return "";
     const actionRows = payloadRows.map((payloadRow) =>
@@ -225,8 +225,9 @@ export function createTelegramButtonPromptTurn(options: {
   queueOrder: number;
   action: TelegramOutboundButtonAction;
   target?: TelegramQueueTarget;
+  telegramPrefix?: string;
 }): PendingTelegramTurn {
-  const prompt = `[telegram] ${options.action.prompt}`;
+  const prompt = `${options.telegramPrefix ?? "[telegram]"} ${options.action.prompt}`;
   return {
     kind: "prompt",
     chatId: options.chatId,

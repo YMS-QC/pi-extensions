@@ -28,20 +28,41 @@ test("Markup collector ignores comments inside fenced code", () => {
   assert.equal(comments[0]?.content.trim(), "telegram_voice: real");
 });
 
-test("Markup stripping removes closed and partial top-level comments", () => {
+test("Markup stripping removes every HTML comment from Telegram surfaces", () => {
+  const markdown = [
+    "Visible <!-- inline --> text.",
+    "",
+    "> Quoted <!-- private quote --> text.",
+    "",
+    "- Listed <!-- private list --> text.",
+    "",
+    "```md",
+    "<!-- private code example -->",
+    "const visible = true;",
+    "```",
+  ].join("\n");
+  const delivery = stripTelegramCommentMarkupForDelivery(markdown);
+  const preview = stripTelegramCommentMarkupForPreview(markdown);
+
+  assert.equal(delivery, preview);
+  assert.doesNotMatch(delivery, /<!--|-->/u);
+  assert.match(delivery, /Visible  text\./u);
+  assert.match(delivery, /> Quoted  text\./u);
+  assert.match(delivery, /- Listed  text\./u);
+  assert.match(delivery, /const visible = true;/u);
   assert.equal(
     stripTelegramCommentMarkupForDelivery(
-      "Visible\n\n<!-- hidden transport action -->\n\nTail",
+      " \n<!-- first -->\n<!-- second -->\n ",
     ),
-    "Visible\n\nTail",
+    "",
   );
   assert.equal(
-    stripTelegramCommentMarkupForPreview("Visible\n\n<!-- telegram_voice"),
+    stripTelegramCommentMarkupForPreview("Visible\n\n<!-- streaming private tail"),
     "Visible",
   );
 });
 
-test("Voice reply planner accepts JSON and attributes with one action marker", () => {
+test("Voice reply planner retains legacy attribute compatibility", () => {
   const plan = planTelegramVoiceReply(
     [
       "Visible answer.",
@@ -72,8 +93,12 @@ test("Voice reply planner ignores payloads outside the canonical action shape", 
       '<!-- telegram_voice [{"text":"Array is unsupported."}] -->',
       '<!-- telegram_voice {"lang":"ru"} -->',
       '<!-- telegram_voice {"text": -->',
-      '<!-- telegram_voice text="Speak this." lang=ru -->',
-      '<!-- telegram_voice lang="ru"\nSpeak this.\n-->',
+      '<!-- telegram_voice {"text":"Must not become CML","rate":} -->',
+      '<!-- telegram_voice unknown="Speak this." -->',
+      '<!-- telegram_voice [broken text=Must-not-recover] -->',
+      '<!-- telegram_voice [[{Matrix is unsupported.}]] -->',
+      '<!-- telegram_voice {|en} -->',
+      '<!-- telegram_voice {Too|many|voice|atoms} -->',
     ].join("\n"),
   );
 

@@ -67,7 +67,7 @@ Built-in placeholders for text handlers:
 
 ## Media/File Handlers
 
-Media/file handlers keep the legacy attachment-handler behavior: downloaded files are matched by `mime`, `type`, or `match`, then each file runs the first successful matching handler. Downloaded files with `mime: "text/plain"` or any `text/*` MIME type have a built-in fail-open handler that reads UTF-8 content into `[outputs]` when no configured handler produced output. Composition is useful for pipelines such as voice transcription followed by machine translation, so the agent receives translated `[outputs]` instead of the raw STT language.
+Media/file handlers keep the legacy attachment-handler behavior: downloaded files are matched by `mime`, `type`, or `match`, then each file runs the first successful matching handler. Attachments from a replied-to message use the same handler/provider pipeline independently; their `[outputs|from:…]` section remains inside that `[reply]` context after its attachment list instead of being attributed to the current message. Downloaded files with `mime: "text/plain"` or any `text/*` MIME type have a built-in fail-open handler that reads UTF-8 content into `[outputs]` when no configured handler produced output. Composition is useful for pipelines such as voice transcription followed by machine translation, so the agent receives translated `[outputs]` instead of the raw STT language.
 
 Built-in placeholders for media/file handlers:
 

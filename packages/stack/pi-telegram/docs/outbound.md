@@ -2,7 +2,7 @@
 
 `pi-telegram` maps hidden assistant-authored HTML comments to Telegram-native outbound actions.
 
-Normal Telegram-turn replies are intentionally prompt-driven: the agent writes Markdown plus small hidden top-level blocks, and the bridge performs transport after `agent_end`. `telegram_voice` and `telegram_button` are not Pi tools. For local/TUI-initiated work where the user explicitly asks to send something to Telegram, the bridge also exposes direct tools: `telegram_message` for Markdown text and `telegram_attach` for file delivery when no Telegram turn is active. In classic mode, direct local/TUI delivery requires this Pi instance to own `/telegram-connect`; in Threaded Mode, a registered follower may route direct-tool sends through the leader-owned bus transport. During an active Telegram turn, `telegram_message` rejects an implicit or same-turn target so ordinary final delivery remains the sole current-target response. Its `thread` argument accepts a case-insensitive live thread name or numeric id: the bridge preflights one live owner, sends visibly, then admits the text as a source-attributed turn in that instance. Unknown, ambiguous, same-target, offline, and cross-chat destinations fail before sending. Existing `chat_id` plus `thread_id` targeting stays compatible; registered followers use authenticated, generation-fenced bus routing. Outbound behavior combines assistant prompt markup, text command-template handlers, registered voice synthesis providers, generated artifacts, direct Telegram tools, and reply delivery. Direct `telegram_message` text is planned through the same reply markup path, so embedded top-level `telegram_button` comments become buttons attached to that text message.
+Normal Telegram-turn replies are intentionally prompt-driven: the agent writes Markdown plus small hidden top-level blocks, and the bridge performs transport after `agent_end`. `telegram_voice` and `telegram_button` are not Pi tools. Action activation remains restricted to recognized top-level column-zero comments, but Telegram preview and final delivery remove every assistant-authored `<!-- … -->` block regardless of Markdown position or owning extension. Unclosed comment tails are withheld, comment-only text plans send no message, and the Pi terminal transcript remains unchanged. For local/TUI-initiated work where the user explicitly asks to send something to Telegram, the bridge also exposes direct tools: `telegram_message` for Markdown text and `telegram_attach` for file delivery when no Telegram turn is active. In classic mode, direct local/TUI delivery requires this Pi instance to own `/telegram-connect`; in Threaded Mode, a registered follower may route direct-tool sends through the leader-owned bus transport. During an active Telegram turn, `telegram_message` rejects an implicit or same-turn target so ordinary final delivery remains the sole current-target response. Its `thread` argument accepts a case-insensitive live thread name or numeric id: the bridge preflights one live owner, sends visibly, then admits the text as a source-attributed turn in that instance. Unknown, ambiguous, same-target, offline, and cross-chat destinations fail before sending. Existing `chat_id` plus `thread_id` targeting stays compatible; registered followers use authenticated, generation-fenced bus routing. Outbound behavior combines assistant prompt markup, text command-template handlers, registered voice synthesis providers, generated artifacts, direct Telegram tools, and reply delivery. Direct `telegram_message` text is planned through the same reply markup path, so embedded top-level `telegram_button` comments become buttons attached to that text message.
 
 Text handlers use the portable [Command Template Standard](./command-templates.md). Programmatic outbound handlers use `registerTelegramOutboundHandler(kind, handler)`. Voice replies can use configured command-template handlers or the provider API described in [Voice Integration](./voice.md).
 
@@ -129,45 +129,36 @@ Synthesis providers receive the extracted `telegram_voice` text plus optional `l
 
 ## Voice Markup
 
-Assistant replies can include hidden voice actions in either supported payload form:
+Assistant replies can include hidden voice actions as a positional compact cell or JSON object:
 
 ```md
 Full text answer stays here.
 
-<!-- telegram_voice {"value":"Short spoken companion summary.","lang":"ru","rate":"+30%"} -->
+<!-- telegram_voice {Short spoken companion summary.|ru|+30%} -->
 
-<!-- telegram_voice text="Short spoken companion summary." lang="ru" rate="+30%" -->
+<!-- telegram_voice {"text":"First line.\nSecond line.","lang":"ru"} -->
 ```
 
-The bridge strips the comment from Telegram text. On `agent_end`, it maps each `telegram_voice` action to a provider call, generates one file per action, and sends each file as an independent Telegram-native voice message. Equivalent `text` or `value` supplies the spoken payload, with explicit `text` taking precedence when both appear; `lang` and `rate` are optional. A colon after `telegram_voice` is rejected so both payload forms share one unambiguous action marker. Use JSON for long or escaped text and encode line breaks inside JSON strings as `\n`. The opening marker must start at column zero on a top-level line outside fenced code, quotes, lists, and indented examples; otherwise it remains literal Markdown.
+The bridge strips the comment from Telegram text. On `agent_end`, it maps each `telegram_voice` action to a provider call, generates one file per action, and sends each file as an independent Telegram-native voice message. Prefer `{text}`, `{text|lang}`, or `{text|lang|rate}`. Use JSON when multiline content, named fields, or escaping earns the extra syntax; equivalent JSON `text` or `value` supplies the spoken payload, with explicit `text` taking precedence. Each comment creates one voice artifact, so voice cells do not accept button-style matrix composition. The opening marker must start at column zero on a top-level line outside fenced code, quotes, lists, and indented examples; otherwise it does not activate a voice action and is still removed from the Telegram surface.
 
 ## Buttons Markup
 
-Assistant replies can include one or many button actions through one colon-free marker:
+Assistant replies can include one or many button actions through a top-level `telegram_button` comment:
 
 ```md
 I can continue.
 
-<!-- telegram_button {"label":"Continue","prompt":"Continue with the current plan.","selected_style":"primary"} -->
-
-<!-- telegram_button label="Show risks" prompt="List the main risks first." selected_style="danger" -->
-
-<!-- telegram_button {"value":"Done"} -->
-
-<!-- telegram_button [{"label":"⬆️ Up","prompt":"/"},[{"value":"⬅️ Previous"},{"value":"➡️ Next"}],{"label":"📁 etc","prompt":"/etc"}] -->
-
-<!-- telegram_buttons [[{"value":"Approve"},{"value":"Reject"}]] -->
-
 <!-- telegram_button [{⬆️ Up|/}[{⬅️|page-1}{➡️|page-3}]{📁 etc|/etc}] -->
+
+<!-- telegram_button {"label":"▶️ Continue","prompt":"Continue with the current plan.","selected_style":"primary"} -->
 ```
 
 Rules:
 
-- `telegram_button` accepts a JSON object, adaptive JSON/CML matrix, positional [Compact Matrix Literal](./compact-matrix-literal.md), or double-quoted HTML-like attributes; `telegram_buttons` is an exact plural alias. Named JSON objects and positional cells may coexist in one matrix or row, and commas are optional only between completed elements while JSON object internals remain strict. CML uses `{value}`, `{label|prompt}`, or `{label|prompt|selected_style}`; the optional third atom requires a prompt and accepts only `primary`, `success`, or `danger`. It trims every atom, preserves non-structural printable text, and decodes only `\|`, `\}`, and `\\`. Shorthand, body, paired-comment, unquoted-attribute, and single-quoted-attribute forms are rejected.
-- A colon after either button marker is rejected so every payload form shares one unambiguous action marker.
-- Use `label` plus `prompt`, or the compact `value` key when both strings are identical. Explicit `label` or `prompt` takes precedence over its `value` fallback. Use JSON with `\n` escapes for multiline prompts.
-- The opening marker must start at column zero on a top-level line outside fenced code, quotes, lists, and indented examples; otherwise it remains literal Markdown.
-- Prefer one matrix comment for multiple buttons. Each top-level JSON object or CML cell becomes one full-width inline-keyboard row in source order; a nested row groups one or more buttons horizontally. The parser imposes no artificial per-row width cap; empty rows, malformed cells, unknown/trailing CML escapes, a third unescaped CML separator, empty atoms, unknown selected styles, and deeper nesting are rejected atomically. Generated surfaces default to five columns and expand to six through eight only for short position-bearing labels. Repeated singular comments remain valid.
+- The payload may be a JSON object, adaptive JSON/CML matrix, or positional [Compact Matrix Literal](./compact-matrix-literal.md). Named JSON objects and positional cells may coexist in one matrix or row. Commas are optional between completed elements, and one trailing comma before a closing delimiter is tolerated; JSON object validation likewise tolerates trailing commas but does not invent missing values, property names, or internal separators. CML uses `{value}`, `{label|prompt}`, `{|prompt}`, or the corresponding three-atom form with `selected_style`; the optional third atom requires a non-empty prompt and accepts only `primary`, `success`, or `danger`. It trims every atom, preserves non-structural printable text, and decodes only `\|`, `\}`, and `\\`.
+- Use `label` plus `prompt`, or the compact `value` key when both strings are identical. If only `label`, only `prompt`, one-field `{value}`, or prompt-only `{|prompt}` is present, that string supplies both visible label and queued prompt. An explicit counterpart takes precedence over `value`. Use JSON with `\n` escapes for multiline prompts.
+- The opening marker must start at column zero on a top-level line outside fenced code, quotes, lists, and indented examples; otherwise it does not activate a button action and is still removed from the Telegram surface.
+- Prefer one matrix comment for multiple buttons. Each top-level JSON object or CML cell becomes one full-width inline-keyboard row in source order; a nested row groups one or more buttons horizontally. The parser imposes no artificial per-row width cap; empty rows, malformed cells, unknown/trailing CML escapes, a third unescaped CML separator, empty prompt/style atoms, empty one-atom cells, unknown selected styles, and deeper nesting are rejected atomically. Only the first label position may be empty in a two- or three-atom button cell. Generated surfaces default to five columns and expand to six through eight only for short position-bearing labels. Repeated singular comments remain valid.
 - Button actions are stored in memory with short `callback_data`; Telegram never sees the full prompt in the button payload.
 - After Telegram accepts a generated button callback as a queued prompt, the bridge changes that exact button to its configured selection style without changing agent-authored text or emoji. Set `selected_style` to `primary` (blue), `success` (green), or `danger` (red); omitted or invalid values fall back to `primary`. The style never suppresses queue admission. Other choices stay visually unchanged and remain available; the callback acknowledgement remains the fallback on clients that do not render button styles.
 - When generated button markup is the entire assistant reply, the bridge supplies the standard `☑️ **Choose an option:**` heading as visible message text so Telegram has a message to which it can attach the inline keyboard.
@@ -184,8 +175,8 @@ The extension injects prompt guidance by context:
 - For ordinary local/TUI prompts, the compact routing note points to the bundled `telegram-bridge` Skill and forbids Telegram use unless explicitly requested.
 - For Telegram-originated turns, the compact note routes the agent to `telegram-bridge`, which owns voice/button/direct-delivery/Threaded Mode/formatting/debug guidance.
 - For Telegram-originated turns, write the full technical answer as normal Markdown.
-- Add `telegram_voice` with either a JSON object or double-quoted attributes when a Telegram-native voice message is useful. A companion summary is optional, no specific summary format is required.
-- Add `telegram_button` with a JSON object, JSON matrix, or double-quoted attributes; `telegram_buttons` is an alias. Prefer one array for multiple controls. Use `label` plus `prompt`, or `value` when they are identical; `selected_style` is optional. A button-only reply may omit parent text because the bridge supplies `☑️ **Choose an option:**` automatically.
+- Add `telegram_voice` with positional CML by default or JSON when multiline content, named fields, or escaping requires it. A companion summary is optional, no specific summary format is required.
+- Add `telegram_button` with a JSON object, JSON matrix, or positional CML. Prefer one matrix for multiple controls. Use `label` plus `prompt`, or `value` when they are identical; `selected_style` is optional. A button-only reply may omit parent text because the bridge supplies `☑️ **Choose an option:**` automatically.
 - For ordinary Telegram-turn replies, do not call transport tools for voice or buttons; the bridge owns delivery, while registered voice synthesis providers own TTS and OGG/Opus conversion. For explicit local/TUI direct sends, `telegram_message` may include top-level `telegram_button` comments in its Markdown text because those buttons are attached to that text message.
 - Prefer meaningful visible parent text when it adds context; for a button-only answer, rely on the bridge's automatic `☑️ **Choose an option:**` fallback rather than manufacturing duplicate text.
 

@@ -107,8 +107,9 @@ function appendTelegramSourceAttachmentSection(
   text: string,
   from: string | undefined,
   files: Pick<Media.DownloadedTelegramFile, "path">[],
+  outputs: readonly string[] = [],
 ): string {
-  if (files.length === 0) return text;
+  if (files.length === 0 && outputs.length === 0) return text;
   const dirs = [...new Set(files.map((file) => dirname(file.path)))];
   const sameDir = dirs.length === 1;
   const source = from ? `|from:${from}` : "";
@@ -118,8 +119,15 @@ function appendTelegramSourceAttachmentSection(
   const items = sameDir
     ? files.map((file) => `/${basename(file.path)}`)
     : files.map((file) => file.path);
-  const prefix = text.length > 0 ? `${text}\n\n` : "";
-  return `${prefix}${header}\n${items.map((item) => `- ${item}`).join("\n")}`;
+  const sections = text ? [text] : [];
+  if (items.length > 0) {
+    sections.push(`${header}\n${items.map((item) => `- ${item}`).join("\n")}`);
+  }
+  if (outputs.length > 0) {
+    const outputHeader = `[outputs${source}]`;
+    sections.push(`${outputHeader}\n${outputs.map((output) => `- ${output}`).join("\n")}`);
+  }
+  return sections.join("\n\n");
 }
 
 function getContextCwd(ctx: unknown): string | undefined {
@@ -269,7 +277,7 @@ function getTelegramRoutableThreadRecords(
 
 function formatTelegramAllTabMenuChooserText(command: string): string {
   return [
-    "<b>🧵 Choose target thread</b>",
+    "<b>🧵 Choose target thread:</b>",
     "",
     `You used <code>/${escapeHtml(command)}</code> from the <b>All</b> tab.`,
     "Select the Pi thread that should handle it:",
@@ -332,7 +340,7 @@ function buildTelegramUnboundRerouteRestoreChooserMarkup(
 
 function formatTelegramUnboundRerouteRestoreChooserText(): string {
   return [
-    "<b>🧵 Replace/restore Telegram thread</b>",
+    "<b>🧵 Replace/restore Telegram thread:</b>",
     "",
     "Choose the Pi instance to move to this new Telegram thread:",
   ].join("\n");
@@ -340,7 +348,7 @@ function formatTelegramUnboundRerouteRestoreChooserText(): string {
 
 function formatTelegramUnboundTopicGuidance(): string {
   return [
-    "⚠️ <b>New thread is not a Pi instance</b>",
+    "<b>⚠️ New thread is not a Pi instance.</b>",
     "",
     "To create a bound Telegram tab:",
     "<code>1.</code> Start another Pi instance in your terminal.",
@@ -358,7 +366,7 @@ function formatTelegramUnboundRerouteChooserText(
   options: { includeGuidance?: boolean } = {},
 ): string {
   const rerouteText = [
-    "🧵 <b>Choose target thread</b>",
+    "<b>🧵 Choose target thread:</b>",
     "",
     "Your message is still in this Telegram thread.",
     "Select the Pi thread that should handle it:",
@@ -750,6 +758,42 @@ export function createTelegramInboundRouteRuntime<
         deps.dispatchNextQueuedTelegramTurn,
       );
     }
+  };
+  const resolveTelegramThreadLabel = (message: {
+    chat: { id: number };
+    message_thread_id?: number;
+  }): string | undefined => {
+    const chatId = message.chat.id;
+    const threadId = message.message_thread_id;
+    if (!threadId) return undefined;
+    const localLabel = deps.getLocalThreadLabelForTarget?.({ chatId, threadId });
+    if (localLabel) return localLabel;
+    if (!deps.threadStore) return undefined;
+    const records = deps.threadStore.list();
+    const currentInstanceId = deps.getCurrentInstanceId?.();
+    for (const record of records) {
+      if (
+        record.target.chatId !== chatId ||
+        record.target.threadId !== threadId
+      ) {
+        continue;
+      }
+      if (
+        currentInstanceId &&
+        record.instanceId &&
+        record.instanceId !== currentInstanceId
+      ) {
+        continue;
+      }
+      return record.threadName &&
+        Threads.isTelegramTopicThreadNameValidForSlot(
+          record.threadName,
+          record.slot,
+        )
+        ? record.threadName
+        : getRestoredThreadName(record, record.slot ?? "");
+    }
+    return undefined;
   };
   const createAdmissionReceipts = (
     queueKind: Queue.TelegramQueueItemKind,
@@ -1620,6 +1664,13 @@ export function createTelegramInboundRouteRuntime<
                 replyToMessageId: messageId,
                 queueOrder,
                 action,
+                telegramPrefix: Turns.createTelegramTurnPrefix({
+                  thread: resolveTelegramThreadLabel({
+                    chat: { id: chatId },
+                    message_thread_id:
+                      buttonQuery.message?.message_thread_id,
+                  }),
+                }),
               }),
               ...(admissionReceipts.length > 0 ? { admissionReceipts } : {}),
             };
@@ -1762,34 +1813,7 @@ export function createTelegramInboundRouteRuntime<
 
     // Voice policy resolves missing, invalid, and legacy manual config to hidden.
     getVoiceReplyMode: () => getTelegramVoiceReplyMode(deps.configStore.get()),
-    getTelegramThreadLabel(message) {
-      if (!deps.threadStore) return undefined;
-      const chatId = message.chat.id;
-      const threadId = message.message_thread_id;
-      if (!threadId) return undefined;
-      const localLabel = deps.getLocalThreadLabelForTarget?.({
-        chatId,
-        threadId,
-      });
-      if (localLabel) return localLabel;
-      const records = deps.threadStore.list();
-      const currentInstanceId = deps.getCurrentInstanceId?.();
-      for (const r of records) {
-        if (r.target.chatId !== chatId || r.target.threadId !== threadId)
-          continue;
-        if (
-          currentInstanceId &&
-          r.instanceId &&
-          r.instanceId !== currentInstanceId
-        )
-          continue;
-        return r.threadName &&
-          Threads.isTelegramTopicThreadNameValidForSlot(r.threadName, r.slot)
-          ? r.threadName
-          : getRestoredThreadName(r, r.slot ?? "");
-      }
-      return undefined;
-    },
+    getTelegramThreadLabel: resolveTelegramThreadLabel,
   });
   const enqueueContinueTurn = async (
     message: TMessage,
@@ -1877,6 +1901,18 @@ export function createTelegramInboundRouteRuntime<
     getPromptTemplateCommands,
     persistConfig: deps.configStore.persist,
     sendTextReply: deps.sendTextReply,
+    getActiveTurnReply: () => {
+      const activeTurn = deps.activeTurnRuntime.get();
+      if (!activeTurn) return undefined;
+      return async (text, options) => {
+        await deps.sendTextReply(
+          activeTurn.chatId,
+          activeTurn.replyToMessageId,
+          text,
+          { target: activeTurn.target, parseMode: options?.parseMode },
+        );
+      };
+    },
     sendInteractiveMessage: deps.sendInteractiveMessage,
     recordRuntimeEvent: deps.recordRuntimeEvent,
   });
@@ -2265,6 +2301,11 @@ export function createTelegramInboundRouteRuntime<
         )
       : [];
     assertExecutionCurrent();
+    const processedReply =
+      replyFiles.length > 0
+        ? await deps.inboundHandlerRuntime.process(replyFiles, "", ctx)
+        : undefined;
+    assertExecutionCurrent();
     const files = await Media.downloadTelegramMessageFiles([guestMsg], {
       downloadFile: deps.downloadFile,
     });
@@ -2285,7 +2326,8 @@ export function createTelegramInboundRouteRuntime<
       sourceContext = appendTelegramSourceAttachmentSection(
         replyBlock,
         replyPeer,
-        replyFiles,
+        processedReply?.promptFiles ?? replyFiles,
+        processedReply?.handlerOutputs,
       );
     }
     const promptText = Turns.buildTelegramTurnPrompt({

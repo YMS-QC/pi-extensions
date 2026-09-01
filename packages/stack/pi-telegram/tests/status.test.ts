@@ -1183,7 +1183,7 @@ test("Status HTML builder binds active model lookup", () => {
   assert.doesNotMatch(html, /<b>Tokens:<\/b>/s);
 });
 
-test("Status HTML mirrors Pi's token and latest cache hit footer telemetry", () => {
+test("Status HTML separates token and cache telemetry", () => {
   const buildStatusHtml = createTelegramStatusHtmlBuilder({
     getActiveModel: () => ({ contextWindow: 1000 }),
   });
@@ -1225,9 +1225,8 @@ test("Status HTML mirrors Pi's token and latest cache hit footer telemetry", () 
 
   assert.match(
     html,
-    /<b>Tokens:<\/b> <code>↑250 ↓50 R1\.7k W50 CH80\.0%<\/code>.*<b>Context:<\/b>/s,
+    /<b>Tokens:<\/b> <code>↑250 ↓50<\/code>\n<b>Cache:<\/b> <code>R1\.7k W50 CH80\.0%<\/code>\n<b>Context:<\/b>/s,
   );
-  assert.doesNotMatch(html, /<b>Cache Hit:<\/b>/s);
 });
 
 test("Status HTML builder appends Threaded Mode bus role to status row", () => {

@@ -1,251 +1,105 @@
 ---
 name: generated-control-surface
-description: Proactively compiles current state, available capabilities, and user intent into contextual, evidence-backed, ephemeral prompt-button interfaces. Use without an explicit button request on Telegram-originated turns when controls materially shorten likely feedback, or when a user explicitly requests controls on another prompt-button transport; connection or proactive projection alone is not activation intent. Route reusable deterministic loops toward Generative Apps, omit decorative UI, and preserve domain ownership while fixed transport menus and callbacks remain with their runtime owners.
+description: Proactively generate truthful prompt-button controls; every active surface emits useful buttons with semantic emoji labels, while stable deterministic loops route to Generative Apps.
 ---
 
 # Generated Control Surface
 
-Compile a temporary, truthful interface from current state, available capabilities, and user intent. The agent remains the interpreter and authority boundary; the generated surface remains an ephemeral renderer projection, not a second application, hidden daemon, state owner, or direct grant of capability.
-
-## Primitive
+Compile a temporary interface from current evidence, available capabilities, and user intent:
 
 ```text
-interface = f(state, capabilities, intent)
-
-current evidence + available acts + user intent
-→ compact state projection → contextual controls
-→ next prompt → authorized act → fresh projection
+state + capabilities + intent → projection + likely next actions
 ```
 
-This is late-bound UI rather than a fixed frontend for one backend. Each response is one generated control surface whose renderer may be Telegram, another prompt-button transport, or a numbered fallback. Reinspect mutable reality after actions and regenerate instead of maintaining a parallel UI model.
+The surface projects reality; it does not own domain state, grant authority, or create a shadow application.
 
-The primitive belongs to the Surface plane: it projects State, exposes Agency capabilities, and preserves Constitution constraints without absorbing any of those owners. Its reusable competence lives in this Skill so quality depends less on rediscovering interface policy in each turn.
+## Admission
 
-## Scope
+Proactively use controls whenever a tap can reduce response effort, ambiguity, turnaround time, or supervision cost. On a prompt-button transport, every response produced under this Skill must include at least one useful button; never finish with prose alone. A bounded confirmation or choice should expose 2–6 safe concrete actions.
 
-Use this Skill only to synthesize a state-derived prompt-button surface. Operating or modifying an existing Telegram bridge menu, callback interface, fixed frontend, runtime-owned control, or installed Generative App stays with that subsystem and does not route here merely because it contains buttons.
+At workflow handoff, offer a small high-confidence next-action set when the completed step clearly unlocks it. Preserve free-form reply when choices are not exhaustive. When no domain mutation qualifies, offer the most useful truthful continuation—such as inspect details, refine scope, refresh mutable evidence, navigate back, or continue the parent workflow—rather than a decorative control or generic “What next?”.
 
-This Skill and `generative-apps` share one logical button-matrix and `label + prompt` interaction model while retaining different execution owners. On Telegram, the bridge runtime owns the full JSON/CML action notation: this Skill emits an ephemeral surface from current context, while a Generative App returns reusable views through its script ABI. Shared rendering does not justify a third button Skill or move transport grammar into either interaction Skill.
+Every button must advance, inspect, clarify, recover, navigate, or supervise the current intent. Never duplicate visible prose, represent unclear consequences, or repeat a command that introduces no new decision.
 
-When a generated surface reveals repeated stable interaction with bounded state and deterministic transitions, load the complementary `generative-apps` Skill and consider compiling that loop. A Generative App may retain ordinary model-mediated prompt buttons beside deterministic bound methods, so only the stable actions need bypass inference. Conversely, keep one-off, interpretive, changing, and context-heavy interaction here when a reusable script would add no concrete latency, token, cost, reliability, or UX value.
+## Ownership And Truth
 
-On Telegram-originated turns, evaluate this Skill proactively rather than waiting for the user to ask for buttons. A connected Telegram session, available button syntax, or proactive projection of local output is capability evidence, not activation intent: do not load this Skill for an unrelated local/TUI prompt merely because its answer may also appear in Telegram. Load and apply it when the current turn is Telegram-originated or the user explicitly requests a prompt-button surface and a likely next decision, approval, navigation step, inspection, or bounded action can be made materially easier through controls; its correct output may still contain zero buttons when the admission test fails.
+Identify one controlled object, target, and capability owner. Build from one declared truth mode when ambiguity matters:
 
-A control surface may expose:
+- **Live:** Freshly inspected mutable state.
+- **Contract:** Stable documented capability.
+- **Conversation:** Choices established in the dialogue.
+- **Adapted:** A labeled subset or transformation.
 
-- Observation: status, evidence, progress, diagnostics, or summaries.
-- Navigation: files, concepts, projects, artifacts, media, threads, or Actor Runs.
-- Action: safe next operations over tools, workflows, services, or project state.
-- Choice: alternatives, filters, priorities, approvals, or design decisions.
-- Supervision: pause, continue, inspect, redirect, retry, or stop bounded work.
+Never present remembered or inferred state as live. Preserve material identity, ordering, values, warnings, failures, authority, and completeness. Label filtering, truncation, pagination, and unavailable evidence. Refresh affected state after mutation before claiming success or rendering dependent controls.
 
-Console programs are one capability source, not the defining boundary. Use the real owner of each capability: a tool, API, repository, Actor runtime, filesystem, media system, documented workflow, or the explicit state of the conversation.
+Use the real capability owner—tool, API, repository, Actor runtime, filesystem, media system, workflow, or conversation. Do not invent parallel state, lifecycle, navigation, or callbacks.
 
-## Core Contract
+## Surface Contract
 
-- Generate controls from current evidence, an explicit contract, or clearly labeled conversational state.
-- Keep domain state with its real owner; never invent a shadow navigation tree, task database, or application session.
-- Make every button prompt minimally sufficient for a truthful continuation: reuse unambiguous visible conversational context, but include stable target, state, constraint, or freshness identity whenever omission could change the action.
-- Treat a click as an ordinary user request subject to the same authority, validation, and safety rules as typed text.
-- Never infer permission for destructive, privileged, credential-bearing, external, or irreversible work merely because a button exists.
-- Do not encode secrets, hidden reasoning, credentials, private keys, tokens, cookies, wallet material, or sensitive content in labels or prompts.
-- Show uncertainty, unavailable state, truncation, filtering, and stale evidence honestly.
-- Prefer a few high-value controls over exhaustive action enumeration.
+A surface is an ordered ragged sequence of rows. Each button carries:
 
-## Control Admission
+- A short, distinct label.
+- The smallest self-contained next-request prompt.
+- Optional presentation state supported by the transport.
 
-Buttons are optional only when no candidate passes the admission test. Bias toward offering them whenever they materially shorten a likely feedback loop. If the user can approve, reject, refine, prioritize, redirect, inspect, or choose a concrete next step faster by tapping than by composing a reply, proactively expose the smallest useful control set without waiting to be asked for buttons.
+Prompts must name any target, operation, constraint, or freshness identity whose omission could change the action. Reuse visible context only when it remains unambiguous under delayed or reordered clicks. Never encode volatile output that should be freshly inspected.
 
-On a Telegram-originated turn, emitting controls is required when the response asks the user for one or more bounded confirmations or choices, the likely answers can be represented truthfully in 2–6 safe controls, and no secret-bearing or high-impact ambiguity blocks their formulation. This includes blocking questions such as confirming scope, version, workflow classification, approval, or the next release step. Ask in prose when explanation is necessary, but attach the controls in the same reply; the availability of free-form typing is not a reason to omit them. A high-impact operation still uses the required confirmation flow rather than a one-tap execution shortcut.
+Every generated human-readable action label must use `emoji + space + text`; emoji-free text labels are invalid. Choose the emoji by action semantics, keep its meaning consistent, and never rely on emoji or color alone. Coordinates, established symbolic controls, and intentionally spatial glyphs already satisfy the marker role through their domain grammar. If prompt buttons are unavailable, preserve the same choices as a numbered list.
 
-Apply the same requirement at a workflow handoff even when the current user message itself was a complete correction or implementation command. Before concluding a Telegram reply, project the user's likely next intent from the active goal, recent trajectory, newly completed act, and available capabilities—not only from an explicitly pending question. Typical phase transitions include “prepare → release”, “inspect → approve”, “fix → rerun”, and “draft → send”. If one next action or a small alternative set is high-confidence, newly unblocked, truthfully expressible, and safe to request, emit 2–6 controls now instead of waiting for the user to restate the obvious next step. A narrowly completed subtask does not erase the parent intent or make the predictive handoff decorative.
+## Layout Kernel
 
-This is anticipatory interaction, not generic suggestion generation. Prefer controls that advance the user's demonstrated workflow over broad capability menus, speculative side quests, or “What next?” buttons. A predicted high-impact action is offered as an explicit self-contained request or confirmation, never silently executed. When confidence is low or materially different next intents compete, omit controls or expose only the smallest clarifying choice.
+- Use one full-width row for an independent, primary, long, or consequential action.
+- Use two columns only for unmistakably short textual peers.
+- Reserve three through eight columns for compact position-bearing glyphs or codes.
+- Preserve hierarchy and reading order; never pad, duplicate, or shorten necessary wording for symmetry.
+- Use Back/Up only for real hierarchy and Refresh only for mutable projections.
+- Prefer 2–6 decision controls. Paginate or group larger non-spatial collections.
 
-Zero buttons remains preferable when controls would only decorate the answer, restate visible prose, solicit generic “What next?” input, expose an unclear consequence, save negligible effort, or when the user already issued a complete command and neither that command nor the inferred active workflow leaves a high-confidence immediate decision. A button earns its place by reducing response effort, ambiguity, turnaround time, or supervision cost while preserving an ordinary typed reply as a first-class option.
+For complex grids, navigation collections, or stateful repeated clicks, read [`references/layout-and-state.md`](./references/layout-and-state.md).
 
-For status requests, show a compact `Refresh` control and bounded inspect/drill-down controls only when work is active, blocked, stale-sensitive, or otherwise actionable. A completed static status needs no buttons. Do not add destructive shortcuts or actions whose target and consequence are not yet clear.
+Serialize the resulting rows with the active transport contract. This Skill owns admission and composition, not transport syntax.
 
-## Feedback Leverage
+## Safety
 
-Treat feedback compression as the primary reason to make controls more visible and proactive:
+A click is an ordinary user request under the same authority and validation rules as typed text. Never infer permission from the existence of a button.
 
-- Offer 2–6 high-confidence choices when they cover likely responses without pretending to be exhaustive.
-- Prefer controls for approval gates, bounded alternatives, priority changes, review verdicts, correction direction, and active-work supervision.
-- Put the most likely or highest-leverage response first, while keeping labels neutral enough to avoid steering the decision dishonestly.
-- Include an explicit free-form path in visible text when the listed choices cannot represent the full answer.
-- Regenerate controls after feedback so the next surface reflects the new decision rather than repeating stale options.
-- Omit controls when the user is already expressing a clear command and no immediate follow-up decision is needed.
+Classify actions as read-only, ordinary mutation, privileged, destructive, secret-bearing, external, or irreversible. High-impact actions use two stages:
 
-## Surface Model
+1. Open a confirmation surface naming exact target, effect, and recovery boundary.
+2. Offer a distinct request for the exact operation.
 
-A surface normally contains:
+Re-check mutable targets immediately before execution. Never expose secrets, credentials, hidden reasoning, private keys, tokens, cookies, wallet material, or sensitive content in labels, prompts, or projections. Access denial never authorizes privilege escalation.
 
-1. A short title naming the controlled object or decision.
-2. A compact projection of relevant state, evidence, choices, or output.
-3. Provenance when it matters: target, source, timestamp, run identity, status, or truncation note.
-4. Buttons for likely next intents.
-5. `Back` or `Up` for hierarchy navigation when meaningful.
-6. `Refresh` when the projected state can change.
+## Reuse Boundary
 
-Prefer 2–6 controls for feedback and decisions; navigation collections may use up to 12 when the additional entries remain scannable. Split larger sets by category or page instead of building a button wall. Do not add navigation controls when the surface is a one-step decision.
+Keep one-off, interpretive, changing, and context-heavy interaction here. When state and transitions become stable, repeated, bounded, and deterministic, follow `generative-apps` and compile only the deterministic loop. Existing transport menus, runtime callbacks, and installed apps remain with their owners.
 
-When a logical grid has no semantic column headings but Markdown table syntax requires a header row, use the grid's first data row as the syntactic header and render each remaining row once beneath it. Do not insert blank, dash-only, duplicate, or invented placeholder headings: they add a false row to the projected topology. Use ordinary semantic headings when the data actually has named columns.
+For capability-specific composition guidance, read only the applicable reference:
 
-Present compact metadata as stacked key-value rows that reuse status-surface grammar: a short bold label, a colon, and an inline-code value when the value is path-like, numeric, an identifier, or machine state. In Telegram Rich Markdown, use an actual Markdown list or blank paragraph boundaries so soft line breaks cannot collapse several fields into one visual line. Prefer ``- **Path:** `/home/llb` `` and ``- **Entries:** `1–10 of 52` `` over prose fragments joined by a middle dot or other decorative section separator.
+- Console, filesystem, workflows, Actor Runs, and design choices: [`references/capability-adapters.md`](./references/capability-adapters.md)
 
-## Truth Modes
+## Procedure
 
-Name the basis of the surface when ambiguity matters:
-
-- Live: freshly inspected mutable state.
-- Contract: stable documented capabilities or choices.
-- Conversation: alternatives or intents established in the current dialogue.
-- Adapted: bounded or transformed output whose omissions are stated.
-
-Do not present remembered or inferred state as live. After a mutation, refresh affected state before claiming success or generating dependent controls.
-
-## Evidence Fidelity
-
-Preserve material identities, values, ordering, warnings, errors, and status. Adaptation may group, translate, label, paginate, rank, or collapse repeated successful detail, but it must not:
-
-- Convert failure into success.
-- Hide material warnings or unavailable evidence.
-- Present a subset as complete.
-- Change identifiers, values, causal order, or authority.
-- Turn a proposal into completed state.
-
-State adaptation explicitly, for example: `Показаны 20 из 184 записей, по размеру`.
-
-## Safety And Confirmation
-
-Classify each action as read-only, ordinary mutation, privileged, destructive, secret-bearing, external, or irreversible.
-
-Use a two-stage flow for high-impact actions:
-
-1. An action button opens a confirmation surface naming the exact target, effect, and recovery boundary.
-2. A distinct confirmation button requests the exact operation.
-
-Re-check mutable targets immediately before execution. Access denial never authorizes automatic privilege escalation. If evidence may expose secrets, stop before display and offer metadata-only or redacted alternatives.
-
-## Prompt Buttons
-
-Use the transport's canonical prompt-button syntax. For pi-telegram, one top-level `telegram_button` comment accepts one JSON object, double-quoted attributes, an adaptive JSON/CML matrix, or positional Compact Matrix Literal (CML). One matrix or row may mix named JSON objects with positional cells, and commas are optional only between completed elements while JSON object internals remain strict. CML uses `{value}`, `{label|prompt}`, or `{label|prompt|selected_style}`; the optional third atom requires an explicit prompt and accepts only `primary`, `success`, or `danger`. It trims atom boundaries, preserves other printable text literally, and decodes only `\|`, `\}`, and `\\`. Prefer CML whenever the model authors the control and it can express the required surface; fall back to expanded JSON only for multiline prompts, non-positional metadata, or a concrete CML parse/render failure, never merely from implementation habit. Deterministic Generative App scripts may return ordinary JSON because their source payload does not consume model-output tokens; author and operate those adapters through the `generative-apps` Skill rather than growing a parallel app workflow here. A top-level cell becomes one full-width row, while a nested row groups one or more controls horizontally without a parser-level width cap. Prefer one layout comment for multiple controls instead of repeating the marker; `telegram_buttons` is a plural alias, not a different format.
-
-### Semantic Row Composition
-
-Model the control surface as an ordered ragged sequence of independently sized rows, not as a rectangular matrix to fill. Rectangular grids are one specialization for genuinely spatial or coordinate-bearing state; most interfaces should vary row width according to hierarchy, grouping, label pressure, and action priority.
-
-- Default to one full-width button per row for non-spatial controls. In pi-telegram matrix syntax, emit these vertical controls as top-level cells without wrapping them in a nested row array. A nested array explicitly opts into horizontal grouping and is justified only when the controls are genuine peers and every label is unmistakably compact—roughly no more than 15 visible characters including its emoji and space. This is a judgment heuristic, not a request to mechanically count characters: if fit is uncertain, wording is multi-phrase, or truncation is plausible, keep top-level vertical buttons.
-- Use a singleton full-width row for a structurally independent, pinned, primary, summary, or high-consequence action, and whenever label length makes horizontal grouping cramped or ambiguous.
-- Vary row widths intentionally—for example `1 → 2 → 4 → 1 → 2`—and never pad a row with empty, duplicate, or no-op controls merely to produce uniform dimensions.
-- Preserve reading order across rows: orientation and structural navigation first, primary content or choices next, secondary controls afterward, and destructive actions visibly separated when present.
-- Treat two columns as an earned compact exception, never the default: a pair normally fits only when each label is unmistakably short—approximately one emoji plus one or two short words and roughly 15 visible characters or fewer. Do not count mechanically to justify density. If either label has more words, unusually long words, qualifiers, or any plausible wrapping or ellipsis risk, place each button on its own top-level row. Use at most two columns for readable text labels; move additional peer choices into more semantic rows rather than compressing textual buttons across a phone-width line. Three through five columns are for short symbols, glyphs, coordinates, or compact codes whose position carries meaning. Six through eight may be used only for single-glyph or similarly minimal position-bearing labels whose grouping materially improves the interaction; a row of emoji-only controls may therefore legitimately use up to eight columns. Eight is the phone-width UX maximum: never generate a row of nine or more controls even though the parser has no artificial width cap. Never shorten necessary wording merely to increase row density; regroup or use full-width rows when labels need explanation, wrap ambiguously, or lose meaning without prose.
-
-Treat vertical extent independently from horizontal density. A genuinely spatial surface may retain many rows—such as an `8×16` field—when vertical continuity, coordinates, and one-glance topology matter; do not paginate merely to make its height match its width. For non-spatial collections, however, a tall button wall should yield to semantic grouping, progressive disclosure, or pagination. Keep compact state and instructions above a tall surface, preserve stable coordinates across regeneration, and avoid repeating prose between rows.
-
-Treat symmetry as an evidence claim about the task. Equal rectangular rows imply equal relationships and stable spatial correspondence; do not make that claim merely because the renderer supports a grid. Infer the task's independent, peer, ordered, hierarchical, and spatial relationships first, then let those relationships determine row boundaries and widths. A non-spatial task should be ragged by default, and its asymmetry should remain visible when that best communicates hierarchy or action weight.
-
-### Layout Catalog
-
-Use this catalog as a shape vocabulary, not a fixed menu of demos:
-
-- `1`: One independent full-width action, destination, summary drill-down, or consequence boundary.
-- `2`: One binary or tightly coupled peer decision; neither control is visually subordinated.
-- `1 → 2`: One orienting or primary action followed by a local peer pair.
-- `2 → 1`: One peer mode/filter pair followed by an independent continuation or detail action.
-- `1 → 2 → N×1`: Pinned structural navigation, compact traversal, then a vertical collection of independently readable items.
-- `1 → 2 → 3 → 1`: Ragged staged control where context, local alternatives, denser short peers, and a separated terminal action have different semantic weight.
-- Repeated `2`: Text-bearing choices distributed down the screen instead of compressed across it.
-- `R×C`: A rectangular layout only when rows and columns map to genuine coordinates, repeated dimensions, or another stable spatial topology; keep `C ≤ 8`, while `R` may be substantially larger when preserving vertical continuity is useful.
-
-Adapt a surface by identifying relationships, grouping only genuine peers, ordering groups by task hierarchy, applying label-pressure limits, and then choosing the least regular layout that remains immediately comprehensible. Do not select a catalog shape first and force the task into it.
-
-Preserve the ordinary admission test: proactively offer an interactive surface even when the user did not request buttons when it materially reduces effort or demonstrates an available capability, but do not manufacture decorative interaction.
-
-### Interaction State And Prompt Compression
-
-- Encode the smallest sufficient action delta in repeated controls. When the visible surface and immediately preceding conversation establish one unambiguous state, a coordinate, symbol, identifier, or short verb can be the entire prompt; do not duplicate the same board, form, or selection state into every button payload.
-- Keep compact prompts semantically closed over their context. If delivery may be delayed, reordered, routed elsewhere, or separated from the state projection, add a stable target or state identity rather than copying a large volatile snapshot.
-- Keep trivial interaction state in the visible conversation. When state becomes too large, long-lived, or error-prone for reliable conversational reconstruction, persist a small human-auditable Markdown state artifact at a deterministic task-owned path and render from it. The artifact belongs to the underlying task or domain, not to this Skill as shadow application state.
-- When transition rules are non-trivial or correctness-sensitive, use a small deterministic state-transition owner—script, module, tool, or existing domain API—that validates `current state + admitted action → next state`; let the model compile the surface from its result instead of informally simulating every transition. Do not create code or files for a trivial one-step interaction.
-- Treat repeated clicks against current state, not stale button appearance. If an action is already consumed or unavailable, keep state unchanged and say so briefly. Preserve an occupied or selected button when spatial layout matters, using its label or selected style as the visual state; omit unavailable controls when layout does not matter. Transport-level disabled buttons are optional, not assumed.
-- Preserve tap-ahead on transports where existing controls remain actionable and rapid clicks queue separate turns. In a source-then-destination interaction, persist the source selection but do not regenerate the board, enumerate destinations, or duplicate controls between the two prompts; emit at most a minimal acknowledgement and let the already visible surface carry the destination click. Regenerate after the completed transition, invalid input, or evidence that the transport cannot preserve the intermediate surface.
-- Resolve coordinate selection by current state rather than rigid click parity. Clicking any currently selectable source selects or replaces the source and then waits; acknowledge a replacement tersely without regenerating the surface. Only a click that is not a selectable source becomes a destination attempt when a source is already selected, at which point the domain owner validates the transition. Without a selected source, a non-source coordinate is a no-op.
-
-```html
-<!-- telegram_button {"label":"🔍 Inspect run","prompt":"Inspect Run run:example read-only, summarize its current status and latest material evidence, then regenerate relevant supervision controls."} -->
-<!-- telegram_button [{⬆️ Up|/}[{⬅️ Previous}{➡️ Next}]{📁 etc|/etc}] -->
-```
-
-Button prompts must:
-
-- Preserve the user's language.
-- Name exact targets when visible context does not make them unambiguous.
-- Express one coherent next intent with the shortest sufficient action delta.
-- Carry material safety and scope restrictions.
-- Request fresh inspection when state may have changed.
-- Avoid embedding volatile output that should be rediscovered.
-
-Labels stay short, distinct, and scannable. Prefer an explicit `label` over exposing a long prompt as button text. Every generated human-readable action label must start with the most semantically appropriate emoji, followed by one ASCII space and concise action text; selecting that emoji is a required design step, not optional polish. When label and prompt are intentionally identical, use the same emoji-prefixed value rather than dropping the marker through compact syntax. Keep emoji meaning consistent across sibling controls, avoid decorative noise, and do not rely on emoji or color alone. An emoji-free text label remains a transport-compatible fallback only when no honest semantic emoji can be identified after considering the action, domain, and state; convenience, label pressure, or uncertainty between several reasonable candidates is not sufficient. Genuine coordinates, established symbolic controls, and intentionally emoji-only spatial cells keep their domain grammar. If buttons are unavailable, render the same control surface as a numbered choice list.
-
-## Capability Adapters
-
-### Console And System
-
-Use normal console programs as the capability owner. Check exit status and stderr before rendering success. Preserve complete output when reasonably sized; otherwise label pagination, filtering, head/tail, or ranked subsets. High-impact process, service, package, permission, shutdown, disk, and deletion actions require confirmation.
-
-### Filesystem
-
-Treat a user prompt that is exactly a plausible filesystem path—including `/`—as legitimate intent to render that location through a generated filesystem surface. Resolve and freshly inspect it before display. Directory surfaces use one stable navigation layout:
-
-1. Pin `⬆️ Up` as the first full-width row whenever the current path is not filesystem root; its entire prompt is the exact parent path. Omit Up at `/`.
-2. When page traversal exists, place `⬅️ Previous` and `➡️ Next` together in one compact row immediately after Up, omitting either unavailable direction. Page traversal re-inspects the directory and preserves a fixed 10-entry page size; moving Up opens the parent at page one.
-3. Sort entries by semantic category before pagination: visible directories, hidden directories, visible files, then hidden files; sort names alphabetically within each category. Render at most 10 resulting entry buttons as full-width rows after structural navigation. Each label uses the entry name plus a semantic folder/file emoji, and its entire prompt may be the exact target path because this Skill defines path-only prompts as navigation intent.
-4. Keep visible text to two compact status-style rows such as ``**Path:** `/home/llb` `` and ``**Entries:** `1–10 of 52` ``; do not join metadata with a middle dot and do not duplicate entry names as a plain or monospaced directory listing. Omit Refresh by default because resubmitting the current path already requests fresh rendering.
-
-For pi-telegram, emit the complete filesystem control set—Up, compact page traversal, then current-page entries—in one `telegram_button` JSON matrix rather than repeating one hidden comment per button. If prompt buttons are unavailable or fail to render, preserve the same ordering and pagination as an ordinary numbered text fallback, not a monospaced inventory, so free-form path entry remains sufficient. Show a plain or monospaced directory listing instead only when the user explicitly requests it or durable user Knowledge establishes that presentation preference. Never preview credential stores, private keys, browser profiles, cookies, tokens, wallets, or other secret-bearing files, and never raise privileges merely to enumerate a path.
-
-### Workflows And Actor Runs
-
-Keep exact workflow, Recipe, Run, artifact, or task identity visible. Controls may inspect, pause, continue, redirect, retry, or stop only through the owning runtime contract. Never simulate lifecycle state, bypass Control semantics, or treat a generated button as direct execution authority.
-
-### Decisions And Design
-
-Buttons may represent explicit alternatives without live system inspection. State the decision being made, preserve meaningful trade-offs in visible text, and ensure each prompt records the selected intent rather than silently executing downstream consequences.
-
-## Action Procedure
-
-1. Identify the controlled object, user goal, and capability owner.
-2. Decide whether the surface needs live, contract, conversational, or adapted evidence.
-3. Inspect only the state required for a truthful projection.
-4. Classify candidate controls by authority and impact.
-5. Render compact state plus context-relevant controls.
-6. On the next turn, interpret the click as a new request and execute only what it authorizes.
-7. Validate the result and regenerate from retained reality.
+1. Identify intent, controlled object, owner, and truth mode.
+2. Inspect only the evidence needed for a truthful projection.
+3. Admit only high-leverage actions and classify their impact.
+4. Arrange semantic rows, then serialize through the transport owner.
+5. Treat the click as a new request, validate authority, act, and refresh reality.
 
 ## Failure And Empty States
 
-- Show concise failure evidence and offer diagnosis, retry, refresh, back, or a narrower action.
-- If a target disappears, return to the nearest valid parent or owner instead of reusing stale controls.
-- If no action is currently valid, say so rather than generating decorative buttons.
-- Mark unsupported, sentinel, inferred, or unreliable values explicitly.
-- Keep safe navigation and refresh controls in empty collections when useful.
+Show concise failure evidence and emit valid recovery controls such as diagnose, retry, refresh, back, or narrower scope. If a target disappears, return to its nearest valid owner or parent. Empty collections retain the safest useful navigation, inspection, or refinement control rather than degrading to prose-only output.
 
-## Quality Check
+## Final Check
 
-Before sending a surface, verify:
+Before sending:
 
-- If the reply asks a Telegram user for bounded confirmation or selection, qualifying controls are present; do not ship a prose-only blocking question merely because the answer is short.
-- If the completed act unblocks a high-confidence next intent inferred from the parent goal and workflow trajectory, qualifying handoff controls are present even when no explicit pending question exists and the latest user message was itself a complete command.
-- State and controls share one clear owner and target.
-- Live claims come from current evidence.
-- Complete versus filtered or adapted output is labeled honestly.
-- No secret appears in visible text or button payloads.
-- Every button carries a valid self-contained next intent and measurably shortens likely feedback.
-- Every human-readable action label uses `emoji + space + text`; an emoji-free fallback has an explicit semantic reason rather than mere convenience.
-- Non-spatial action buttons are top-level vertical cells by default; every nested row has an obvious compact-peer justification with no plausible truncation risk.
-- The surface preserves free-form feedback when choices are not exhaustive.
-- High-impact operations route through confirmation.
-- Back/Up and Refresh appear only when useful.
-- The surface remains readable on a mobile screen.
+- At least one useful button is present whenever the transport supports prompt buttons.
+- Every human-readable button label begins with a semantic emoji and one ASCII space.
+- State, actions, owner, and target agree.
+- Live claims are fresh; adaptation and incompleteness are explicit.
+- Every prompt is sufficient and every label follows its semantic emoji rule.
+- Row grouping reflects real hierarchy or peer relationships.
+- High-impact actions require confirmation.
+- No secret or hidden reasoning appears.
+- The surface remains readable on a phone and free-form feedback remains possible.

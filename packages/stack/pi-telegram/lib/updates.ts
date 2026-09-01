@@ -895,7 +895,7 @@ const TELEGRAM_UNAUTHORIZED_DENIAL_COPY = "Access denied.";
 
 function formatTelegramUnauthorizedDenial(format: "plain" | "html"): string {
   return format === "html"
-    ? `🚫 <b>${TELEGRAM_UNAUTHORIZED_DENIAL_COPY}</b>`
+    ? `<b>🚫 ${TELEGRAM_UNAUTHORIZED_DENIAL_COPY}</b>`
     : `🚫 ${TELEGRAM_UNAUTHORIZED_DENIAL_COPY}`;
 }
 

@@ -428,6 +428,9 @@ export function createTelegramActivityBridgeRuntime(deps: {
     onAssistantEvent(event) {
       getRuntime()?.onAssistantEvent(event);
     },
+    onAssistantMessageEnd(stopReason) {
+      getRuntime()?.onAssistantMessageEnd(stopReason);
+    },
     onToolStart(event) {
       getRuntime()?.onToolStart(event);
     },
@@ -491,6 +494,7 @@ export interface TelegramActivityRuntime {
   recordInputSource: (source: TelegramActivityInputSource) => void;
   onAgentStart: (activeTelegramTarget?: TelegramActivityTarget) => void;
   onAssistantEvent: (event: TelegramAssistantStreamEvent) => void;
+  onAssistantMessageEnd: (stopReason?: string) => void;
   onToolStart: (event: {
     toolCallId: string;
     toolName: string;
@@ -676,6 +680,9 @@ export function createTelegramActivityRuntime(deps: {
         return;
       }
       if (event.type === "error") flushPendingSegment("terminal-partial");
+    },
+    onAssistantMessageEnd(stopReason) {
+      if (stopReason === "aborted") pendingAssistantSegment = undefined;
     },
     onToolStart(event) {
       emit({ type: "tool-start", ...event });

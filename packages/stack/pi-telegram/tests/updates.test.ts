@@ -966,7 +966,7 @@ test("Update runtime denies guest messages before pairing", async () => {
     "ctx",
   );
   assert.deepEqual(events, [
-    "guest-deny:gq-unpaired:🚫 <b>Access denied.</b>:HTML",
+    "guest-deny:gq-unpaired:<b>🚫 Access denied.</b>:HTML",
   ]);
 });
 
@@ -1001,7 +1001,7 @@ test("Update runtime answers guest query with access denied for unauthorized use
     "ctx",
   );
   assert.deepEqual(events, [
-    "guest-deny:gq-deny:🚫 <b>Access denied.</b>:HTML",
+    "guest-deny:gq-deny:<b>🚫 Access denied.</b>:HTML",
   ]);
 });
 
@@ -1997,7 +1997,7 @@ test("Update runtime keeps unauthorized HTML denials in the source thread", asyn
   );
 
   assert.deepEqual(events, [
-    "reply:7:9:🚫 <b>Access denied.</b>:HTML:7:44",
+    "reply:7:9:<b>🚫 Access denied.</b>:HTML:7:44",
   ]);
 });
 

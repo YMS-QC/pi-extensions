@@ -1105,7 +1105,7 @@ test("Next command renders an emphasized empty queue notice", async () => {
   ]);
 });
 
-test("Next command reports an aborted active turn before dispatch", async () => {
+test("Next command falls back to the command when the active turn has no reply target", async () => {
   const replies: Array<{ text: string; parseMode?: "HTML" }> = [];
   let aborted = false;
   let dispatched = false;
@@ -1131,9 +1131,45 @@ test("Next command reports an aborted active turn before dispatch", async () => 
   assert.equal(dispatched, false);
   assert.deepEqual(replies, [
     {
-      text: "<b>⏩ Aborted! Dispatching next queued turn.</b>",
+      text: "<b>⏩ Operation aborted. Dispatching next queued turn.</b>",
       parseMode: "HTML",
     },
+  ]);
+});
+
+test("Next command snapshots its active-turn reply before aborting", async () => {
+  const commandReplies: string[] = [];
+  const activeTurnReplies: string[] = [];
+  const events: string[] = [];
+  let active = true;
+  await handleTelegramNextCommand({
+    hasAbortHandler: () => true,
+    isIdle: () => false,
+    hasQueuedItems: () => true,
+    clearPendingModelSwitch: () => {},
+    abortCurrentTurn: () => {
+      active = false;
+      events.push("abort");
+    },
+    dispatchNextQueuedTurn: () => {},
+    clearFoldForDispatch: () => {},
+    updateStatus: () => {},
+    sendTextReply: async (text) => {
+      commandReplies.push(text);
+    },
+    getActiveTurnReply: () => {
+      events.push("snapshot");
+      if (!active) return undefined;
+      return async (text) => {
+        activeTurnReplies.push(text);
+      };
+    },
+  });
+
+  assert.deepEqual(events, ["snapshot", "abort"]);
+  assert.deepEqual(commandReplies, []);
+  assert.deepEqual(activeTurnReplies, [
+    "<b>⏩ Operation aborted. Dispatching next queued turn.</b>",
   ]);
 });
 

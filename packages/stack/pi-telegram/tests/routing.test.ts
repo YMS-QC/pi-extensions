@@ -1621,6 +1621,61 @@ test("Routing runtime separates private guest identity from replied peer metadat
   );
 });
 
+test("Routing runtime keeps replied voice transcription inside Guest Mode reply context", async () => {
+  const { routeRuntime, telegramQueueStore } = createRouteHarness({
+    processInbound: async (files, rawText) => ({
+      rawText,
+      promptFiles: files,
+      handlerOutputs: files.some((file) => file.kind === "voice")
+        ? ["guest replied voice transcript"]
+        : [],
+      handledFiles: [],
+    }),
+  });
+
+  await routeRuntime.handleUpdate(
+    {
+      guest_message: {
+        guest_query_id: "guest-dm-voice-reply-1",
+        chat: { id: 98, type: "private", username: "counterparty" } as never,
+        from: { id: 7, is_bot: false, username: "llblab" } as TestUser & {
+          username: string;
+        },
+        text: "@k1awbot respond",
+        reply_to_message: {
+          message_id: 22,
+          chat: { id: 7, type: "private" },
+          from: {
+            id: 99,
+            is_bot: false,
+            username: "quotedparty",
+          } as TestUser & { username: string },
+          voice: { file_id: "voice", mime_type: "audio/ogg" },
+        } as never,
+      },
+    },
+    { cwd: "/repo" },
+  );
+
+  const queued = telegramQueueStore.getQueuedItems()[0];
+  assert.equal(
+    queued?.kind === "prompt" && queued.content[0]?.type === "text"
+      ? queued.content[0].text
+      : "",
+    [
+      "[telegram|guest:counterparty] @k1awbot respond",
+      "",
+      "[reply|from:quotedparty]",
+      "",
+      "[attachments|from:quotedparty] /tmp",
+      "- /voice-22.ogg",
+      "",
+      "[outputs|from:quotedparty]",
+      "- guest replied voice transcript",
+    ].join("\n"),
+  );
+});
+
 test("Routing runtime keeps private guest identity when replying to the bot", async () => {
   const { routeRuntime, telegramQueueStore } = createRouteHarness({});
 
@@ -1670,6 +1725,8 @@ test("Routing runtime preserves follower target and marks generated prompt butto
       editMessageReplyMarkup: async (chatId, messageId, replyMarkup) => {
         selectedMarkups.push({ chatId, messageId, replyMarkup });
       },
+      getLocalThreadLabelForTarget: ({ threadId }) =>
+        threadId === 55 ? "Nimbus" : undefined,
     });
   const callbackData = buttonActionStore.register({
     text: "Continue",
@@ -1707,6 +1764,12 @@ test("Routing runtime preserves follower target and marks generated prompt butto
   assert.equal(
     queued?.kind === "prompt" ? queued.replyToMessageId : undefined,
     44,
+  );
+  assert.equal(
+    queued?.kind === "prompt" && queued.content[0]?.type === "text"
+      ? queued.content[0].text
+      : "",
+    "[telegram|thread:Nimbus] Continue from button",
   );
   assert.equal(events.includes("dispatch"), true);
   assert.deepEqual(selectedMarkups, [
@@ -1786,7 +1849,7 @@ test("Routing runtime treats All menu commands as threaded target chooser", asyn
     );
     assert.equal(chooserMessages.length, 2);
     for (const chooser of chooserMessages) {
-      assert.match(chooser, /<b>🧵 Choose target thread<\/b>/);
+      assert.match(chooser, /<b>🧵 Choose target thread:<\/b>/);
       assert.match(chooser, /You used <code>\/(?:start|status)<\/code> from the <b>All<\/b> tab\./);
       assert.match(chooser, /Select the Pi thread that should handle it:/);
       assert.doesNotMatch(chooser, /<code>active<\/code>/);
@@ -3223,7 +3286,7 @@ test("Routing runtime keeps known-command unbound threads open with chooser", as
 
     assert.deepEqual(telegramQueueStore.getQueuedItems(), []);
     const chooser = events.find((event) => event.startsWith("interactive:"));
-    assert.match(chooser ?? "", /<b>🧵 Choose target thread<\/b>/);
+    assert.match(chooser ?? "", /<b>🧵 Choose target thread:<\/b>/);
     assert.match(chooser ?? "", /You used <code>\/status<\/code> from the <b>All<\/b> tab\./);
     assert.doesNotMatch(chooser ?? "", /New thread is not a Pi instance/);
     const options = events.find((event) => event.startsWith("interactive-options:"));

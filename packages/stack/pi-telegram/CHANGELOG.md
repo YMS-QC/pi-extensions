@@ -2,6 +2,28 @@
 
 > Each release keeps at most 8 outcome records of at most 512 characters.
 
+## 0.42.2: Telegram Comment Membrane
+
+- `Transport-Private HTML Comments`: Removes every assistant-authored `<!-- … -->` block from Telegram previews, active-turn finals, connected companion projections, direct sends, and Guest Mode regardless of Markdown position or owning extension; only recognized top-level comments activate actions, unclosed tails stay hidden, comment-only text plans send nothing, and the Pi terminal transcript remains unchanged.
+
+## 0.42.1: Prompt-Only Button Cells
+
+- `Prompt-Only CML Buttons`: Accepts `{|prompt}` and `{|prompt|selected_style}` as canonical button cells equivalent to prompt-only JSON, so established prompt fallback supplies both visible text and queued input without a separately authored label; empty one-atom cells, prompts, styles, and voice atoms still fail closed.
+
+## 0.42.0: Compact Action Grammar
+
+- `Adaptive Action Grammar`: Extracts the first semantically valid JSON or positional CML payload from noisy `telegram_button` and `telegram_voice` envelopes, tolerates bounded trailing commas and unmatched matrix noise, keeps malformed named JSON on the JSON path, and retains legacy attribute parsing as undocumented compatibility.
+- `Voice Action Cells`: Adds compact `{text}`, `{text|lang}`, and `{text|lang|rate}` voice actions while preserving JSON for multiline, named, and escape-heavy payloads; each voice comment remains one independent artifact and matrix-shaped voice payloads fail closed.
+- `Thread-Aware Buttons`: Tags prompts created by generated-button callbacks with the same resolved Telegram Thread label as ordinary inbound turns, preserving current local labels, persisted bindings, target routing, queue ordering, and callback selection behavior.
+- `Focused Agent Guidance`: Makes generated control surfaces proactively emit useful emoji-led prompt buttons, keeps Telegram action syntax under the bridge owner, and moves specialized delivery, configuration, diagnosis, layout, state, and capability guidance behind conditional references to reduce default context without dropping safety constraints.
+
+## 0.41.1: Focused Operator Status Hotfix
+
+- `Next Turn Feedback`: Replies one Pi-aligned fully bold abort notice to the aborted Telegram turn, falls back to the `/next` command for local work, preserves completed intermediate output, and suppresses pending aborted assistant text so one forced transition no longer produces a contradictory second reply.
+- `Status Telemetry`: Keeps the Tokens row compact with input/output totals and moves cache read/write plus the latest cache-hit rate into a dedicated Cache row.
+- `Reply Transcription`: Runs replied voice and other media through the inbound handler/provider pipeline and appends provenance-scoped outputs inside the reply context, including Guest Mode, instead of leaving quoted audio as an untranscribed attachment.
+- `Information Hierarchy`: Brings access-denial and Threaded Mode chooser headings back under the common fully bold emoji-led sentence/colon contract.
+
 ## 0.41.0: Connected Companion Presence
 
 - `Always-On Projection`: Treats authorized Telegram connection as the public-output boundary for local, autonomous, and unclassified Pi work, always delivering completed visible blocks in order instead of exposing an independent proactive-push opt-out.
