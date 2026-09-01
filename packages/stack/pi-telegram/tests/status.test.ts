@@ -1180,6 +1180,54 @@ test("Status HTML builder binds active model lookup", () => {
   });
   assert.match(html, /Status.*idle/s);
   assert.match(html, /Context.*0\.0%\/1\.0k/s);
+  assert.doesNotMatch(html, /<b>Tokens:<\/b>/s);
+});
+
+test("Status HTML mirrors Pi's token and latest cache hit footer telemetry", () => {
+  const buildStatusHtml = createTelegramStatusHtmlBuilder({
+    getActiveModel: () => ({ contextWindow: 1000 }),
+  });
+  const html = buildStatusHtml({
+    sessionManager: {
+      getEntries: () => [
+        {
+          type: "message",
+          message: {
+            role: "assistant",
+            usage: {
+              input: 100,
+              output: 20,
+              cacheRead: 900,
+              cacheWrite: 0,
+              cost: { total: 0 },
+            },
+          },
+        },
+        {
+          type: "message",
+          message: {
+            role: "assistant",
+            usage: {
+              input: 150,
+              output: 30,
+              cacheRead: 800,
+              cacheWrite: 50,
+              cost: { total: 0 },
+            },
+          },
+        },
+      ],
+    },
+    getContextUsage: () => ({ percent: 10, contextWindow: 1000 }),
+    isIdle: () => true,
+    modelRegistry: { isUsingOAuth: () => false },
+  });
+
+  assert.match(
+    html,
+    /<b>Tokens:<\/b> <code>↑250 ↓50 R1\.7k W50 CH80\.0%<\/code>.*<b>Context:<\/b>/s,
+  );
+  assert.doesNotMatch(html, /<b>Cache Hit:<\/b>/s);
 });
 
 test("Status HTML builder appends Threaded Mode bus role to status row", () => {

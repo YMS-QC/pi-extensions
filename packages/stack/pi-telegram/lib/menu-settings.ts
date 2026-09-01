@@ -21,7 +21,6 @@ import type { TelegramVoiceReplyMode } from "./voice.ts";
 export type TelegramSettingsMenuReplyMarkup = TelegramInlineKeyboardMarkup;
 
 export interface TelegramSettingsStateDeps {
-  isProactivePushEnabled: () => boolean;
   areDraftPreviewsEnabled: () => boolean;
   getAssistantRenderingMode: () => TelegramAssistantRenderingMode;
   getActivityVerbosity: () => TelegramActivityVerbosity;
@@ -32,7 +31,6 @@ export interface TelegramSettingsStateDeps {
 }
 
 export interface TelegramSettingsMutationDeps extends TelegramSettingsStateDeps {
-  setProactivePushEnabled: (enabled: boolean) => Promise<void>;
   setDraftPreviewsEnabled: (enabled: boolean) => Promise<void>;
   setAssistantRenderingMode: (
     mode: TelegramAssistantRenderingMode,
@@ -139,7 +137,6 @@ export interface TelegramSettingsMenuRuntimeDeps<
 export const SETTINGS_MENU_TITLE = "<b>⚙️ Settings:</b>";
 export const AUTOMATIC_THREAD_CLEANUP_SETTINGS_TITLE =
   "<b>🧹 Thread cleanup:</b>";
-export const PROACTIVE_PUSH_SETTINGS_TITLE = "<b>📌 Proactive push:</b>";
 export const DRAFT_PREVIEWS_SETTINGS_TITLE = "<b>📝 Draft previews:</b>";
 export const ASSISTANT_RENDERING_SETTINGS_TITLE =
   "<b>🧾 Assistant rendering:</b>";
@@ -178,19 +175,6 @@ export function buildAutomaticThreadCleanupSettingsText(
     "",
     "<code>-</code> <code>on</code> (default): delete the bound thread and release Telegram authority on graceful quit.",
     "<code>-</code> <code>off</code>: preserve the tab as a restart hint; manual <code>/telegram-disconnect</code> still confirms and deletes it.",
-  ].join("\n");
-}
-
-export function buildProactivePushSettingsText(
-  proactivePushEnabled: boolean,
-): string {
-  return [
-    `${PROACTIVE_PUSH_SETTINGS_TITLE} <code>${proactivePushEnabled ? "on" : "off"}</code>`,
-    "",
-    "Control whether public assistant output from local/autonomous work is projected to Telegram.",
-    "",
-    "<code>-</code> <code>on</code> (default): send each completed public block, including visible checkpoints and the final answer, while connected.",
-    "<code>-</code> <code>off</code>: keep local/autonomous assistant blocks in Pi; Telegram-originated replies still use their normal delivery path.",
   ].join("\n");
 }
 
@@ -265,7 +249,6 @@ export function buildTimeInjectionModeSettingsText(
 }
 
 export function buildTelegramSettingsMenuReplyMarkup(
-  proactivePushEnabled: boolean,
   draftPreviewsEnabled: boolean,
   assistantRenderingModeOrVoiceReplyMode:
     TelegramAssistantRenderingMode | TelegramVoiceReplyMode,
@@ -326,10 +309,6 @@ export function buildTelegramSettingsMenuReplyMarkup(
       callback_data: "settings:open:activity-verbosity",
     },
     {
-      text: `📌 Proactive push: ${proactivePushEnabled ? "on" : "off"}`,
-      callback_data: "settings:open:proactive",
-    },
-    {
       text: `🕒 Time injection: ${getTelegramSettingsStateValueLabel(timeInjectionMode)}`,
       callback_data: "settings:open:time-injection",
     },
@@ -362,7 +341,6 @@ export async function openTelegramSettingsMenu<
     state,
     buildTelegramSettingsMenuText(),
     buildTelegramSettingsMenuReplyMarkup(
-      deps.isProactivePushEnabled(),
       deps.areDraftPreviewsEnabled(),
       deps.getAssistantRenderingMode(),
       deps.getVoiceReplyMode(),
@@ -393,26 +371,6 @@ export function buildAutomaticThreadCleanupSettingsReplyMarkup(
         {
           text: enabled ? "⚫️ Off" : "🟡 Off",
           callback_data: "settings:set:automatic-thread-cleanup:off",
-        },
-      ],
-    ],
-  };
-}
-
-export function buildProactivePushSettingsReplyMarkup(
-  proactivePushEnabled: boolean,
-): TelegramSettingsMenuReplyMarkup {
-  return {
-    inline_keyboard: [
-      [{ text: "⬆️ Back", callback_data: "settings:list" }],
-      [
-        {
-          text: proactivePushEnabled ? "🟢 On" : "⚫️ On",
-          callback_data: "settings:set:proactive:on",
-        },
-        {
-          text: proactivePushEnabled ? "⚫️ Off" : "🟡 Off",
-          callback_data: "settings:set:proactive:off",
         },
       ],
     ],
@@ -521,7 +479,6 @@ export async function updateTelegramSettingsMenuMessage(
   await deps.updateSettingsMessage(
     buildTelegramSettingsMenuText(),
     buildTelegramSettingsMenuReplyMarkup(
-      deps.isProactivePushEnabled(),
       deps.areDraftPreviewsEnabled(),
       deps.getAssistantRenderingMode(),
       deps.getVoiceReplyMode(),
@@ -541,16 +498,6 @@ export async function updateAutomaticThreadCleanupSettingsMessage(
   await deps.updateSettingsMessage(
     buildAutomaticThreadCleanupSettingsText(enabled),
     buildAutomaticThreadCleanupSettingsReplyMarkup(enabled),
-  );
-}
-
-export async function updateProactivePushSettingsMessage(
-  deps: TelegramSettingsMenuCallbackDeps,
-): Promise<void> {
-  const proactivePushEnabled = deps.isProactivePushEnabled();
-  await deps.updateSettingsMessage(
-    buildProactivePushSettingsText(proactivePushEnabled),
-    buildProactivePushSettingsReplyMarkup(proactivePushEnabled),
   );
 }
 
@@ -621,9 +568,16 @@ export async function handleTelegramSettingsMenuCallbackAction(
     await deps.answerCallbackQuery(callbackQueryId);
     return true;
   }
-  if (data === "settings:open:proactive") {
-    await updateProactivePushSettingsMessage(deps);
-    await deps.answerCallbackQuery(callbackQueryId);
+  if (
+    data === "settings:open:proactive" ||
+    data === "settings:set:proactive:on" ||
+    data === "settings:set:proactive:off"
+  ) {
+    await updateTelegramSettingsMenuMessage(deps, deps.sectionRegistry);
+    await deps.answerCallbackQuery(
+      callbackQueryId,
+      "Public assistant output is always delivered while Telegram is connected.",
+    );
     return true;
   }
   if (
@@ -751,19 +705,6 @@ export async function handleTelegramSettingsMenuCallbackAction(
     );
     return true;
   }
-  if (
-    data === "settings:set:proactive:on" ||
-    data === "settings:set:proactive:off"
-  ) {
-    const enabled = data.endsWith(":on");
-    await deps.setProactivePushEnabled(enabled);
-    await updateProactivePushSettingsMessage(deps);
-    await deps.answerCallbackQuery(
-      callbackQueryId,
-      `Proactive push ${enabled ? "enabled" : "disabled"}`,
-    );
-    return true;
-  }
   await deps.answerCallbackQuery(callbackQueryId);
   return true;
 }
@@ -781,7 +722,6 @@ export function createTelegramSettingsMenuRuntime<
       return openTelegramSettingsMenu(
         {
           getModelMenuState: () => deps.getModelMenuState(chatId, ctx),
-          isProactivePushEnabled: deps.isProactivePushEnabled,
           areDraftPreviewsEnabled: deps.areDraftPreviewsEnabled,
           getAssistantRenderingMode: deps.getAssistantRenderingMode,
           getActivityVerbosity: deps.getActivityVerbosity,
@@ -805,7 +745,6 @@ export function createTelegramSettingsMenuRuntime<
       await deps.reloadConfig?.();
       return updateTelegramSettingsMenuMessage(
         {
-          isProactivePushEnabled: deps.isProactivePushEnabled,
           areDraftPreviewsEnabled: deps.areDraftPreviewsEnabled,
           getAssistantRenderingMode: deps.getAssistantRenderingMode,
           getActivityVerbosity: deps.getActivityVerbosity,
@@ -849,7 +788,6 @@ export function createTelegramSettingsMenuRuntime<
         deps.storeModelMenuState(state);
       }
       return handleTelegramSettingsMenuCallbackAction(query.id, query.data, {
-        isProactivePushEnabled: deps.isProactivePushEnabled,
         areDraftPreviewsEnabled: deps.areDraftPreviewsEnabled,
         getAssistantRenderingMode: deps.getAssistantRenderingMode,
         getActivityVerbosity: deps.getActivityVerbosity,
@@ -857,7 +795,6 @@ export function createTelegramSettingsMenuRuntime<
         isVoiceReplyModeConfigured: deps.isVoiceReplyModeConfigured,
         getTimeInjectionMode: deps.getTimeInjectionMode,
         isAutomaticThreadCleanupEnabled: deps.isAutomaticThreadCleanupEnabled,
-        setProactivePushEnabled: deps.setProactivePushEnabled,
         setDraftPreviewsEnabled: deps.setDraftPreviewsEnabled,
         setAssistantRenderingMode: deps.setAssistantRenderingMode,
         setActivityVerbosity: deps.setActivityVerbosity,

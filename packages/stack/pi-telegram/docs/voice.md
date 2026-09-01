@@ -1,6 +1,6 @@
 # Voice Integration
 
-Voice messages flow through an **inbound transcription → outbound voice reply** pipeline. This document describes the bridge's role in that pipeline; provider-specific mechanics (TTS/STT backends, voice IDs, languages) are owned by voice provider extensions. This is a first-class extension surface: one companion extension can provide STT fallbacks for inbound voice/audio files and TTS fallbacks for outbound Telegram voice replies without owning a second bot polling loop.
+Voice messages flow through an **inbound transcription → outbound voice reply** pipeline. This document describes the bridge's role in that pipeline; provider-specific mechanics (TTS/STT backends, voice IDs, languages) are owned by configured handler scripts or voice provider extensions. This is a first-class extension surface: one companion extension can provide STT fallbacks for inbound voice/audio files and TTS fallbacks for outbound Telegram voice replies without owning a second bot polling loop.
 
 ## Overview
 
@@ -18,7 +18,17 @@ Use the smallest path that fits the operator's available capabilities:
 2. **Companion extension:** Register programmatic STT/TTS providers when installation, provider-owned settings, lifecycle integration, or zero-config reuse justifies code.
 3. **Hybrid:** Keep explicit operator command templates first and let installed providers supply progressive fallbacks.
 
-pi-telegram does not catalog speech providers. Configuration agents should discover applicable Skills or trusted local executables, verify required environment variables by presence without exposing values, preserve unrelated `telegram.json` state, ensure TTS ends as OGG/Opus, and test each stage before the live Telegram path. `hidden` remains the safe and useful default: it disables only automatic voice replies, while explicit `telegram_voice` actions continue to use the configured synthesis pipeline.
+pi-telegram does not maintain a built-in or exhaustive speech-provider catalog. Configuration agents should discover applicable Skills or trusted local executables, verify required environment variables by presence without exposing values, preserve unrelated `telegram.json` state, ensure TTS ends as OGG/Opus, and test each stage before the live Telegram path. `hidden` remains the safe and useful default: it disables only automatic voice replies, while explicit `telegram_voice` actions continue to use the configured synthesis pipeline.
+
+### Ready-made command-template examples
+
+The public [`llblab/skills`](https://github.com/llblab/skills) repository provides three maintained Skills with standalone scripts that can be wired directly into `telegram.json`; no additional Pi extension or local inference engine is required:
+
+- [`groq-stt`](https://github.com/llblab/skills/tree/main/groq-stt) — Groq Whisper speech-to-text through `scripts/transcribe.sh`. It outputs plain transcript text and requires `GROQ_API_KEY` in the Pi process environment.
+- [`mistral-stt`](https://github.com/llblab/skills/tree/main/mistral-stt) — Mistral Voxtral speech-to-text through `scripts/transcribe.sh`. It outputs plain transcript text and requires `MISTRAL_API_KEY` in the Pi process environment.
+- [`edge-tts`](https://github.com/llblab/skills/tree/main/edge-tts) — Microsoft Edge neural text-to-speech through `scripts/say.sh`. It requires internet access but no account or API key and can write MP3 output for the outbound pipeline.
+
+The two hosted STT options avoid running a local transcription model and offer useful free-tier capacity after provider registration; provider limits and terms may change. Install or clone the Skill repository, verify the required API-key variable by presence without printing its value, and point the matching `inboundHandlers` template at the Skill's transcription script. For Edge TTS, point an `outboundHandlers` voice pipeline at `say.sh --file - --write-media {mp3}`, then convert `{mp3}` to `{ogg}` with ffmpeg as shown in [Outbound Voice Handlers](#outbound-voice-handlers), because Telegram native voice notes require OGG/Opus. Read each linked Skill's current `SKILL.md` for its exact CLI, defaults, dependencies, and optional language/model controls.
 
 ## Voice Detection
 

@@ -659,7 +659,6 @@ test("buildTelegramSettingsMenuReplyMarkup injects extension settings rows", asy
 
   const markup = buildTelegramSettingsMenuReplyMarkup(
     false,
-    false,
     "manual",
     "hidden",
     registry,
@@ -675,13 +674,12 @@ test("buildTelegramSettingsMenuReplyMarkup injects extension settings rows", asy
       "🧾 Rendering: rich",
       "👄 Voice reply: manual",
       "🔬 Activity: quiet",
-      "📌 Proactive push: off",
       "🕒 Time injection: hidden",
       "🧹 Thread cleanup: on",
       "🧪 Core (Alpha)",
       "🔧 Core (Beta)",
     ],
   );
+  assert.ok(rows[7][0].callback_data.startsWith("section:"));
   assert.ok(rows[8][0].callback_data.startsWith("section:"));
-  assert.ok(rows[9][0].callback_data.startsWith("section:"));
 });

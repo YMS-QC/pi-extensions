@@ -317,7 +317,6 @@ test("Activity binding composes bridge fanout and output ordering", async () => 
   const binding = createTelegramActivityBindingRuntime({
     generation: "generation-1",
     assistantOutput: {
-      isEnabled: () => true,
       authority: {
         getPreferredTarget: () => ({ chatId: 7, threadId: 42 }),
         getFallbackChatId: () => 7,
@@ -376,7 +375,6 @@ test("Assistant output binding composes admission, delivery, and observation", a
   const sent: string[] = [];
   const order: string[] = [];
   const binding = createTelegramAssistantOutputBindingRuntime({
-    isEnabled: () => true,
     authority: {
       getPreferredTarget: () => ({ chatId: 7, threadId: 42 }),
       getFallbackChatId: () => 7,
@@ -784,7 +782,6 @@ test("Lifecycle binding disconnects only graceful quit and preserves cleanup aft
     answerGuestQuery: async () => ({ ok: true }),
     sendGuestReply: async () => ({ ok: true }),
     finalizeMarkdownPreview: async () => undefined,
-    isProactivePushEnabled: () => false,
     canSendAgentActivity: () => false,
     updateStatus: () => {},
     recordRuntimeEvent: (
@@ -940,7 +937,6 @@ test("Lifecycle binding routes native typing, previews, and normalized activity"
     sendGuestReply: async () => ({ ok: true }),
     finalizeMarkdownPreview: async () => undefined,
     proactivePushTargetGetter: () => ({ chatId: 42, threadId: 8 }),
-    isProactivePushEnabled: () => false,
     canSendAgentActivity: () => true,
     updateStatus: () => {},
     recordRuntimeEvent: () => {},
@@ -993,8 +989,24 @@ test("Lifecycle binding routes native typing, previews, and normalized activity"
     {} as ExtensionContext,
   );
   activeTurn = false;
+  await getRequiredBindingHandler(harness.handlers, "agent_end")(
+    { type: "agent_end", messages: [] },
+    {} as ExtensionContext,
+  );
   await getRequiredBindingHandler(harness.handlers, "session_before_compact")(
     { type: "session_before_compact" },
+    {} as ExtensionContext,
+  );
+  await getRequiredBindingHandler(harness.handlers, "ui_prompt_start")(
+    { kind: "confirm", title: "Approve compaction?" },
+    {} as ExtensionContext,
+  );
+  await getRequiredBindingHandler(harness.handlers, "ui_prompt_end")(
+    {},
+    {} as ExtensionContext,
+  );
+  await getRequiredBindingHandler(harness.handlers, "session_compact")(
+    { type: "session_compact" },
     {} as ExtensionContext,
   );
 
@@ -1017,8 +1029,14 @@ test("Lifecycle binding routes native typing, previews, and normalized activity"
     "send:**🗜 Compaction started.**",
     "activity:compact-end:unknown",
     "send:**✅ Compaction completed.**",
+    "activity:agent-end",
     "activity:compact-start:unknown",
     "typing:42:8",
     "send:**🗜 Compaction started.**",
+    "activity:ui-start:confirm:Approve compaction?",
+    "activity:ui-end",
+    "typing:42:8",
+    "activity:compact-end:unknown",
+    "send:**✅ Compaction completed.**",
   ]);
 });

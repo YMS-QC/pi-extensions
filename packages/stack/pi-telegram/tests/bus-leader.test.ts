@@ -139,7 +139,7 @@ test("Bus leader preserves a binding through follower reload handoff", async () 
         body: {
           chat_id: 7,
           message_thread_id: 42,
-          text: "📡 Instance <b>Cedar</b> connected.",
+          text: "<b>📡 Instance <i>Cedar</i> connected.</b>",
           parse_mode: "HTML",
         },
       },
@@ -589,7 +589,7 @@ test("Bus leader follower target provisioner creates thread and announces connec
         body: {
           chat_id: 7,
           message_thread_id: 12,
-          text: "📡 Instance <b>Atlas</b> connected.",
+          text: "<b>📡 Instance <i>Atlas</i> connected.</b>",
           parse_mode: "HTML",
         },
       },
@@ -654,7 +654,7 @@ test("Bus leader follower target provisioner transfers a live session-reload tar
         body: {
           chat_id: 7,
           message_thread_id: 12,
-          text: "📡 Instance <b>Ember</b> connected.",
+          text: "<b>📡 Instance <i>Ember</i> connected.</b>",
           parse_mode: "HTML",
         },
       },
@@ -1253,7 +1253,7 @@ test("Bus leader target provisioner creates thread and announces connection", as
         body: {
           chat_id: 7,
           message_thread_id: 11,
-          text: "📡 Instance <b>Atlas</b> connected.",
+          text: "<b>📡 Instance <i>Atlas</i> connected.</b>",
           parse_mode: "HTML",
         },
       },
@@ -1290,7 +1290,7 @@ test("Bus leader builds connected lifecycle announcements with thread name befor
     }),
     {
       target: { chatId: 123, threadId: 45 },
-      text: "📡 Instance <b>Cedar</b> connected.",
+      text: "<b>📡 Instance <i>Cedar</i> connected.</b>",
       parseMode: "HTML",
     },
   );

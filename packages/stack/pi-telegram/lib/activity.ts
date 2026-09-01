@@ -741,7 +741,6 @@ export interface TelegramAssistantOutputRuntime {
 }
 
 export function createTelegramAssistantOutputRuntime<TAuthority = undefined>(deps: {
-  isEnabled: () => boolean;
   captureAuthority?: () => TAuthority;
   isAuthorityActive?: (authority: TAuthority) => boolean;
   canDeliver: (event: TelegramAssistantSegmentEvent) => boolean;
@@ -761,10 +760,9 @@ export function createTelegramAssistantOutputRuntime<TAuthority = undefined>(dep
   const admitted = new Set<string>();
   const isEligibleEvent = (event: TelegramAssistantSegmentEvent): boolean =>
     (event.source === "telegram" && event.placement === "intermediate") ||
-    ((event.source === "local" ||
-      event.source === "autonomous" ||
-      event.source === "unknown") &&
-      deps.isEnabled());
+    event.source === "local" ||
+    event.source === "autonomous" ||
+    event.source === "unknown";
 
   return {
     start() {

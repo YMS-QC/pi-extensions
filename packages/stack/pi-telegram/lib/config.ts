@@ -105,7 +105,6 @@ export interface TelegramConfig {
   assistant?: {
     draftPreviews?: boolean;
     rendering?: TelegramAssistantRenderingMode;
-    proactivePush?: boolean;
     activity?: TelegramActivityVerbosity;
     timeInjection?: TelegramTimeMode;
     /** @deprecated use activity */
@@ -454,10 +453,32 @@ function omitTelegramRootProfileFields(config: TelegramConfig): TelegramConfig {
   return sharedConfig;
 }
 
+function omitRetiredProactivePush(config: TelegramConfig): {
+  config: TelegramConfig;
+  changed: boolean;
+} {
+  const assistant = config.assistant as
+    | (NonNullable<TelegramConfig["assistant"]> & { proactivePush?: unknown })
+    | undefined;
+  if (!assistant || !Object.hasOwn(assistant, "proactivePush")) {
+    return { config, changed: false };
+  }
+  const { proactivePush: _proactivePush, ...remainingAssistant } = assistant;
+  const next = { ...config };
+  if (Object.keys(remainingAssistant).length > 0) {
+    next.assistant = remainingAssistant;
+  } else {
+    delete next.assistant;
+  }
+  return { config: next, changed: true };
+}
+
 export function normalizeTelegramDefaultProfileConfig(config: TelegramConfig): {
   config: TelegramConfig;
   changed: boolean;
 } {
+  const retiredProactivePush = omitRetiredProactivePush(config);
+  config = retiredProactivePush.config;
   const hasLegacyRootProfile = [
     "botToken",
     "botUsername",
@@ -465,7 +486,9 @@ export function normalizeTelegramDefaultProfileConfig(config: TelegramConfig): {
     "allowedUserId",
     "lastUpdateId",
   ].some((field) => Object.hasOwn(config, field));
-  if (!hasLegacyRootProfile) return { config, changed: false };
+  if (!hasLegacyRootProfile) {
+    return { config, changed: retiredProactivePush.changed };
+  }
   const canonicalProfile = config.profiles?.[TELEGRAM_DEFAULT_PROFILE_NAME];
   const legacyToken = config.botToken?.trim();
   if (Object.hasOwn(config, "botToken") && !legacyToken) {
@@ -709,27 +732,6 @@ export function createTelegramConfigStore(
       persistQueue = persist.catch(() => undefined);
       return persist;
     },
-  };
-}
-
-export function createTelegramProactivePushChecker(
-  configStore: Pick<TelegramConfigStore, "get">,
-): () => boolean {
-  return () => configStore.get().assistant?.proactivePush ?? true;
-}
-
-export function createTelegramProactivePushSetter(
-  configStore: TelegramMutableConfigStore,
-): (enabled: boolean) => Promise<void> {
-  return async (enabled) => {
-    await loadLatestTelegramConfig(configStore);
-    const current = configStore.get();
-    const config: TelegramConfig = {
-      ...current,
-      assistant: { ...current.assistant, proactivePush: enabled },
-    };
-    configStore.set(config);
-    await configStore.persist(config);
   };
 }
 
@@ -1019,8 +1021,6 @@ export function createTelegramConfigControls(
   configStore: TelegramMutableConfigStore,
 ) {
   return {
-    isProactivePushEnabled: createTelegramProactivePushChecker(configStore),
-    setProactivePushEnabled: createTelegramProactivePushSetter(configStore),
     areDraftPreviewsEnabled: createTelegramDraftPreviewsChecker(configStore),
     setDraftPreviewsEnabled: createTelegramDraftPreviewsSetter(configStore),
     getAssistantRenderingMode:

@@ -14,6 +14,7 @@ export interface TelegramUsageStats {
   totalCacheRead: number;
   totalCacheWrite: number;
   totalCost: number;
+  latestCacheHitRate?: number;
 }
 
 interface TelegramUsageMessage {
@@ -1473,6 +1474,9 @@ function collectUsageStats(ctx: TelegramStatusContext): TelegramUsageStats {
     stats.totalCacheRead += usage.cacheRead;
     stats.totalCacheWrite += usage.cacheWrite;
     stats.totalCost += usage.cost.total;
+    const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+    stats.latestCacheHitRate =
+      promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
   }
   return stats;
 }
@@ -1494,6 +1498,12 @@ function buildUsageSummary(stats: TelegramUsageStats): string | undefined {
     tokenParts.push(`R${formatTokens(stats.totalCacheRead)}`);
   if (stats.totalCacheWrite)
     tokenParts.push(`W${formatTokens(stats.totalCacheWrite)}`);
+  if (
+    (stats.totalCacheRead > 0 || stats.totalCacheWrite > 0) &&
+    stats.latestCacheHitRate !== undefined
+  ) {
+    tokenParts.push(`CH${stats.latestCacheHitRate.toFixed(1)}%`);
+  }
   return tokenParts.length > 0 ? tokenParts.join(" ") : undefined;
 }
 
@@ -1549,7 +1559,7 @@ export function buildStatusHtml(
   const usageSummary = buildUsageSummary(stats);
   const costSummary = buildCostSummary(stats, usesSubscription);
   if (usageSummary) {
-    lines.push(buildStatusRow("Usage", usageSummary));
+    lines.push(buildStatusRow("Tokens", usageSummary));
   }
   if (costSummary) {
     lines.push(buildStatusRow("Cost", costSummary));

@@ -3123,7 +3123,7 @@ test("Extension runtime keeps local queue progress but fences delivery after own
   }
 });
 
-test("Extension runtime keeps proactive local result disabled even with Telegram lock ownership", async () => {
+test("Extension runtime ignores the retired proactive opt-out while Telegram is connected", async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();
   const sentBodies: Array<Record<string, unknown>> = [];
   const { handlers, commands, pi, getActiveTools } = createRuntimePiHarness();
@@ -3164,18 +3164,51 @@ test("Extension runtime keeps proactive local result disabled even with Telegram
       "telegram_message",
     ]);
     await flushMicrotasks(20);
-    await handlers.get("agent_end")?.(
+    await handlers.get("input")?.(
+      { source: "interactive", text: "local request" },
+      ctx,
+    );
+    await handlers.get("agent_start")?.({}, ctx);
+    const assistantMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "Local **done**" }],
+    };
+    await handlers.get("message_update")?.(
       {
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "Local **done**" }],
-          },
-        ],
+        message: assistantMessage,
+        assistantMessageEvent: {
+          type: "text_end",
+          contentIndex: 0,
+          content: "Local **done**",
+          partial: assistantMessage,
+        },
       },
       ctx,
     );
-    assert.deepEqual(sentBodies, []);
+    await handlers.get("message_update")?.(
+      {
+        message: assistantMessage,
+        assistantMessageEvent: {
+          type: "done",
+          reason: "stop",
+          message: assistantMessage,
+        },
+      },
+      ctx,
+    );
+    await waitForCondition(() => sentBodies.length === 1);
+    assert.equal(sentBodies[0]?.chat_id, 77);
+    assert.match(
+      String(
+        (sentBodies[0]?.rich_message as { markdown?: string } | undefined)
+          ?.markdown ?? "",
+      ),
+      /Local \*\*done\*\*/,
+    );
+    await handlers.get("agent_end")?.(
+      { type: "agent_end", messages: [assistantMessage] },
+      ctx,
+    );
     await commands.get("telegram-disconnect")?.handler("", ctx);
     assert.deepEqual(getActiveTools(), ["read", "foreign_tool"]);
     assert.deepEqual(
@@ -4473,6 +4506,17 @@ test("Extension runtime delivers the final answer before observed auto-compactio
       },
       ctx,
     );
+    await handlers.get("agent_end")?.(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "done" }],
+          },
+        ],
+      },
+      ctx,
+    );
     await handlers.get("session_before_compact")?.(
       { signal: new AbortController().signal },
       ctx,
@@ -4494,17 +4538,7 @@ test("Extension runtime delivers the final answer before observed auto-compactio
       runtimeEvents.includes("dispatch:[telegram] queued during active turn"),
       false,
     );
-    await handlers.get("agent_end")?.(
-      {
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "done" }],
-          },
-        ],
-      },
-      ctx,
-    );
+    await handlers.get("agent_settled")?.({}, ctx);
     await waitForCondition(() =>
       runtimeEvents.includes("send:**✅ Compaction completed.**"),
     );

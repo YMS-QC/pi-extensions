@@ -363,11 +363,15 @@ test("Telegram config load atomically normalizes the default profile", async () 
     join(tmpdir(), "pi-telegram-default-profile-"),
   );
   const configPath = join(agentDir, "telegram.json");
-  await writeTelegramConfig(agentDir, configPath, {
-    botToken: "123:abc",
-    allowedUserId: 7,
-    assistant: { proactivePush: false },
-  });
+  await writeTelegramConfig(
+    agentDir,
+    configPath,
+    legacyConfig({
+      botToken: "123:abc",
+      allowedUserId: 7,
+      assistant: { proactivePush: false },
+    }),
+  );
   const store = createTelegramConfigStore({ agentDir, configPath });
 
   await store.load();
@@ -375,7 +379,6 @@ test("Telegram config load atomically normalizes the default profile", async () 
   assert.equal(store.getBotToken(), "123:abc");
   assert.equal(store.getAllowedUserId(), 7);
   assert.deepEqual(await readTelegramConfig(configPath), {
-    assistant: { proactivePush: false },
     profiles: {
       default: { botToken: "123:abc", allowedUserId: 7 },
     },
@@ -599,17 +602,17 @@ test("Telegram voice reply mode setter persists telegram.json", async () => {
   });
 });
 
-test("Telegram proactive push defaults on and reads only assistant.proactivePush", () => {
-  const store = createTelegramConfigStore({
-    initialConfig: { proactivePush: false } as unknown as TelegramConfig,
-  });
-  const controls = createTelegramConfigControls(store);
+test("Telegram config normalization removes the retired proactive push option", () => {
+  const normalized = normalizeTelegramDefaultProfileConfig(
+    legacyConfig({
+      assistant: { proactivePush: false, rendering: "html" },
+    }),
+  );
 
-  assert.equal(controls.isProactivePushEnabled(), true);
-  store.set({ assistant: { proactivePush: false } });
-  assert.equal(controls.isProactivePushEnabled(), false);
-  store.set({ assistant: { proactivePush: true } });
-  assert.equal(controls.isProactivePushEnabled(), true);
+  assert.equal(normalized.changed, true);
+  assert.deepEqual(normalized.config, {
+    assistant: { rendering: "html" },
+  });
 });
 
 test("Telegram settings setters reload before scoped writes to preserve shared config changes", async () => {
@@ -629,7 +632,6 @@ test("Telegram settings setters reload before scoped writes to preserve shared c
   assert.equal(controls.isAutomaticThreadCleanupEnabled(), true);
 
   await setVoiceMode("mirror");
-  await controls.setProactivePushEnabled(true);
   await controls.setDraftPreviewsEnabled(true);
   await controls.setAssistantRenderingMode("html");
   await controls.setActivityVerbosity("verbose");
@@ -645,7 +647,6 @@ test("Telegram settings setters reload before scoped writes to preserve shared c
     assistant: {
       draftPreviews: true,
       rendering: "html",
-      proactivePush: true,
       activity: "verbose",
     },
     voice: { replyMode: "mirror" },

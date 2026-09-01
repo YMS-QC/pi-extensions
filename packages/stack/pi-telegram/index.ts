@@ -548,7 +548,6 @@ export default function (pi: Pi.ExtensionAPI) {
   } = Bindings.createTelegramActivityBindingRuntime({
     generation: deliveryGenerationSeed,
     assistantOutput: {
-      isEnabled: configControls.isProactivePushEnabled,
       authority: {
         getPreferredTarget: proactivePushTargetGetter,
         getFallbackChatId: proactivePushChatIdGetter,

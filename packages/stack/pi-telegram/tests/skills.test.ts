@@ -108,13 +108,13 @@ test("Telegram extension contributes all bundled skills", async () => {
   );
   assert.match(
     generatedSurface,
-    /Default to one full-width button per row.*genuine peers.*narrow phone-width chat/su,
+    /Default to one full-width button per row.*top-level cells.*without wrapping them in a nested row array.*roughly no more than 15 visible characters.*not a request to mechanically count.*truncation is plausible.*top-level vertical buttons/su,
   );
   assert.match(generatedSurface, /1 → 2 → 4 → 1 → 2/u);
   assert.match(generatedSurface, /never pad a row.*no-op controls/su);
   assert.match(
     generatedSurface,
-    /two columns as an earned compact mode.*one emoji plus roughly two average-length words.*own row/su,
+    /two columns as an earned compact exception, never the default.*roughly 15 visible characters or fewer.*Do not count mechanically.*ellipsis risk.*top-level row/su,
   );
   assert.match(
     generatedSurface,
@@ -129,7 +129,15 @@ test("Telegram extension contributes all bundled skills", async () => {
   assert.match(generatedSurface, /Never shorten necessary wording/u);
   assert.match(
     generatedSurface,
-    /explicit `label` over exposing a long prompt.*Emoji are explicitly allowed and encouraged.*consistent semantic marker/su,
+    /Every generated human-readable action label must start with the most semantically appropriate emoji.*one ASCII space.*required design step/su,
+  );
+  assert.match(
+    generatedSurface,
+    /label and prompt are intentionally identical.*same emoji-prefixed value/su,
+  );
+  assert.match(
+    generatedSurface,
+    /emoji-free text label remains a transport-compatible fallback only when no honest semantic emoji.*convenience, label pressure, or uncertainty.*not sufficient/su,
   );
   assert.match(
     generatedSurface,

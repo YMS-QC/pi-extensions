@@ -252,18 +252,23 @@ test("Activity normalizer exposes coalesced UI prompt waiting boundaries", async
     received.map((event) => event.type),
     ["agent-start", "ui-prompt-start", "ui-prompt-end", "agent-settled"],
   );
-  assert.deepEqual(
-    received.find((event) => event.type === "ui-prompt-start"),
-    {
-      type: "ui-prompt-start",
-      kind: "confirm",
-      title: "Approve?",
-      activityId: "ui-prompt-boundary:1",
-      sequence: 2,
-      source: "local",
-      timestamp: received[0]?.timestamp,
-    },
+  const agentStart = received[0];
+  const promptStart = received.find(
+    (event) => event.type === "ui-prompt-start",
   );
+  assert.ok(agentStart);
+  assert.ok(promptStart);
+  const { timestamp, ...promptStartWithoutTimestamp } = promptStart;
+  assert.deepEqual(promptStartWithoutTimestamp, {
+    type: "ui-prompt-start",
+    kind: "confirm",
+    title: "Approve?",
+    activityId: "ui-prompt-boundary:1",
+    sequence: 2,
+    source: "local",
+  });
+  assert.equal(typeof timestamp, "number");
+  assert.ok(timestamp >= agentStart.timestamp);
 });
 
 test("Activity normalizer exposes completed public blocks without reasoning or tools", async () => {
@@ -670,12 +675,10 @@ function assistantSegment(
   };
 }
 
-test("Assistant output projection admits public local blocks once and in order", async () => {
-  let enabled = true;
+test("Assistant output projection admits all public local blocks once and in order", async () => {
   const sent: string[] = [];
   const failures: string[] = [];
   const runtime = createTelegramAssistantOutputRuntime({
-    isEnabled: () => enabled,
     canDeliver: () => true,
     send: async (event) => {
       if (event.sequence === 6) throw new Error("failed");
@@ -703,7 +706,6 @@ test("Assistant output projection admits public local blocks once and in order",
   runtime.accept(assistantSegment(7, { source: "local" }));
   runtime.accept(assistantSegment(8, { source: "unknown" }));
   await runtime.waitForIdle();
-  enabled = false;
   runtime.accept(assistantSegment(9));
   runtime.accept(assistantSegment(10, { source: "unknown" }));
   runtime.accept(
@@ -715,6 +717,8 @@ test("Assistant output projection admits public local blocks once and in order",
     "segment-2",
     "segment-7",
     "segment-8",
+    "segment-9",
+    "segment-10",
     "segment-11",
   ]);
   assert.deepEqual(failures, ["failed"]);
@@ -742,7 +746,6 @@ test("Assistant output projection preserves follower order and admission authori
     },
   });
   const runtime = createTelegramAssistantOutputRuntime({
-    isEnabled: () => true,
     captureAuthority: () => authority,
     isAuthorityActive: (admitted) => admitted === authority,
     canDeliver: () => true,
@@ -897,7 +900,6 @@ test("Assistant output projection drops queued work after generation stop", asyn
   });
   const sent: number[] = [];
   const runtime = createTelegramAssistantOutputRuntime({
-    isEnabled: () => true,
     canDeliver: () => true,
     send: async (event) => {
       sent.push(event.sequence);

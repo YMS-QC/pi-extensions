@@ -16,8 +16,6 @@ import {
 } from "../lib/config.ts";
 import { createTelegramQueueMenuRuntime } from "../lib/menu-queue.ts";
 import {
-  buildProactivePushSettingsReplyMarkup,
-  buildProactivePushSettingsText,
   buildTelegramSettingsMenuReplyMarkup,
   buildTimeInjectionModeSettingsReplyMarkup,
   buildTimeInjectionModeSettingsText,
@@ -2299,33 +2297,10 @@ test("Section callback actions preserve callback thread target", async () => {
   ]);
 });
 
-test("Settings menu labels proactive push with state text", () => {
-  assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(true, false, "manual", "hidden")
-      .inline_keyboard[5],
-    [
-      {
-        text: "📌 Proactive push: on",
-        callback_data: "settings:open:proactive",
-      },
-    ],
-  );
-  assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(false, false, "manual", "hidden")
-      .inline_keyboard[5],
-    [
-      {
-        text: "📌 Proactive push: off",
-        callback_data: "settings:open:proactive",
-      },
-    ],
-  );
-});
-
 test("Settings menu exposes time injection mode selection", () => {
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(false, false, "manual", "hidden")
-      .inline_keyboard[6],
+    buildTelegramSettingsMenuReplyMarkup(false, "manual", "hidden")
+      .inline_keyboard[5],
     [
       {
         text: "🕒 Time injection: hidden",
@@ -2334,8 +2309,8 @@ test("Settings menu exposes time injection mode selection", () => {
     ],
   );
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(false, false, "manual", "interval")
-      .inline_keyboard[6],
+    buildTelegramSettingsMenuReplyMarkup(false, "manual", "interval")
+      .inline_keyboard[5],
     [
       {
         text: "🕒 Time injection: interval",
@@ -2375,7 +2350,6 @@ test("Settings menu marks voice mode selection with model-style dot", () => {
   assert.deepEqual(
     buildTelegramSettingsMenuReplyMarkup(
       false,
-      false,
       "manual",
       "hidden",
       undefined,
@@ -2389,7 +2363,7 @@ test("Settings menu marks voice mode selection with model-style dot", () => {
     ],
   );
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(false, false, "always", "hidden")
+    buildTelegramSettingsMenuReplyMarkup(false, "always", "hidden")
       .inline_keyboard[3],
     [
       {
@@ -2428,7 +2402,6 @@ test("Settings menu rehydrates expired state before persisting and rendering voi
     answerCallbackQuery: async (_id, text) => {
       events.push(`answer:${text ?? ""}`);
     },
-    isProactivePushEnabled: () => false,
     areDraftPreviewsEnabled: () => false,
     getAssistantRenderingMode: () => "rich" as const,
     getActivityVerbosity: () => "quiet" as const,
@@ -2436,7 +2409,6 @@ test("Settings menu rehydrates expired state before persisting and rendering voi
     getVoiceReplyMode: () => mode ?? "manual",
     isVoiceReplyModeConfigured: () => configured,
     isAutomaticThreadCleanupEnabled: () => true,
-    setProactivePushEnabled: async () => {},
     setDraftPreviewsEnabled: async () => {},
     setAssistantRenderingMode: async () => {},
     setActivityVerbosity: async () => {},
@@ -2522,7 +2494,6 @@ test("Settings activity callback persists through the real config store while ag
     answerCallbackQuery: async (_id, text) => {
       events.push(`answer:${text ?? ""}`);
     },
-    isProactivePushEnabled: controls.isProactivePushEnabled,
     areDraftPreviewsEnabled: controls.areDraftPreviewsEnabled,
     getAssistantRenderingMode: controls.getAssistantRenderingMode,
     getActivityVerbosity: controls.getActivityVerbosity,
@@ -2530,7 +2501,6 @@ test("Settings activity callback persists through the real config store while ag
     getVoiceReplyMode: controls.getVoiceReplyMode,
     isVoiceReplyModeConfigured: controls.isVoiceReplyModeConfigured,
     isAutomaticThreadCleanupEnabled: controls.isAutomaticThreadCleanupEnabled,
-    setProactivePushEnabled: controls.setProactivePushEnabled,
     setDraftPreviewsEnabled: controls.setDraftPreviewsEnabled,
     setAssistantRenderingMode: controls.setAssistantRenderingMode,
     setActivityVerbosity: controls.setActivityVerbosity,
@@ -2570,32 +2540,11 @@ test("Settings activity callback persists through the real config store while ag
 
 test("Settings submenu headings include current values", () => {
   assert.match(
-    buildProactivePushSettingsText(true),
-    /^<b>📌 Proactive push:<\/b> <code>on<\/code>/,
-  );
-  assert.match(
     buildTimeInjectionModeSettingsText("interval"),
     /^<b>🕒 Time injection mode:<\/b> <code>interval<\/code>/,
   );
   assert.match(
     buildVoiceReplyModeSettingsText("manual", false),
     /^<b>👄 Voice reply mode:<\/b> <code>manual<\/code>/,
-  );
-});
-
-test("Settings menu marks one-line on/off checkbox controls symmetrically", () => {
-  assert.deepEqual(
-    buildProactivePushSettingsReplyMarkup(true).inline_keyboard[1],
-    [
-      { text: "🟢 On", callback_data: "settings:set:proactive:on" },
-      { text: "⚫️ Off", callback_data: "settings:set:proactive:off" },
-    ],
-  );
-  assert.deepEqual(
-    buildProactivePushSettingsReplyMarkup(false).inline_keyboard[1],
-    [
-      { text: "⚫️ On", callback_data: "settings:set:proactive:on" },
-      { text: "🟡 Off", callback_data: "settings:set:proactive:off" },
-    ],
   );
 });

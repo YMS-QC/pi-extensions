@@ -15,8 +15,6 @@ import {
   buildAutomaticThreadCleanupSettingsText,
   buildDraftPreviewsSettingsReplyMarkup,
   buildDraftPreviewsSettingsText,
-  buildProactivePushSettingsReplyMarkup,
-  buildProactivePushSettingsText,
   buildTelegramSettingsMenuReplyMarkup,
   buildTelegramSettingsMenuText,
   buildTimeInjectionModeSettingsReplyMarkup,
@@ -48,10 +46,6 @@ test("Settings descriptions follow visible control order", () => {
     [
       buildAutomaticThreadCleanupSettingsText(true),
       buildAutomaticThreadCleanupSettingsReplyMarkup(true),
-    ],
-    [
-      buildProactivePushSettingsText(true),
-      buildProactivePushSettingsReplyMarkup(true),
     ],
     [
       buildDraftPreviewsSettingsText(false),
@@ -87,7 +81,6 @@ test("Settings menu text and reply markup expose built-in controls", () => {
   assert.equal(buildTelegramSettingsMenuText(), "<b>⚙️ Settings:</b>");
 
   const markup = buildTelegramSettingsMenuReplyMarkup(
-    true,
     false,
     "manual",
     "hidden",
@@ -103,7 +96,6 @@ test("Settings menu text and reply markup expose built-in controls", () => {
       "settings:open:assistant-rendering",
       "settings:open:voice-reply",
       "settings:open:activity-verbosity",
-      "settings:open:proactive",
       "settings:open:time-injection",
       "settings:open:automatic-thread-cleanup",
     ],
@@ -118,9 +110,8 @@ test("Settings menu text and reply markup expose built-in controls", () => {
     "👄 Voice reply: manual",
   );
   assert.equal(markup.inline_keyboard[4]?.[0]?.text, "🔬 Activity: quiet");
-  assert.equal(markup.inline_keyboard[5]?.[0]?.text, "📌 Proactive push: on");
-  assert.equal(markup.inline_keyboard[6]?.[0]?.text, "🕒 Time injection: hidden");
-  assert.equal(markup.inline_keyboard[7]?.[0]?.text, "🧹 Thread cleanup: on");
+  assert.equal(markup.inline_keyboard[5]?.[0]?.text, "🕒 Time injection: hidden");
+  assert.equal(markup.inline_keyboard[6]?.[0]?.text, "🧹 Thread cleanup: on");
 });
 
 test("Settings detail markups show active values", () => {
@@ -135,11 +126,6 @@ test("Settings detail markups show active values", () => {
       ?.text,
     "🟡 Off",
   );
-  const proactiveText = buildProactivePushSettingsText(true);
-  assert.match(proactiveText, /<code>on<\/code>/);
-  assert.match(proactiveText, /<code>off<\/code>:/);
-  assert.match(proactiveText, /<code>on<\/code> \(default\):/);
-  assert.match(proactiveText, /visible checkpoints and the final answer/);
   assert.match(buildDraftPreviewsSettingsText(false), /<code>off<\/code>/);
   assert.equal(
     buildDraftPreviewsSettingsReplyMarkup(true).inline_keyboard[1]?.[0]?.text,
@@ -153,10 +139,6 @@ test("Settings detail markups show active values", () => {
     buildAssistantRenderingSettingsReplyMarkup("rich").inline_keyboard[1]?.[0]
       ?.text,
     "🟢 rich",
-  );
-  assert.equal(
-    buildProactivePushSettingsReplyMarkup(false).inline_keyboard[1]?.[1]?.text,
-    "🟡 Off",
   );
   assert.equal(
     buildTimeInjectionModeSettingsReplyMarkup("interval")
@@ -191,10 +173,9 @@ test("Activity settings expose quiet, thinking, tools, and verbose", () => {
   ]);
 });
 
-test("Settings callback action mutates voice, time, and proactive settings", async () => {
+test("Settings callback action mutates live settings and retires stale proactive controls", async () => {
   const calls: string[] = [];
   const deps = {
-    isProactivePushEnabled: () => false,
     getVoiceReplyMode: () => "manual" as const,
     isVoiceReplyModeConfigured: () => true,
     getTimeInjectionMode: () => "hidden" as const,
@@ -202,9 +183,6 @@ test("Settings callback action mutates voice, time, and proactive settings", asy
     areDraftPreviewsEnabled: () => false,
     getAssistantRenderingMode: () => "rich" as const,
     getActivityVerbosity: () => "quiet" as const,
-    setProactivePushEnabled: async (enabled: boolean) => {
-      calls.push(`proactive:${enabled}`);
-    },
     setDraftPreviewsEnabled: async (enabled: boolean) => {
       calls.push(`draft-previews:${enabled}`);
     },
@@ -312,9 +290,8 @@ test("Settings callback action mutates voice, time, and proactive settings", asy
     "activity:verbose",
     "update:<b>🔬 Activity:</b> <code>quiet</code>",
     "answer:Activity: verbose",
-    "proactive:true",
-    "update:<b>📌 Proactive push:</b> <code>off</code>",
-    "answer:Proactive push enabled",
+    "update:<b>⚙️ Settings:</b>",
+    "answer:Public assistant output is always delivered while Telegram is connected.",
     "automatic-thread-cleanup:false",
     "update:<b>🧹 Thread cleanup:</b> <code>on</code>",
     "answer:Thread cleanup disabled",
@@ -338,7 +315,6 @@ test("Settings runtime opens menus and rehydrates stale callback state", async (
     reloadConfig: async () => {
       calls.push("reload-config");
     },
-    isProactivePushEnabled: () => true,
     getVoiceReplyMode: () => "manual",
     isVoiceReplyModeConfigured: () => true,
     getTimeInjectionMode: () => "hidden",
@@ -346,9 +322,6 @@ test("Settings runtime opens menus and rehydrates stale callback state", async (
     areDraftPreviewsEnabled: () => false,
     getAssistantRenderingMode: () => "rich",
     getActivityVerbosity: () => "verbose",
-    setProactivePushEnabled: async (enabled) => {
-      calls.push(`proactive:${enabled}`);
-    },
     setDraftPreviewsEnabled: async (enabled) => {
       calls.push(`draft-previews:${enabled}`);
     },

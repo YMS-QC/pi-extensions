@@ -337,7 +337,6 @@ export interface TelegramAssistantOutputBindingRuntime<TTransportStamp> {
 export function createTelegramAssistantOutputBindingRuntime<
   TTransportStamp,
 >(deps: {
-  isEnabled: () => boolean;
   authority: {
     getPreferredTarget: () =>
       | OutboundAttachments.TelegramQueuedOutboundAttachmentTurnView["target"]
@@ -364,7 +363,6 @@ export function createTelegramAssistantOutputBindingRuntime<
       deps.sender,
     );
   const runtime = Activity.createTelegramAssistantOutputRuntime({
-    isEnabled: deps.isEnabled,
     ...authority,
     async send(event, authority, isAuthorityActive) {
       await deps.waitForActivityIdle?.();
@@ -1030,7 +1028,7 @@ export function registerTelegramLifecycleRuntimeHooks({
     });
   };
   let observedAutomaticCompaction = false;
-  let agentRunActive = false;
+  let agentWorkActive = false;
   let terminalAssistantMessagePendingDelivery = false;
   const deferredAutomaticCompactionNotices: string[] = [];
   const sendCompactionNotice = async (text: string): Promise<void> => {
@@ -1098,7 +1096,7 @@ export function registerTelegramLifecycleRuntimeHooks({
       activityVerbosityRuntime?.reset();
       assistantOutputRuntime.stop();
       observedAutomaticCompaction = false;
-      agentRunActive = false;
+      agentWorkActive = false;
       terminalAssistantMessagePendingDelivery = false;
       uiPromptActive = false;
       deferredAutomaticCompactionNotices.length = 0;
@@ -1123,10 +1121,7 @@ export function registerTelegramLifecycleRuntimeHooks({
       activityRuntime.onCompactionStart(Pi.getSessionCompactionReason(event));
       compactionObserver.onSessionBeforeCompact(event, ctx);
       if (shouldNotify) {
-        if (
-          activeTurnRuntime.has() &&
-          terminalAssistantMessagePendingDelivery
-        ) {
+        if (terminalAssistantMessagePendingDelivery) {
           deferredAutomaticCompactionNotices.push(
             Commands.TELEGRAM_COMPACTION_STARTED_MARKDOWN,
           );
@@ -1161,8 +1156,7 @@ export function registerTelegramLifecycleRuntimeHooks({
       const shouldNotify = observedAutomaticCompaction;
       const deferredNotices = deferredAutomaticCompactionNotices.splice(0);
       const shouldDefer =
-        deferredNotices.length > 0 ||
-        (activeTurnRuntime.has() && terminalAssistantMessagePendingDelivery);
+        deferredNotices.length > 0 || terminalAssistantMessagePendingDelivery;
       compactionObserver.onSessionCompactFailed(event, ctx);
       if (!shouldNotify) return;
       const notice = event.aborted
@@ -1176,7 +1170,7 @@ export function registerTelegramLifecycleRuntimeHooks({
     },
     async onAgentStart(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
-      agentRunActive = true;
+      agentWorkActive = true;
       terminalAssistantMessagePendingDelivery = false;
       await agentStartWithDedupReset(event, ctx);
       activityRuntime.onAgentStart(activeTurnRuntime.get()?.target);
@@ -1241,24 +1235,26 @@ export function registerTelegramLifecycleRuntimeHooks({
       if (!isSessionContextActive(ctx)) return;
       uiPromptActive = false;
       activityRuntime.onUiPromptEnd();
-      if (agentRunActive) startAgentActivityTypingLoop(ctx);
+      if (agentWorkActive || lifecycle.isCompactionInProgress()) {
+        startAgentActivityTypingLoop(ctx);
+      }
       updateStatus(ctx);
     },
     async onAgentEnd(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
-      agentRunActive = false;
       activityRuntime.onAgentEnd();
       await agentLifecycleHooks.onAgentEnd(event, ctx);
+    },
+    async onAgentSettled(event, ctx) {
+      if (!isSessionContextActive(ctx)) return;
+      await agentLifecycleHooks.onAgentSettled(event, ctx);
       if (deferredAutomaticCompactionNotices.length > 0) {
         await waitForActiveTurnDelivery();
         if (!isSessionContextActive(ctx)) return;
         await flushDeferredAutomaticCompactionNotices();
       }
       terminalAssistantMessagePendingDelivery = false;
-    },
-    async onAgentSettled(event, ctx) {
-      if (!isSessionContextActive(ctx)) return;
-      await agentLifecycleHooks.onAgentSettled(event, ctx);
+      agentWorkActive = false;
       activityRuntime.onAgentSettled();
       modelContextAvailabilityRuntime.reconcile();
     },

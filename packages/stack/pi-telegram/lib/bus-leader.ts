@@ -335,7 +335,7 @@ export function createTelegramBusInstanceLifecycleAnnouncement(input: {
 }): TelegramBusFollowerLifecycleAnnouncement {
   return {
     target: { ...input.target },
-    text: `📡 Instance <b>${formatTelegramBusInstanceLabel(input)}</b> ${input.state}.`,
+    text: `<b>📡 Instance <i>${formatTelegramBusInstanceLabel(input)}</i> ${input.state}.</b>`,
     parseMode: "HTML",
   };
 }

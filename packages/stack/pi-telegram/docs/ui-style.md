@@ -32,7 +32,6 @@ Use emoji as stable semantic markers, not decoration. Emoji carry transportable 
 | `🧩` | Extension-provided surface | Extension command examples, extension section examples | Companion extensions may choose their own emoji, but `🧩` means generic extension/plugin. |
 | `👄` | Voice reply policy | Voice reply settings row and detail card | Not a generic audio attachment marker. |
 | `🕒` | Time injection / wall-clock context | Time injection settings row and detail card | Clock-face marker with hands; not a generic duration/progress marker. |
-| `📌` | Proactive push / pinned behavior | Proactive push settings row and detail card | Not generic active/selected state. |
 | `🔬` | Activity / technical detail | Activity settings row and detail card | Chooses quiet, thinking, tools, or verbose bridge activity; not a generic diagnostics marker. |
 | `🧠` | Model thinking controls | Thinking menus and status rows | Thinking activity quotes omit this icon and their header entirely to minimize chat height. |
 | `📎` | Attachment | Attachment summaries, queue rows for attachment-only turns | Not for thread binding. |
@@ -138,7 +137,6 @@ Rules:
 Examples:
 
 - `🟢 Active` — model detail, navigates back to model list
-- `📌 Proactive push: On` — settings row, opens the toggle submenu
 - `👄 Voice reply: Mirror` — settings row, opens the option list
 
 ## Boolean Toggles
@@ -199,7 +197,7 @@ Examples:
 
 ## Generated Prompt Buttons
 
-A button-only assistant reply uses the standard Rich Markdown heading `☑️ **Choose an option:**`: semantic icon first, one space, bold heading text, and a final colon. Assistant-generated prompt buttons use the default app style before selection. After queue admission, edit only the selected button to its agent-configured `selected_style`: `primary` (default/blue), `success` (green), or `danger` (red). Preserve its agent-authored text and emoji, leave other choices at their default style, and always queue the selected prompt regardless of color. The callback acknowledgement remains the compatibility fallback when a client does not render button styles.
+A button-only assistant reply uses the standard Rich Markdown heading `☑️ **Choose an option:**`: semantic icon first, one space, bold heading text, and a final colon. Every generated human-readable action label starts with the most semantically appropriate emoji, one ASCII space, then concise action text. Emoji selection is part of authoring the control, including compact label-equals-prompt forms. Emoji-free text remains a syntax-compatible fallback only when no honest semantic marker exists after considering the action, domain, and state—not merely for convenience or label pressure; genuine coordinate and symbolic spatial controls retain their established grammar. Generated non-spatial controls default to vertical full-width buttons represented as top-level matrix cells. Nested row arrays are a compact-peer exception only when every label is unmistakably short—roughly 15 visible characters or fewer including emoji and space; this is a judgment heuristic rather than a mechanical count, and any plausible ellipsis or wrapping risk returns the controls to vertical rows. Assistant-generated prompt buttons use the default app style before selection. After queue admission, edit only the selected button to its agent-configured `selected_style`: `primary` (default/blue), `success` (green), or `danger` (red). Preserve its agent-authored text and emoji, leave other choices at their default style, and always queue the selected prompt regardless of color. The callback acknowledgement remains the compatibility fallback when a client does not render button styles.
 
 ## Navigation
 
@@ -225,8 +223,9 @@ Message cards and standalone informational notices sent by the bot should start 
 Rules:
 
 - Start with a bold heading or, for dialogs, a bold question.
-- Format standalone notices as one fully bold line: relevant emoji, one space, concise sentence, and terminal period or colon.
-- Apply the same hierarchy to success, progress, empty, busy, unavailable, cancellation, and failure notices; do not bold only a fragment of a standalone notice.
+- Format standalone notices as one fully bold line: relevant emoji, one space, concise sentence, and terminal period. Menu or chooser headings use the same fully bold form but end in a colon when controls or detail follow.
+- Keep the emoji and complete sentence or heading inside the single bold span; do not bold only a fragment. A material name or phrase may receive nested italic emphasis without breaking the outer bold hierarchy—for example `<b>📡 Instance <i>Cedar</i> connected.</b>`.
+- Apply the same hierarchy to success, progress, empty, busy, unavailable, cancellation, and failure notices.
 - Callback alerts remain plain text because Telegram does not support rich text there, but still keep the relevant emoji and concise sentence.
 - Setting detail cards may include an emoji in the heading, then a colon and the current value in `<code>`.
 - Explain what the setting does and what the options mean only as much as needed.

@@ -242,7 +242,7 @@ The Delivery API independently serializes concrete Telegram operations per targe
 
 ### Core assistant-output projection
 
-Activity's built-in assistant-output projection uses the same normalized `assistant-segment` boundary exposed to public handlers. For `telegram` activity it always projects complete `intermediate` commentary to the immutable originating target, while final and terminal-partial segments remain with active-turn settlement. For `local`, `autonomous`, or unclassified extension follow-up activity, `assistant.proactivePush` enables projection of every completed public block, including intermediate commentary/checkpoints and the final block. This closes actor-follow-up delivery without reclassifying it as direct user input. It never projects text token deltas, reasoning events, tool events or payloads, or empty text.
+Activity's built-in assistant-output projection uses the same normalized `assistant-segment` boundary exposed to public handlers. For `telegram` activity it always projects complete `intermediate` commentary to the immutable originating target, while final and terminal-partial segments remain with active-turn settlement. For `local`, `autonomous`, or unclassified extension follow-up activity, every completed public block—including intermediate commentary/checkpoints and the final block—is projected whenever this Pi instance retains authorized connected transport. This closes actor-follow-up delivery without reclassifying it as direct user input, and the connected companion contract has no projection opt-out. It never projects text token deltas, reasoning events, tool events or payloads, or empty text.
 
 The projection does not delay Activity dispatch or Pi lifecycle. Its ordered admission tail deduplicates normalized event identity, while existing routing and outbound owners revalidate the immutable admission-time target, profile/token transport generation, direct leader epoch or follower registration generation, and session generation immediately before each send. Active-turn final delivery waits for admitted commentary inside its existing background task. A replacement or stale owner drops queued work rather than rerouting it, and an already-started non-idempotent Bot API mutation follows the normal `commit-unknown` no-replay contract.
 
@@ -257,9 +257,9 @@ The bridge maps Pi hooks as follows:
 - `message_update.assistantMessageEvent`: normalize text/reasoning/provider boundaries.
 - `tool_execution_start/update/end`: emit executed tool events.
 - `session_before_compact` / `session_compact` / `session_compact_failed`: emit successful compaction boundaries, abandon failed or cancelled work immediately, and preserve activity identity across retry compaction. Mid-run threshold compaction stays between tool results and the next assistant response, while terminal assistant output awaiting transport keeps later notices behind its final reply. A missing or unrecognized reason maps to `unknown` rather than guessing.
-- `ui_prompt_start` / `ui_prompt_end`: emit one coalesced waiting span for extension-owned local UI, pause Telegram typing while Pi waits for the operator, and resume active-turn typing when the prompt closes.
-- `agent_end`: emit low-level run completion but keep identity alive for retry/follow-up work.
-- `agent_settled`: emit terminal settlement, flush pending terminal segments, and release activity identity.
+- `ui_prompt_start` / `ui_prompt_end`: emit one coalesced waiting span for extension-owned local UI, pause Telegram typing while Pi waits for the operator, and resume typing when the prompt closes if agent or compaction work remains unsettled.
+- `agent_end`: emit low-level run completion but keep identity and connected work presence alive for retry, compaction, or follow-up work.
+- `agent_settled`: emit terminal settlement, flush pending terminal segments, release activity identity, and end agent-owned connected work presence.
 - `session_shutdown`: stop dispatch, clear pending normalization state, and invalidate delivery generation through the existing delivery lifecycle.
 
 ## Diagnostics

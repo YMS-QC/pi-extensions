@@ -2,6 +2,17 @@
 
 > Each release keeps at most 8 outcome records of at most 512 characters.
 
+## 0.41.0: Connected Companion Presence
+
+- `Always-On Projection`: Treats authorized Telegram connection as the public-output boundary for local, autonomous, and unclassified Pi work, always delivering completed visible blocks in order instead of exposing an independent proactive-push opt-out.
+- `Configuration`: Removes Proactive Push from Telegram Settings and the public config contract, atomically drops retired `assistant.proactivePush` values during normalization, and routes stale pre-upgrade callbacks back to the current Settings surface with an explanatory notice.
+- `Work Presence`: Keeps native Telegram typing aligned with unsettled agent and compaction work, pauses it only while extension-owned local UI prompts await the operator, and resumes it after those prompts even when compaction begins after low-level `agent_end`.
+- `Compaction Notices`: Preserves observed `Compaction started` and terminal notices across Pi 0.84.4's post-`agent_end` automatic-compaction order, flushing them after the final-answer delivery tail at `agent_settled`.
+- `Generated Controls`: Requires semantic emoji-led human-readable labels and defaults non-spatial controls to full-width vertical cells, reserving nested horizontal rows for unmistakably compact peers while retaining reasoned no-marker and genuine spatial-grammar exceptions.
+- `Thread Presence`: Aligns the Threaded Mode instance-connected notice with the common information hierarchy by bolding the complete emoji-led sentence while adding nested bold-italic emphasis to the instance name.
+- `Status Parity`: Renames the ambiguous Usage row to Tokens and mirrors Pi's compact terminal telemetry in one line, including inline `R`/`W` cache tokens and `CH` for the latest request's cache-hit rate rather than a cumulative-session approximation.
+- `Voice Setup`: Links maintained Groq Whisper, Mistral Voxtral, and keyless Edge TTS Skills from the voice guide, documenting their environment requirements and direct `telegram.json` command-template path without a companion extension or local speech model.
+
 ## 0.40.0: Pi 0.84.4 Lifecycle Alignment
 
 - `Pi Compatibility`: Requires `@earendil-works/pi-coding-agent`, `pi-agent-core`, and `pi-ai` 0.84.4 or newer, aligning the bridge and its validation runtime with native compaction-failure, mid-run compaction, message-finalization, and UI-prompt lifecycle contracts.
