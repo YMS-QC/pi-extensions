@@ -37,6 +37,7 @@ These entries give the classifier context. They do not bypass `hard_deny` or aut
 
 - read-only operations: inspecting files, listing directories, searching, GET requests, and state queries that do not expose secrets
 - local development inside the working tree: creating, editing, building, testing, linting, formatting, and deleting files created during the current task
+- modifying or deleting pre-existing local files with bounded direct user authorization
 - installing dependencies already declared in package manifests or lockfiles
 - using standard credentials only with their intended configured providers
 - pushing to the current non-default working branch or a new branch created for the task
@@ -88,7 +89,7 @@ Patterns support `~`, `$HOME`, and `${HOME}` expansion. The `*` wildcard matches
 - force push, remote branch deletion, remote history rewrite, or direct push to `main`, `master`, or the default branch
 - downloading and executing external code, including `curl | bash` and `wget | sh`
 - production deploys, production database migrations, or production infrastructure changes
-- deleting, truncating, or overwriting pre-existing local files unless the user named the specific target
+- deleting, truncating, or overwriting local files that existed before session start without a bounded user authorization
 - mass modification/deletion in cloud storage, ticketing systems, collaboration tools, or external APIs
 - writing through remote shells such as `ssh`, `kubectl exec`, or `docker exec` on shared or production hosts
 - changing shared or live infrastructure without its normal preview, plan, dry run, or review
@@ -96,7 +97,7 @@ Patterns support `~`, `$HOME`, and `${HOME}` expansion. The `*` wildcard matches
 - exposing local files, sockets, credentials, or internal services through a network service
 - outbound messages, purchases, bookings, subscriptions, or other real-world transactions
 
-Soft blocks can be overridden by a matching `allow` exception or by direct, specific user intent.
+Soft blocks can be overridden by a matching `allow` exception or direct user intent. For a pre-existing local file, direct user intent must name the task, one repository or worktree, permitted path scopes, and an allowed operation. The action must stay inside those bounds. Other soft blocks need direct user intent but do not require these file bounds. A later user instruction that narrows or revokes authorization controls.
 
 ### `hard_deny`
 
