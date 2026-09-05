@@ -726,6 +726,37 @@ test("Bridge status runtime stays active while tools run after queue changes", (
   );
 });
 
+test("Persistent polling conflict remains visible across ordinary refreshes until transport recovers", () => {
+  let stopReason: string | undefined = "persistent-conflict";
+  let busRole: "follower" | undefined;
+  const rendered: string[] = [];
+  const runtime = createTelegramBridgeStatusRuntime({
+    getConfig: () => ({ botToken: "token", allowedUserId: 7 }),
+    isPollingActive: () => stopReason === undefined,
+    getPollingState: () => ({ phase: stopReason ? "stopped" : "starting", stopReason }),
+    getBusRole: () => busRole,
+    getActiveSourceMessageIds: () => undefined, hasActiveTurn: () => false,
+    hasDispatchPending: () => false, isCompactionInProgress: () => false,
+    getActiveToolExecutions: () => 0, hasPendingModelSwitch: () => false,
+    getQueuedItems: () => [], formatQueuedStatus: () => "", getRecentRuntimeEvents: () => [],
+  });
+  const ctx = { ui: {
+    theme: { fg: (_token: string, text: string) => text },
+    setStatus: (_key: string, text: string) => { rendered.push(text); },
+  } };
+  runtime.updateStatus(ctx);
+  runtime.updateStatus(ctx);
+  assert.deepEqual(rendered, ["telegram error", "telegram error"]);
+  assert.ok(runtime.getStatusLines().some((line) => line.includes("persistent-conflict")));
+  busRole = "follower";
+  runtime.updateStatus(ctx);
+  assert.equal(rendered.at(-1), "telegram follower");
+  busRole = undefined;
+  stopReason = undefined;
+  runtime.updateStatus(ctx);
+  assert.equal(rendered.at(-1), "telegram connected");
+});
+
 test("Bridge status runtime excludes skipped items from queued processing", () => {
   const events: string[] = [];
   const runtime = createTelegramBridgeStatusRuntime({
