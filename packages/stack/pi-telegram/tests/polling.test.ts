@@ -22,7 +22,9 @@ import {
   createTelegramPollLoopRunner,
   createTelegramThreadAwarePollingPorts,
   createTelegramThreadCapabilityMonitor,
+  createTelegramThreadCapabilityOrchestration,
   createTelegramThreadCapabilityStateRuntime,
+  type TelegramThreadCapabilityState,
   createTelegramThreadTargetObservationBinding,
   cutOverTelegramPollingCursor,
   getLatestTelegramUpdateId,
@@ -36,6 +38,8 @@ import {
   startTelegramPollingRuntime,
   stopTelegramPollingRuntime,
   TELEGRAM_ALLOWED_UPDATES,
+  TELEGRAM_GET_UPDATES_CONFLICT_STOP_LIMIT,
+  TelegramPersistentGetUpdatesConflictError,
   TelegramGetUpdatesTimeoutError,
   TelegramPollingBatchValidationError,
   TelegramPollingCursorBootstrapError,
@@ -500,6 +504,131 @@ test("Thread capability state runtime owns transition flags", () => {
   assert.equal(state.isBusPollingStarted(), true);
   assert.equal(state.isTopicModeUnavailable(), true);
   assert.equal(state.shouldForceFreshLeaderThread(), true);
+});
+
+function createCapabilityLifecycleFixture(hooks: {
+  getMe: () => Promise<boolean>;
+  persist?: () => Promise<void>;
+  startBus?: () => Promise<void>;
+}) {
+  const state = createTelegramThreadCapabilityStateRuntime();
+  let bot: TelegramThreadCapabilityState = {};
+  const calls: string[] = [];
+  const runtime = createTelegramThreadCapabilityOrchestration<string, unknown>({
+    state, getAllowedUserId: () => 1,
+    callApi: async <TResponse,>() => ({ has_topics_enabled: await hooks.getMe() }) as TResponse,
+    topicTargetStore: {
+      load: async () => {},
+      persist: async () => { calls.push("persist"); await hooks.persist?.(); },
+      getBotState: () => bot,
+      setBotState: (value) => { bot = value; calls.push(`bot:${value.threadMode}`); },
+    },
+    ownsLock: () => true, isBusRuntimeEnabled: state.isBusRuntimeEnabled,
+    startClassicPolling: () => { calls.push("classic-start"); },
+    stopClassicPolling: async () => { calls.push("classic-stop"); },
+    startBusLeaderPolling: async () => { calls.push("bus-start"); await hooks.startBus?.(); },
+    stopBusLeaderPolling: async () => { calls.push("bus-stop"); },
+    startLeaderHealth: () => { calls.push("health-start"); },
+    stopLeaderHealth: () => { calls.push("health-stop"); },
+    registerFollowerWithLeader: async () => false, stopFollowerRegistration: () => {},
+    isTopicModeUnavailableError: () => true,
+    updateStatus: () => { calls.push("status"); },
+    recordEvent: () => { calls.push("event"); },
+  });
+  return { runtime, state, calls, getBotState: () => bot };
+}
+
+test("Obsolete startup probes cannot overwrite a replacement after query or persistence awaits", async () => {
+  for (const boundary of ["query", "persist"] as const) {
+    for (const oldMode of [false, true]) {
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const waiting = new Promise<void>((resolve) => { entered = resolve; });
+      const pause = async () => { entered(); await gate; };
+      let queries = 0;
+      let writes = 0;
+      const fixture = createCapabilityLifecycleFixture({
+        getMe: async () => {
+          if (++queries !== 1) return !oldMode;
+          if (boundary === "query") await pause();
+          return oldMode;
+        },
+        persist: async () => { if (++writes === 1 && boundary === "persist") await pause(); },
+      });
+      const { runtime, state, calls } = fixture;
+      try {
+        const stale = runtime.pollingPorts.startPolling("old");
+        await waiting;
+        await runtime.pollingPorts.stopPolling();
+        await runtime.pollingPorts.startPolling("replacement");
+        const replacementCalls = [...calls];
+        release();
+        await stale;
+        assert.deepEqual(calls, replacementCalls, `${boundary}/${oldMode}`);
+        assert.equal(fixture.getBotState().threadMode, oldMode ? "disabled" : "enabled");
+        assert.equal(state.isTopicModeUnavailable(), oldMode);
+        assert.equal(state.isBusPollingStarted(), !oldMode);
+      } finally {
+        release();
+        runtime.monitor.stop();
+        await runtime.pollingPorts.stopPolling();
+      }
+    }
+  }
+});
+
+test("Stopped capability transitions cannot restart health, fall back, or mutate a replacement", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  for (const source of ["monitor", "observation"] as const) {
+    for (const outcome of ["resolve", "reject"] as const) {
+      for (const replace of [false, true]) {
+        let release!: () => void;
+        let entered!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const waiting = new Promise<void>((resolve) => { entered = resolve; });
+        let queries = 0;
+        let busStarts = 0;
+        const fixture = createCapabilityLifecycleFixture({
+          getMe: async () => ++queries > 1,
+          startBus: async () => {
+            if (++busStarts !== 1) return;
+            entered();
+            await gate;
+            if (outcome === "reject") throw new Error("Old transition failed");
+          },
+        });
+        const { runtime, state, calls } = fixture;
+        try {
+          await runtime.pollingPorts.startPolling("ctx");
+          let observation: Promise<void> | undefined;
+          if (source === "monitor") {
+            runtime.monitor.start("ctx");
+            t.mock.timers.tick(2500);
+          } else {
+            observation = runtime.observeTarget("ctx");
+          }
+          await waiting;
+          runtime.monitor.stop();
+          await runtime.pollingPorts.stopPolling();
+          if (replace) await runtime.pollingPorts.startPolling("replacement");
+          const retainedCalls = [...calls];
+          const retainedBot = structuredClone(fixture.getBotState());
+          release();
+          await observation;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.deepEqual(calls, retainedCalls, `${source}/${outcome}/${replace}`);
+          assert.deepEqual(fixture.getBotState(), retainedBot);
+          assert.equal(calls.filter((call) => call === "health-start").length, replace ? 1 : 0);
+          assert.equal(state.isBusPollingStarted(), replace);
+        } finally {
+          release();
+          runtime.monitor.stop();
+          await runtime.pollingPorts.stopPolling();
+        }
+      }
+    }
+  }
 });
 
 test("Thread-aware polling returns disabled mode to classic takeover despite retained thread history", async () => {
@@ -1585,7 +1714,115 @@ test("Poll loop suppresses getUpdates conflicts while another long poll drains",
     "sleep:3000",
     "sleep:3000",
   ]);
-  assert.equal(runtimeEvents.length, 4);
+  assert.equal(runtimeEvents.length, 0);
+});
+
+test("Poll loop bounds consecutive conflicts, including bootstrap, and resets on other outcomes", async () => {
+  const limit = TELEGRAM_GET_UPDATES_CONFLICT_STOP_LIMIT;
+  for (const cursor of [undefined, 1]) {
+    for (const reset of [undefined, "success", "network"] as const) {
+      const outcomes = [
+        ...(reset ? [...Array(limit - 1).fill("conflict"), reset] : []),
+        ...Array(limit).fill("conflict"),
+      ];
+      let calls = 0;
+      let sleeps = 0;
+      await assert.rejects(runTelegramPollLoop({
+        ctx: TEST_CONTEXT, signal: new AbortController().signal,
+        config: { botToken: "test-token" }, ...NOOP_JOURNAL_ADMISSION,
+        getAcceptedThroughUpdateId: () => cursor,
+        deleteWebhook: async () => {}, persistConfig: async () => {},
+        getUpdates: async () => {
+          const outcome = outcomes[calls++];
+          if (outcome === "success") return [];
+          if (outcome === "network") throw new Error("network down");
+          if (!outcome) throw new DOMException("Test safety bound", "AbortError");
+          throw new Error("HTTP 409: Conflict: terminated by other getUpdates request");
+        },
+        onErrorStatus: () => {}, onStatusReset: () => {},
+        sleep: async () => { sleeps++; },
+      }), (error: unknown) => error instanceof TelegramPersistentGetUpdatesConflictError && error.count === limit);
+      assert.equal(calls, outcomes.length, `${cursor}/${reset}`);
+      assert.equal(sleeps, (limit - 1) * (reset ? 2 : 1) + (reset === "network" ? 1 : 0));
+    }
+  }
+});
+
+test("Persistent conflict detaches the poller before awaited outer teardown", async () => {
+  const state = createTelegramPollingControllerState();
+  let notifications = 0;
+  let typingStops = 0;
+  const controller = createTelegramPollingController({
+    state, hasBotToken: () => true, updateStatus: () => {},
+    stopTypingLoop: () => { typingStops++; },
+    runPollLoop: async () => { throw new TelegramPersistentGetUpdatesConflictError(10); },
+    async onPersistentConflict(ctx, count): Promise<void> {
+      assert.equal(ctx, TEST_CONTEXT);
+      assert.equal(count, 10);
+      assert.equal(state.pollingPromise, undefined);
+      await controller.stop();
+      notifications++;
+    },
+  });
+  controller.start(TEST_CONTEXT);
+  await state.pollingPromise;
+  assert.equal(notifications, 1);
+  assert.equal(typingStops, 1);
+  assert.equal(state.stopReason, "persistent-conflict");
+  assert.equal(state.phase, "stopped");
+});
+
+test("Rejected stale admission leaves the current pending startup intact", async () => {
+  for (const boundary of ["prepare", "worker"] as const) {
+    let release!: () => void;
+    let entered!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const pause = async () => { entered(); await pending; };
+    const starts: string[] = [];
+    const runtime = createTelegramPollingAdmissionRuntime({
+      canStart: (ctx) => ctx === "current",
+      prepareStart: () => boundary === "prepare" ? pause() : undefined,
+      worker: { onSessionStart: async () => { if (boundary === "worker") await pause(); } },
+      polling: {
+        isActive: () => starts.length > 0,
+        start: (ctx: string) => { starts.push(ctx); }, stop: async () => {},
+      },
+    });
+    const current = runtime.start("current");
+    await started;
+    await runtime.start("obsolete");
+    release();
+    await current;
+    assert.deepEqual(starts, ["current"], boundary);
+  }
+});
+
+test("Admission startup cannot resurrect a stopped or unauthorized poller after an await", async () => {
+  for (const boundary of ["prepare", "worker"] as const) {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    let starts = 0;
+    let allowed = true;
+    const runtime = createTelegramPollingAdmissionRuntime({
+      canStart: () => allowed,
+      prepareStart: () => boundary === "prepare" ? pending : undefined,
+      worker: { onSessionStart: async () => { if (boundary === "worker") await pending; } },
+      polling: { isActive: () => false, start: () => { starts++; }, stop: async () => {} },
+    });
+    const start = runtime.start(TEST_CONTEXT);
+    await Promise.resolve();
+    await runtime.stop();
+    release();
+    await start;
+    assert.equal(starts, 0);
+    allowed = false;
+    await runtime.start(TEST_CONTEXT);
+    assert.equal(starts, 0);
+    allowed = true;
+    await runtime.start(TEST_CONTEXT);
+    assert.equal(starts, 1);
+  }
 });
 
 test("Poll loop reports retryable errors and sleeps before retrying", async () => {

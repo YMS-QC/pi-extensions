@@ -245,7 +245,10 @@ export default function (pi: Pi.ExtensionAPI) {
     Config.createTelegramProactivePushChatIdGetter(proactivePushTargetGetter);
   const buttonActionStore = Outbound.createTelegramButtonActionStore();
   const planGenerativeAppOutput =
-    Outbound.createTelegramOutboundReplyPlanner(buttonActionStore);
+    Outbound.createTelegramOutboundReplyPlanner(
+      buttonActionStore,
+      configControls.getAssistantRenderingMode,
+    );
   const pendingModelSwitchStore =
     Model.createPendingModelSwitchStore<
       Model.ScopedTelegramModel<ActivePiModel>
@@ -400,6 +403,15 @@ export default function (pi: Pi.ExtensionAPI) {
     TelegramApi.createDefaultTelegramBridgeApiRuntime({
       getBotToken: configStore.getBotToken,
       recordRuntimeEvent,
+      captureRequestErrorHandler(body) {
+        return Sync.captureTelegramStaleTargetRequestRecovery(body, {
+          ...staleTopicApiErrorRecoveryDeps,
+          getCurrentLeaderEpoch,
+          getSessionGeneration: telegramSessionContextStore.getGeneration,
+          getProfileName: configStore.getActiveProfileName,
+          onRecovered: runtimeDiagnostics.scheduleSnapshotPersist,
+        });
+      },
     });
   const telegramBusFollowerClients =
     BusFollower.createTelegramBusFollowerClientRuntime<
@@ -1022,6 +1034,12 @@ export default function (pi: Pi.ExtensionAPI) {
       Pi.ExtensionContext
     >({
       state: pollingControllerState,
+      canStart(ctx) {
+        return telegramSessionContextStore.isCurrent(ctx) && lockRuntime.owns(ctx);
+      },
+      onPersistentConflict(ctx, count): Promise<void> {
+        return lockedPollingRuntime.onPersistentConflict(ctx, count);
+      },
       getConfig: configStore.get,
       hasBotToken: configStore.hasBotToken,
       deleteWebhook,
@@ -1193,8 +1211,10 @@ export default function (pi: Pi.ExtensionAPI) {
   const threadAwarePollingPorts = telegramThreadCapabilityRuntime.pollingPorts;
   const lockedPollingRuntime = Locks.createTelegramLockedPollingRuntime({
     lock: lockRuntime,
+    transportMonitor: telegramThreadCapabilityMonitor,
     hasBotToken: configStore.hasBotToken,
     canStartPolling: Pi.canStartPollingInExtensionContext,
+    isContextCurrent: telegramSessionContextStore.isCurrent,
     formatStartBlockedMessage: Pi.formatPollingStartBlockedByRunMode,
     startPolling: threadAwarePollingPorts.startPolling,
     stopPolling: threadAwarePollingPorts.stopPolling,

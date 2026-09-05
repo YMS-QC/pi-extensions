@@ -2,6 +2,29 @@
 
 > Each release keeps at most 8 outcome records of at most 512 characters.
 
+## 0.43.1: Transport And Preview Continuity
+
+- `Conflict Stand-Down`: Stops transport after ten consecutive competing getUpdates conflicts, including ownership checks, heartbeat, monitoring, and bus teardown. Releases only the exact local lock and revokes direct authority even if release fails, while preserving accepted local queue work. A persistent terminal status and one diagnostic distinguish lost ownership from a competing external client; cancelled reconnects and stale admission cannot supersede current lifecycle work.
+- `Prompt And Preview Continuity`: Treats absent/null host system prompts as empty while retaining Telegram guidance, clears completed text from preview state after successful delivery, and rejects stale session/transport completions before they can clear a replacement preview. Receipt-conflict diagnostics now include the receipt and source update ids; durable handoff verification remains fail-closed.
+
+## 0.43.0: Native Button Blocks
+
+- `In-Body Controls`: Renders standalone `telegram_button` fences as native button rows between paragraphs using the same singleton/mixed JSON/CML grammar and callback ownership as footer comments. Invalid/incomplete blocks register nothing, previews hide action payloads, literal examples remain inert, and HTML mode moves controls to the footer. In-body clicks acknowledge without recoloring; operator-confirmed current-client smoke passed; cross-client/follower checks remain pending.
+- `Bot API Reference`: Corrects the local `sendRichMessageDraft` table against Bot API 10.3 with generation-stop parameters and draft replacement semantics, updates affected Skill indexes, and checks parity of stop-control documentation across both draft methods. Runtime generation controls are unchanged.
+- `Disabled Controls`: Adds boolean JSON disabled state and the fourth CML button atom (`1`/`true` disables, `0`/`false` enables), including label-only `{Next|||1}` and blank `{|||1}` cells with no prompt or selected style. Disabled buttons stay visible without callback registration, prompt admission, or app invocation; shared keyboard types, Generative Apps, and agent Skills follow the same contract.
+
+## 0.42.4: Thread Recovery Hotfix
+
+- `Thread Restore`: Retains validated source and chooser identity when callback messages omit thread metadata, hides Restore in threadless/All choosers and explains how to supply a destination, rejects conflicting Restore instead of forwarding to the old target, and treats confirmed already-deleted chooser cleanup as complete without redispatch.
+- `Target Safety`: Rechecks cleanup ownership before close/delete and local retirement across restore, disconnect, and provisioning paths; a rebound target is not deleted, invalidated, or reserved by obsolete cleanup. Follower restore rechecks registration generation and expected target after IPC, store-load, and persistence waits.
+- `Stale Delivery`: Direct replies, menus, activity, edits, and multipart sends capture exact stale-target authority; guarded invalidation rechecks generation, profile, binding, and snapshot revision at the synchronous durable commit without replaying failed sends or redirecting accepted work.
+- `State Continuity`: Snapshot reads cannot overwrite bindings or cleanup intents admitted while disk I/O was pending; equivalent persisted records retain cleanup authority regardless of property order or omitted optional fields.
+
+## 0.42.3: Agent Diagnostics Hotfix
+
+- `Agent Diagnostics`: Identifies `/telegram-status` as a Pi TUI command and routes agents without command access directly to the redacted diagnostic files instead of attempting a shell executable; runtime behavior and STT fallback remain unchanged.
+- `Local Architecture Guidance`: Consolidates the repository-local Domain DAG Skill around canonical protocols and removes redundant self-validation configuration and a legacy recipe wrapper; the validator remains available, and this development-only Skill is not included in the npm package.
+
 ## 0.42.2: Telegram Comment Membrane
 
 - `Transport-Private HTML Comments`: Removes every assistant-authored `<!-- … -->` block from Telegram previews, active-turn finals, connected companion projections, direct sends, and Guest Mode regardless of Markdown position or owning extension; only recognized top-level comments activate actions, unclosed tails stay hidden, comment-only text plans send nothing, and the Pi terminal transcript remains unchanged.
