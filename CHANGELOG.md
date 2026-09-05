@@ -2,6 +2,11 @@
 
 > Each release keeps at most 8 outcome records of at most 512 characters.
 
+## 0.43.1: Transport And Preview Continuity
+
+- `Conflict Stand-Down`: Stops transport after ten consecutive competing getUpdates conflicts, including ownership checks, heartbeat, monitoring, and bus teardown. Releases only the exact local lock and revokes direct authority even if release fails, while preserving accepted local queue work. A persistent terminal status and one diagnostic distinguish lost ownership from a competing external client; cancelled reconnects and stale admission cannot supersede current lifecycle work.
+- `Prompt And Preview Continuity`: Treats absent/null host system prompts as empty while retaining Telegram guidance, clears completed text from preview state after successful delivery, and rejects stale session/transport completions before they can clear a replacement preview. Receipt-conflict diagnostics now include the receipt and source update ids; durable handoff verification remains fail-closed.
+
 ## 0.43.0: Native Button Blocks
 
 - `In-Body Controls`: Renders standalone `telegram_button` fences as native button rows between paragraphs using the same singleton/mixed JSON/CML grammar and callback ownership as footer comments. Invalid/incomplete blocks register nothing, previews hide action payloads, literal examples remain inert, and HTML mode moves controls to the footer. In-body clicks acknowledge without recoloring; operator-confirmed current-client smoke passed; cross-client/follower checks remain pending.

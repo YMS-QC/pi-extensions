@@ -2212,6 +2212,247 @@ test("Locked polling runtime suspends session replacement without releasing owne
   }
 });
 
+test("Persistent conflicts stop watchers and monitoring, revoke sends, and release only exact ownership", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  for (const scenario of ["owned", "lost", "release-failure"] as const) {
+    const temp = createTempLockPath();
+    const ctx = { cwd: "/repo" };
+    const lock = createTelegramLockRuntime({
+      locksPath: temp.path, pid: 10, instanceId: "local", isProcessAlive: () => true,
+    });
+    let refreshes = 0;
+    let checks = 0;
+    const refresh = lock.refresh;
+    const owns = lock.owns;
+    lock.refresh = (owner) => { refreshes++; return refresh(owner); };
+    lock.owns = (owner) => { checks++; return owns(owner); };
+    let stops = 0;
+    let monitoring = false;
+    const availability: boolean[] = [];
+    const diagnostics: Array<Record<string, unknown> | undefined> = [];
+    const runtime = createTelegramLockedPollingRuntime({
+      lock, hasBotToken: () => true, ownershipCheckMs: 1, ownershipRefreshMs: 2,
+      startPolling: async () => {}, stopPolling: async () => { stops++; },
+      transportMonitor: { start: () => { monitoring = true; }, stop: () => { monitoring = false; } },
+      onTransportAvailabilityChanged: () => { availability.push(lock.owns(ctx)); },
+      updateStatus: () => {},
+      recordRuntimeEvent: (_category, _error, details) => { diagnostics.push(details); },
+    });
+    try {
+      assert.equal((await runtime.start(ctx)).ok, true);
+      t.mock.timers.tick(4);
+      assert.ok(refreshes > 1);
+      let replacement: unknown;
+      if (scenario === "lost") {
+        const other = createTelegramLockRuntime({
+          locksPath: temp.path, pid: 20, instanceId: "other", isProcessAlive: () => true,
+        });
+        const expectedOwner = readLocks(temp.path)[TELEGRAM_LOCK_KEY] as TelegramLockEntry;
+        assert.equal(other.acquire(ctx, { force: true, expectedOwner }).ok, true);
+        replacement = readLocks(temp.path)[TELEGRAM_LOCK_KEY];
+      } else if (scenario === "release-failure") {
+        writeFileSync(temp.path, "{");
+      }
+      await runtime.onPersistentConflict(ctx, 10);
+      const stoppedCounts = [checks, refreshes];
+      t.mock.timers.tick(100);
+      await runtime.onPersistentConflict(ctx, 10);
+      assert.deepEqual([checks, refreshes], stoppedCounts, "Watchers must stay stopped");
+      assert.equal(stops, 1);
+      assert.equal(monitoring, false);
+      assert.deepEqual(availability, [true, false]);
+      assert.equal(lock.owns(ctx), false);
+      assert.equal(lock.getOwnedLeaderEpoch(), undefined);
+      assert.equal(lock.commitIfOwned(() => assert.fail("Revoked direct effect")), false);
+      assert.equal(lock.refresh(ctx), false);
+      assert.equal(diagnostics.length, 1);
+      assert.equal(diagnostics[0]?.phase, "persistent-conflict");
+      assert.equal(diagnostics[0]?.ownership, scenario === "release-failure" ? "unverifiable" : scenario);
+      if (scenario === "release-failure") {
+        assert.equal(readFileSync(temp.path, "utf8"), "{");
+        assert.ok(Array.isArray(diagnostics[0]?.cleanupErrors));
+      } else {
+        assert.deepEqual(readLocks(temp.path)[TELEGRAM_LOCK_KEY], replacement);
+      }
+    } finally {
+      await runtime.suspend();
+      rmSync(temp.dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("A failed durable release stays locally revoked until explicit acquisition mints a new epoch", () => {
+  const temp = createTempLockPath();
+  const ctx = { cwd: "/repo" };
+  const lock = createTelegramLockRuntime({ locksPath: temp.path, pid: 10, instanceId: "local" });
+  try {
+    lock.acquire(ctx);
+    const epoch = lock.getOwnedLeaderEpoch();
+    const original = readFileSync(temp.path, "utf8");
+    writeFileSync(temp.path, "{");
+    assert.throws(() => lock.release());
+    writeFileSync(temp.path, original);
+    assert.equal(lock.owns(ctx), false, "Repair must not resurrect revoked authority");
+    assert.equal(lock.commitIfOwned(() => assert.fail("Revoked publication")), false);
+    assert.equal(lock.refresh(ctx), false);
+    assert.equal(lock.acquire(ctx).ok, true);
+    assert.equal(lock.owns(ctx), true);
+    assert.notEqual(lock.getOwnedLeaderEpoch(), epoch);
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Conflict fencing accepts same-session context rotation but rejects a replaced session", async () => {
+  const temp = createTempLockPath();
+  const pollContext = { cwd: "/repo", generation: 1 };
+  let generation = 1;
+  let stops = 0;
+  const lock = createTelegramLockRuntime<typeof pollContext>({ locksPath: temp.path, pid: 10 });
+  const runtime = createTelegramLockedPollingRuntime({
+    lock, hasBotToken: () => true,
+    isContextCurrent: (ctx) => ctx.generation === generation,
+    startPolling: async () => {}, stopPolling: async () => { stops++; }, updateStatus: () => {},
+  });
+  try {
+    await runtime.start(pollContext);
+    await runtime.start({ ...pollContext });
+    await runtime.onPersistentConflict(pollContext, 10);
+    assert.equal(stops, 1, "An existing poller may retain the preceding command context");
+    assert.equal(lock.owns(pollContext), false);
+    generation++;
+    const replacement = { cwd: "/repo", generation };
+    await runtime.start(replacement);
+    await runtime.onPersistentConflict(pollContext, 10);
+    assert.equal(stops, 1);
+    assert.equal(lock.owns(replacement), true);
+  } finally {
+    await runtime.stop();
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("A later suspend, disconnect, or session replacement cancels a reconnect waiting for conflict teardown", async () => {
+  for (const cancellation of ["suspend", "disconnect", "replacement"] as const) {
+    const temp = createTempLockPath();
+    const ctx = { cwd: "/repo" };
+    let current = ctx;
+    let finishStop!: () => void;
+    const gate = new Promise<void>((resolve) => { finishStop = resolve; });
+    let polling = false;
+    let monitoring = false;
+    let acquisitions = 0;
+    const lock = createTelegramLockRuntime({ locksPath: temp.path, pid: 10 });
+    const acquire = lock.acquire;
+    lock.acquire = (...args) => { acquisitions++; return acquire(...args); };
+    const runtime = createTelegramLockedPollingRuntime({
+      lock, hasBotToken: () => true, isContextCurrent: (context) => context === current,
+      startPolling: async (context) => { if (context === current) polling = true; },
+      stopPolling: async () => { await gate; polling = false; },
+      transportMonitor: {
+        start: () => { monitoring = true; }, stop: () => { monitoring = false; },
+      },
+      updateStatus: () => {},
+    });
+    try {
+      assert.equal((await runtime.start(ctx)).ok, true);
+      polling = false; // The controller detaches before notifying the locked lifecycle.
+      const conflict = runtime.onPersistentConflict(ctx, 10);
+      const reconnect = runtime.start(ctx);
+      const halted = cancellation === "disconnect" ? runtime.stop() : runtime.suspend();
+      if (cancellation === "replacement") current = { cwd: "/repo" };
+      finishStop();
+      await Promise.all([conflict, halted]);
+      assert.equal((await reconnect).ok, false, cancellation);
+      assert.equal(acquisitions, 1, "Cancelled reconnect must never reacquire the lock");
+      assert.equal(polling, false);
+      assert.equal(monitoring, false);
+      assert.equal(lock.owns(current), false);
+      assert.equal((await runtime.start(current)).ok, true, "A fresh explicit connect remains valid");
+      assert.equal(polling, true);
+    } finally {
+      finishStop();
+      await runtime.stop();
+      rmSync(temp.dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Cancelled startup continuations cannot start transport or tear down a replacement", async () => {
+  for (const boundary of ["acquired", "polling"] as const) {
+    for (const outcome of ["resolve", "reject"] as const) {
+      const temp = createTempLockPath();
+      const old = { cwd: "/repo" };
+      const replacement = { cwd: "/repo" };
+      let finish!: () => void;
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const gate = new Promise<void>((resolve) => { finish = resolve; });
+      const pause = async () => {
+        entered();
+        await gate;
+        if (outcome === "reject") throw new Error("Obsolete startup failed");
+      };
+      const lock = createTelegramLockRuntime({ locksPath: temp.path, pid: 10 });
+      const starts: typeof old[] = [];
+      let stops = 0;
+      const runtime = createTelegramLockedPollingRuntime({
+        lock, hasBotToken: () => true,
+        startPolling: async (ctx) => {
+          starts.push(ctx);
+          if (ctx === old && boundary === "polling") await pause();
+        },
+        stopPolling: async () => { stops++; }, updateStatus: () => {},
+      });
+      try {
+        const staleStart = runtime.start(old, boundary === "acquired" ? { onAcquired: pause } : {});
+        await started;
+        await runtime.suspend();
+        assert.equal((await runtime.start(replacement)).ok, true);
+        finish();
+        assert.equal((await staleStart).ok, false);
+        assert.deepEqual(starts, boundary === "acquired" ? [replacement] : [old, replacement]);
+        assert.equal(stops, 1, "A stale rejection must not roll back the replacement");
+        assert.equal(lock.owns(replacement), true);
+      } finally {
+        finish();
+        await runtime.stop();
+        rmSync(temp.dir, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test("Conflict teardown serializes reconnect and ignores an obsolete session signal", async () => {
+  const temp = createTempLockPath();
+  const oldContext = { cwd: "/repo" };
+  const newContext = { cwd: "/repo" };
+  const lock = createTelegramLockRuntime({ locksPath: temp.path, pid: 10 });
+  let finishStop!: () => void;
+  let stops = 0;
+  const pending = new Promise<void>((resolve) => { finishStop = resolve; });
+  const runtime = createTelegramLockedPollingRuntime({
+    lock, hasBotToken: () => true, startPolling: async () => {},
+    stopPolling: async () => { stops++; await pending; }, updateStatus: () => {},
+  });
+  try {
+    await runtime.start(oldContext);
+    const stopped = runtime.onPersistentConflict(oldContext, 10);
+    const restarted = runtime.start(newContext);
+    assert.equal(lock.owns(oldContext), false);
+    finishStop();
+    await stopped;
+    assert.equal((await restarted).ok, true);
+    await runtime.onPersistentConflict(oldContext, 10);
+    assert.equal(stops, 1);
+    assert.equal(lock.owns(newContext), true);
+  } finally {
+    finishStop();
+    await runtime.stop();
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
 test("Locked polling runtime stops after ownership loss without live context", async () => {
   const temp = createTempLockPath();
   try {
