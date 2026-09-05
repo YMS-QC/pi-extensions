@@ -434,7 +434,7 @@ Follower Restore requires exact registration generation and expected old target 
 
 - Two leaders calling `getUpdates` is the main safety failure.
 - Lock heartbeat/takeover must be atomic enough to prevent this under normal local concurrency.
-- If Telegram returns API conflict behavior, record diagnostics and force one leader to step down.
+- Persistent competing `getUpdates` clients trigger a full transport stand-down even when the local lock still appears owned; the stopped runtime preserves accepted local work and releases only its exact ownership. See [Runtime Ownership](./architecture.md#runtime-ownership) for the threshold, diagnostic, and reconnect contract.
 
 ## Security Boundaries
 

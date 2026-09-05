@@ -59,6 +59,8 @@ The connected Pi instance owns Telegram polling. Use `/telegram-connect <name>` 
 
 After an unclean computer shutdown, `/telegram-connect` detects truncated or structurally invalid temporary ownership/routing files, quarantines only the damaged files under `tmp/telegram/recovery/`, and retries once. A journal snapshot removed by older broad temp cleanup is rebuilt when its complete segment history proves an empty result, while a revisionless snapshot is repaired from the first surviving segment's exact predecessor when the reconstructed tail validates. Otherwise the snapshot and segments are quarantined as recovery evidence, a fresh journal is published, and startup continues with an informational diagnostic instead of requiring manual JSON repair. Saved `telegram.json` configuration and runtime diagnostics remain intact. Recovery never replaces a verifiable live owner; if safe automatic recovery cannot complete, the command gives one explicit Pi-restart instruction instead of requiring deletion of the whole `tmp/` directory.
 
+Persistent competing `getUpdates` clients cause a bounded transport stand-down rather than endless retries. Accepted local work remains queued/executable, but Telegram delivery stops. Inspect `/telegram-status --debug`, stop the competing client, then reconnect. See [Runtime Ownership](./docs/architecture.md#runtime-ownership).
+
 ### 4. Pair your Telegram account
 
 Open the bot DM and send:

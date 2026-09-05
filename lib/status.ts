@@ -291,6 +291,7 @@ export interface TelegramStatusBarTheme {
 export interface TelegramStatusBarState {
   hasBotToken: boolean;
   pollingActive: boolean;
+  pollingStopReason?: string;
   paired: boolean;
   busRole?: TelegramBridgeBusRole;
   busLifecyclePhase?: TelegramBridgeBusLifecyclePhase;
@@ -699,6 +700,7 @@ export function createTelegramBridgeStatusRuntime<
           queuedItems: queuedItemCount,
         }),
         queuedStatus: deps.formatQueuedStatus(queuedItems),
+        pollingStopReason: deps.getPollingState?.().stopReason,
         error,
       };
     },
@@ -889,6 +891,8 @@ export function buildTelegramStatusBarText(
     : "";
   if (!state.hasBotToken)
     return `${label} ${theme.fg("muted", "not configured")}${queued}`;
+  if (state.pollingStopReason === "persistent-conflict" && state.busRole !== "follower")
+    return `${label} ${theme.fg("error", "error")}`;
   if (!state.paired)
     return `${label} ${theme.fg("warning", "awaiting pairing")}${queued}`;
   if (state.busLifecyclePhase === "electing")

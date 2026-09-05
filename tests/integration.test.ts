@@ -34,6 +34,8 @@ import * as Threads from "../lib/threads.ts";
 import * as Journal from "../lib/journal.ts";
 import * as Locks from "../lib/locks.ts";
 import * as Queue from "../lib/queue.ts";
+import * as Polling from "../lib/polling.ts";
+import * as Sync from "../lib/sync.ts";
 import * as Updates from "../lib/updates.ts";
 import {
   createTelegramBridgeApiRuntime,
@@ -2849,7 +2851,7 @@ test("Extension runtime coalesces a cross-batch forward comment into one Pi turn
   }
 });
 
-test("Extension runtime finalizes queued turn after polling ownership moves away", async () => {
+test("Extension runtime fences queued final and preview after polling ownership moves away", async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();
   const extension = await getRuntimeTelegramExtension();
   let resolveDispatch: (() => void) | undefined;
@@ -2980,13 +2982,13 @@ test("Extension runtime finalizes queued turn after polling ownership moves away
     await flushMicrotasks(20);
     await waitForTimeout(20);
     assert.deepEqual(draftTexts, []);
-    assert.equal(sentTexts.length, 1);
-    assert.match(sentTexts[0] ?? "", /Final \*\*answer\*\*/);
-    assert.deepEqual(sentBodies[0]?.reply_parameters, {
-      message_id: 7,
-      allow_sending_without_reply: true,
-    });
+    assert.deepEqual(sentTexts, []);
+    assert.deepEqual(sentBodies, []);
     assert.deepEqual(editedTexts, []);
+    assert.deepEqual(
+      Locks.readLocks(join(await ensureRuntimeAgentDir(), "tmp", "telegram", "owners.json")).default,
+      { pid: process.pid + 1_000_000, cwd: "/tmp/other-pi-instance" },
+    );
     releasePolling?.();
     await handlers.get("session_shutdown")?.({}, ctx);
   } finally {
@@ -2996,16 +2998,131 @@ test("Extension runtime finalizes queued turn after polling ownership moves away
   }
 });
 
-test("Extension runtime keeps local queue progress but fences delivery after ownership moves away", async () => {
+test("Cancelled threaded startup cannot restart health or overwrite a replacement after conflict teardown", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  for (const outcome of ["resolve", "reject"] as const) {
+    for (const reconnect of [false, true]) {
+      const dir = await mkdtemp(join(tmpdir(), "pi-telegram-conflict-startup-"));
+      const ctx = { cwd: "/startup-fixture" };
+      const lock = Locks.createTelegramLockRuntime<typeof ctx>({
+        locksPath: join(dir, "owners.json"), instanceId: "fixture",
+      });
+      const state = Polling.createTelegramThreadCapabilityStateRuntime();
+      let botState: Polling.TelegramThreadCapabilityState = {};
+      let releaseOld!: () => void;
+      let releaseNew!: () => void;
+      let enteredOld!: () => void;
+      let enteredNew!: () => void;
+      const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+      const newGate = new Promise<void>((resolve) => { releaseNew = resolve; });
+      const oldWaiting = new Promise<void>((resolve) => { enteredOld = resolve; });
+      const newWaiting = new Promise<void>((resolve) => { enteredNew = resolve; });
+      let workers = 0;
+      let healthStarts = 0;
+      let probes = 0;
+      const health = Sync.createTelegramLeaderHealthRuntime({
+        callGetMe: async () => { probes++; },
+        getSyncState: () => ({}), setSyncState: () => {}, recordEvent: () => {},
+      });
+      const controller = Polling.createTelegramPollingController<typeof ctx>({
+        hasBotToken: () => true, stopTypingLoop: () => {}, updateStatus: () => {},
+        runPollLoop: async (_ctx, signal) => {
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve();
+            else signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        },
+      });
+      const admission = Polling.createTelegramPollingAdmissionRuntime({
+        polling: controller, canStart: lock.owns,
+        worker: { onSessionStart: async () => {
+          workers++;
+          if (workers === 2) {
+            enteredOld();
+            await oldGate;
+            if (outcome === "reject") throw new Error("Old worker failed");
+          } else if (workers === 3) {
+            enteredNew();
+            await newGate;
+          }
+        } },
+      });
+      const ports = Polling.createTelegramThreadAwarePollingPorts({
+        getAllowedUserId: () => 1,
+        callApi: async <TResponse,>() => ({ has_topics_enabled: true }) as TResponse,
+        topicTargetStore: {
+          load: async () => {}, persist: async () => {},
+          getBotState: () => botState, setBotState: (value) => { botState = value; },
+        },
+        isBusRuntimeEnabled: state.isBusRuntimeEnabled,
+        isTopicModeUnavailableError: () => true,
+        getPollingStartedWithTelegramBus: state.isBusPollingStarted,
+        setPollingStartedWithTelegramBus: state.setBusPollingStarted,
+        setForceFreshLeaderThreadOnNextStart: state.setForceFreshLeaderThread,
+        setTopicModeUnavailable: state.setTopicModeUnavailable,
+        startClassicPolling: () => assert.fail("Obsolete startup must not fall back to classic polling"),
+        stopClassicPolling: admission.stop,
+        startBusLeaderPolling: admission.start, stopBusLeaderPolling: admission.stop,
+        startLeaderHealth: () => { healthStarts++; health.start(); }, stopLeaderHealth: health.stop,
+        registerFollowerWithLeader: async () => false, stopFollowerRegistration: () => {}, recordEvent: () => {},
+      });
+      const runtime = Locks.createTelegramLockedPollingRuntime({
+        lock, hasBotToken: () => true, isContextCurrent: (context) => context === ctx,
+        ownershipCheckMs: 1_000_000, ownershipRefreshMs: 1_000_000,
+        startPolling: ports.startPolling, stopPolling: ports.stopPolling, updateStatus: () => {},
+      });
+      try {
+        assert.equal((await runtime.start(ctx)).ok, true);
+        const stale = runtime.start(ctx, { forceFreshLeaderThread: true });
+        await oldWaiting;
+        await runtime.onPersistentConflict(ctx, 10);
+        assert.equal(controller.isActive(), false);
+        assert.equal(lock.owns(ctx), false);
+        const replacement = reconnect ? runtime.start(ctx, { forceFreshLeaderThread: true }) : undefined;
+        if (replacement) await newWaiting;
+        releaseOld();
+        assert.equal((await stale).ok, false);
+        assert.equal(healthStarts, 1, "Late completion must not restart leader health");
+        assert.equal(state.isBusPollingStarted(), reconnect);
+        assert.equal(state.shouldForceFreshLeaderThread(), reconnect, "Old finally must not clear replacement startup options");
+        assert.equal(state.isTopicModeUnavailable(), false);
+        t.mock.timers.tick(60_000);
+        await flushMicrotasks();
+        assert.equal(probes, 0, "Stopped health must have no surviving timer");
+        if (replacement) {
+          releaseNew();
+          assert.equal((await replacement).ok, true);
+          assert.equal(controller.isActive(), true);
+          assert.equal(healthStarts, 2);
+          t.mock.timers.tick(60_000);
+          await flushMicrotasks();
+          assert.equal(probes, 1, "Only the valid replacement starts health");
+        }
+      } finally {
+        releaseOld();
+        releaseNew();
+        await runtime.stop();
+        health.stop();
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+for (const loss of ["ownership", "persistent-conflict"] as const) {
+test(`Extension runtime preserves accepted work and fences delivery after ${loss}`, async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();
   const sentMessages: RuntimeHarnessMessage[] = [];
   const sentBodies: Array<Record<string, unknown>> = [];
-  const { handlers, commands, pi } = createRuntimePiHarness({
+  const { handlers, commands, pi, getActiveTools } = createRuntimePiHarness({
     sendUserMessage: (content) => {
       sentMessages.push(content);
     },
   });
   let getUpdatesCalls = 0;
+  let releaseConflicts!: () => void;
+  const conflictGate = new Promise<void>((resolve) => { releaseConflicts = resolve; });
+  const ctx = createRuntimeExtensionContext({ cwd: "/repo/queue-owner-a" });
   const restoreFetch = setRuntimeTestFetch(async (input, init) => {
     const method = getRuntimeTelegramApiMethod(input);
     const body = parseJsonRequestBody(init);
@@ -3038,6 +3155,11 @@ test("Extension runtime keeps local queue progress but fences delivery after own
           },
         ]);
       }
+      if (loss === "persistent-conflict") {
+        await conflictGate;
+        return createRuntimeTelegramApiErrorResponse(409,
+          "Conflict: terminated by other getUpdates request");
+      }
       throw new DOMException("stop", "AbortError");
     }
     if (method === "sendRichMessage") {
@@ -3061,9 +3183,6 @@ test("Extension runtime keeps local queue progress but fences delivery after own
     });
     await writeRuntimeTelegramLocks({});
     (await getRuntimeTelegramExtension())(pi);
-    const ctx = createRuntimeExtensionContext({
-      cwd: "/repo/queue-owner-a",
-    });
     await handlers.get("session_start")?.({}, ctx);
     await commands.get("telegram-connect")?.handler("", ctx);
     await waitForCondition(() => sentMessages.length === 1);
@@ -3091,12 +3210,18 @@ test("Extension runtime keeps local queue progress but fences delivery after own
         ),
     );
     await handlers.get("agent_start")?.({}, ctx);
-    await writeRuntimeTelegramLocks({
-      default: {
-        pid: process.pid + 1_000_000,
-        cwd: "/repo/queue-owner-b",
-      },
-    });
+    if (loss === "ownership") {
+      await writeRuntimeTelegramLocks({
+        default: { pid: process.pid + 1_000_000, cwd: "/repo/queue-owner-b" },
+      });
+    } else {
+      assert.ok(getActiveTools().includes("telegram_message"));
+      releaseConflicts();
+      await waitForCondition(() => !getActiveTools().includes("telegram_message"), 30_000);
+      assert.equal(getUpdatesCalls, 11);
+      assert.equal(Locks.readLocks(join(await ensureRuntimeAgentDir(), "tmp", "telegram", "owners.json")).default, undefined);
+      assert.ok(runtimeJournal.read().entries.some((entry) => entry.updateId === 2 && entry.state === "queued"));
+    }
     await handlers.get("agent_end")?.(
       {
         messages: [
@@ -3116,12 +3241,14 @@ test("Extension runtime keeps local queue progress but fences delivery after own
       getRuntimeHarnessMessageText(sentMessages[1] as RuntimeHarnessMessage),
       /^\[telegram\] second queued$/,
     );
-    await handlers.get("session_shutdown")?.({}, ctx);
   } finally {
+    releaseConflicts();
+    await handlers.get("session_shutdown")?.({}, ctx);
     restoreFetch();
     await telegramConfig.restore();
   }
-});
+}, 40_000);
+}
 
 test("Extension runtime ignores the retired proactive opt-out while Telegram is connected", async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();

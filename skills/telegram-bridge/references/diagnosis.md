@@ -13,4 +13,6 @@ These slash commands are registered Pi commands, not shell executables or agent 
 
 When `PI_CODING_AGENT_DIR` selects another compatible runtime, resolve its equivalent `tmp/telegram` directory.
 
+A `persistent-conflict` polling stop means the bounded competing-`getUpdates` threshold triggered full transport stand-down, not cancellation of accepted local Pi work. The terminal diagnostic distinguishes lost local ownership from a competing client despite an apparently owned lock. Check other profiles, agent directories, installations, or non-Pi clients sharing the bot; after removing the competition, reconnect through the supported Pi command. Do not restart repeatedly or alter lock files to compete for the stream.
+
 Do not mutate ownership files, bridge state, journals, bindings, or locks to force recovery. Use supported commands and preserve exact profile, target, transport, and session authority. Never claim successful delivery without transport evidence.
