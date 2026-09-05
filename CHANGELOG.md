@@ -2,7 +2,7 @@
 
 > Each release keeps at most 8 outcome records of at most 512 characters.
 
-## Unreleased
+## 0.43.1: Transport And Preview Continuity
 
 - `Conflict Stand-Down`: Stops transport after ten consecutive competing getUpdates conflicts, including ownership checks, heartbeat, monitoring, and bus teardown. Releases only the exact local lock and revokes direct authority even if release fails, while preserving accepted local queue work. A persistent terminal status and one diagnostic distinguish lost ownership from a competing external client; cancelled reconnects and stale admission cannot supersede current lifecycle work.
 - `Prompt And Preview Continuity`: Treats absent/null host system prompts as empty while retaining Telegram guidance, clears completed text from preview state after successful delivery, and rejects stale session/transport completions before they can clear a replacement preview. Receipt-conflict diagnostics now include the receipt and source update ids; durable handoff verification remains fail-closed.
