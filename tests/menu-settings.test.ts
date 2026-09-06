@@ -80,6 +80,15 @@ test("Settings descriptions follow visible control order", () => {
   }
 });
 
+test("Draft preview settings identify on as the default without changing the current state label", () => {
+  for (const enabled of [false, true]) {
+    const text = buildDraftPreviewsSettingsText(enabled);
+    assert.match(text, new RegExp(`<code>${enabled ? "on" : "off"}</code>$`, "m"));
+    assert.match(text, /<code>on<\/code> \(default\):/);
+    assert.doesNotMatch(text, /<code>off<\/code> \(default\):/);
+  }
+});
+
 test("Settings menu text and reply markup expose built-in controls", () => {
   assert.equal(buildTelegramSettingsMenuText(), "<b>⚙️ Settings:</b>");
 

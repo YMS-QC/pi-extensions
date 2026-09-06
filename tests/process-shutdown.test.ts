@@ -385,6 +385,9 @@ test("Child process sharing the agent dir does not poll while parent owns Telegr
         PI_CODING_AGENT_DIR: agentDir,
         PI_TELEGRAM_TEST_METHOD_MARKER: markerPath,
       },
+      // Importing the complete extension can exceed the generic process-probe
+      // budget on a loaded Windows runner; the child still must exit naturally.
+      timeoutMs: process.platform === "win32" ? 15_000 : 5_000,
     });
     assert.equal(child.code, 0, child.stderr);
     const methods = await readFile(markerPath, "utf8");
