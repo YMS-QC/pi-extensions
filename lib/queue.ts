@@ -1498,6 +1498,10 @@ export interface TelegramAgentEndRuntimeDeps<
   updateStatus: () => void;
   dispatchNextQueuedTelegramTurn: () => void;
   scheduleActiveTurnDelivery?: (task: () => Promise<void>) => void;
+  preparePreviewDelivery?: (isDeliveryActive: () => boolean) => Pick<
+    TelegramAgentEndRuntimeDeps<TTurn, TReplyMarkup>,
+    "clearPreview" | "setPreviewPendingText" | "finalizeMarkdownPreview"
+  > | undefined;
   preparePreviewClear?: (
     chatId: number,
     options?: { target?: TelegramQueueTarget; isDeliveryActive?: () => boolean },
@@ -1595,6 +1599,7 @@ export interface TelegramAgentEndHookRuntimeDeps<
     schedule: (task: () => Promise<void>) => void;
     cancel: () => void;
   };
+  preparePreviewDelivery?: TelegramAgentEndRuntimeDeps<TTurn, TReplyMarkup>["preparePreviewDelivery"];
   preparePreviewClear?: TelegramAgentEndRuntimeDeps<TTurn, TReplyMarkup>["preparePreviewClear"];
   clearPreview: TelegramAgentEndRuntimeDeps<
     TTurn,
@@ -1746,6 +1751,7 @@ export function createTelegramAgentEndHook<
                 await task();
               })
           : undefined,
+        preparePreviewDelivery: deps.preparePreviewDelivery,
         preparePreviewClear: deps.preparePreviewClear,
         clearPreview: deps.clearPreview,
         setPreviewPendingText: deps.setPreviewPendingText,
@@ -1807,9 +1813,13 @@ export async function handleTelegramAgentEndRuntime<
   const isDeliveryActive = (): boolean =>
     deps.isSessionActive?.() !== false &&
     (!turn || deps.isTurnTransportActive?.(turn) !== false);
+  const preview = turn && !turn.guestQueryId ? deps.preparePreviewDelivery?.(isDeliveryActive) : undefined;
+  const setPreviewPendingText = preview?.setPreviewPendingText ?? deps.setPreviewPendingText;
+  const finalizeMarkdownPreview = preview?.finalizeMarkdownPreview ?? deps.finalizeMarkdownPreview;
   const clearPreview = turn
-    ? deps.preparePreviewClear?.(turn.chatId, { target: turn.target, isDeliveryActive })
-      ?? (() => deps.clearPreview(turn.chatId, { target: turn.target }))
+    ? preview ? () => preview.clearPreview(turn.chatId, { target: turn.target })
+      : deps.preparePreviewClear?.(turn.chatId, { target: turn.target, isDeliveryActive })
+        ?? (() => deps.clearPreview(turn.chatId, { target: turn.target }))
     : undefined;
   const updateStatusIgnoringStaleContext = (): void => {
     try {
@@ -1914,7 +1924,7 @@ export async function handleTelegramAgentEndRuntime<
       if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
       return;
     }
-    if (finalText) deps.setPreviewPendingText(finalText);
+    if (finalText) setPreviewPendingText(finalText);
 
     if (!isDeliveryActive()) return;
     let richAttachmentDelivered = false;
@@ -1932,9 +1942,9 @@ export async function handleTelegramAgentEndRuntime<
         );
         if (!isDeliveryActive()) return;
         if (richAttachmentDelivered) {
-          await deps.clearPreview(turn.chatId, { target: turn.target });
+          await clearPreview?.();
           if (!isDeliveryActive()) return;
-          deps.setPreviewPendingText("");
+          setPreviewPendingText("");
         }
       } catch (error) {
         if (!isDeliveryActive()) return;
@@ -1949,7 +1959,7 @@ export async function handleTelegramAgentEndRuntime<
     if (!isDeliveryActive()) return;
     if (!richAttachmentDelivered && endPlan.kind === "text" && finalText) {
       try {
-        const finalized = await deps.finalizeMarkdownPreview(
+        const finalized = await finalizeMarkdownPreview(
           turn.chatId,
           finalText,
           turn.replyToMessageId,
@@ -1957,7 +1967,7 @@ export async function handleTelegramAgentEndRuntime<
         );
         if (!isDeliveryActive()) return;
         if (!finalized) {
-          await deps.clearPreview(turn.chatId, { target: turn.target });
+          await clearPreview?.();
           if (!isDeliveryActive()) return;
           await deps.sendMarkdownReply(
             turn.chatId,
@@ -1967,7 +1977,7 @@ export async function handleTelegramAgentEndRuntime<
           );
         }
         if (!isDeliveryActive()) return;
-        deps.setPreviewPendingText("");
+        setPreviewPendingText("");
       } catch (error) {
         deps.recordRuntimeEvent?.("delivery", error, {
           phase: "final-text",

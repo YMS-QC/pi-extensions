@@ -744,7 +744,7 @@ export function createTelegramDraftPreviewsChecker(
       config.assistant?.draftPreviews ??
       config.draftPreviews ??
       config.richDraftPreviews ??
-      false
+      true
     );
   };
 }

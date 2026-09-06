@@ -3771,10 +3771,12 @@ test("Extension runtime skips proactive local result without Telegram lock owner
   }
 });
 
-test("Extension runtime delivers Telegram commentary before the active-turn final reply", async () => {
+for (const draftPreviews of [false, true]) {
+test(`Extension runtime delivers anchored Telegram commentary once before final with preview ${draftPreviews ? "on" : "off"}`, async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();
   const sentMessages: RuntimeHarnessMessage[] = [];
   const deliveredMarkdown: string[] = [];
+  const replyAnchors: unknown[] = [];
   let dispatched = false;
   const { handlers, commands, pi } = createRuntimePiHarness({
     sendUserMessage: (content) => {
@@ -3798,7 +3800,7 @@ test("Extension runtime delivers Telegram commentary before the active-turn fina
             update_id: 1,
             message: {
               message_id: 10,
-              chat: { id: 99, type: "private" },
+              chat: { id: 77, type: "private" },
               from: { id: 77, is_bot: false, first_name: "Test" },
               text: "show checkpoints",
             },
@@ -3814,7 +3816,9 @@ test("Extension runtime delivers Telegram commentary before the active-turn fina
     if (method === "sendChatAction") {
       return createRuntimeTelegramApiResponse(true);
     }
+    if (method === "sendRichMessageDraft") return createRuntimeTelegramApiResponse(true);
     if (method === "sendRichMessage") {
+      replyAnchors.push(body.reply_parameters);
       deliveredMarkdown.push(
         String(
           (body.rich_message as { markdown?: string } | undefined)?.markdown ??
@@ -3835,7 +3839,7 @@ test("Extension runtime delivers Telegram commentary before the active-turn fina
       botToken: "123:abc",
       allowedUserId: 77,
       lastUpdateId: 0,
-      assistant: { activity: "quiet", proactivePush: true },
+      assistant: { activity: "quiet", proactivePush: true, draftPreviews },
     });
     await writeRuntimeTelegramLocks({});
     (await getRuntimeTelegramExtension())(pi);
@@ -3853,6 +3857,7 @@ test("Extension runtime delivers Telegram commentary before the active-turn fina
       role: "assistant",
       content: [{ type: "text", text: "Checkpoint **visible**" }],
     };
+    await handlers.get("message_start")?.({ message: checkpointMessage }, activeCtx);
     await handlers.get("message_update")?.(
       {
         message: checkpointMessage,
@@ -3876,10 +3881,13 @@ test("Extension runtime delivers Telegram commentary before the active-turn fina
       },
       activeCtx,
     );
+    await handlers.get("message_end")?.({ message: { ...checkpointMessage, stopReason: "toolUse" } }, activeCtx);
+    await waitForCondition(() => deliveredMarkdown.length === 1);
     const finalMessage = {
       role: "assistant",
       content: [{ type: "text", text: "Final **answer**" }],
     };
+    await handlers.get("message_start")?.({ message: finalMessage }, activeCtx);
     await handlers.get("message_update")?.(
       {
         message: finalMessage,
@@ -3912,12 +3920,19 @@ test("Extension runtime delivers Telegram commentary before the active-turn fina
       "Checkpoint **visible**",
       "Final **answer**",
     ]);
+    // Preserve the transport's existing once-per-prompt anchor policy.
+    assert.deepEqual(replyAnchors, [
+      { message_id: 10, allow_sending_without_reply: true },
+      undefined,
+    ]);
     await handlers.get("session_shutdown")?.({}, idleCtx);
   } finally {
     restoreFetch();
     await telegramConfig.restore();
   }
 });
+
+}
 
 test("Extension runtime clears queued follow-ups after a Telegram stop", async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();

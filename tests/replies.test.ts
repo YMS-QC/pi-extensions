@@ -13,6 +13,7 @@ test.beforeEach(() => {
 
 import {
   buildTelegramReplyParameters,
+  withTelegramReplyParameters,
   buildTelegramReplyTransport,
   createGuestMarkdownReplySender,
   createReplyDedupRuntime,
@@ -32,8 +33,10 @@ import {
   TELEGRAM_RICH_MESSAGE_MAX_BLOCKS,
   TELEGRAM_RICH_MESSAGE_MAX_CHARS,
 } from "../lib/replies.ts";
-import { createDedupAgentStartHook } from "../lib/lifecycle.ts";
+import { createDedupAgentStartHook, createAgentStartDedupHook, setResetTransportReplyDedup } from "../lib/lifecycle.ts";
+import { createTelegramActivityPublicationRuntime } from "../lib/activity.ts";
 import { createTelegramThreadTarget } from "../lib/target.ts";
+import { TelegramApiCommitUnknownError } from "../lib/telegram-api.ts";
 
 test("Reply helpers extract assistant message text and metadata", () => {
   const messages = [
@@ -887,6 +890,89 @@ test("Reply runtime sends plain replies using the requested parse mode", async (
   assert.equal(messageId, 7);
   assert.deepEqual(sent, ["html"]);
 });
+
+for (const unknownAck of [false, true]) {
+  test(`Reply anchor ${unknownAck ? "is retained after unknown ACK" : "survives a rejected send"}`, async () => {
+    const error = unknownAck ? new TelegramApiCommitUnknownError("sendVoice", new Error("Lost ACK")) : new Error("Rejected upload");
+    await assert.rejects(withTelegramReplyParameters(7, 21, undefined, async (parameters) => {
+      assert.equal(parameters?.message_id, 21);
+      throw error;
+    }), (caught) => caught === error);
+    const anchors: Array<number | undefined> = [];
+    for (const text of ["Fallback", "Following answer"]) {
+      await sendTelegramNativeMarkdownReply(7, 21, text, {
+        sendRichMessage: async (body) => { anchors.push(body.reply_parameters?.message_id); return { message_id: 100 }; },
+      });
+    }
+    assert.deepEqual(anchors, [unknownAck ? undefined : 21, undefined]);
+  });
+}
+
+test("A later chunk failure does not release an already delivered prompt anchor", async () => {
+  let count = 0;
+  await assert.rejects(sendTelegramRenderedChunks(7, [{ text: "First" }, { text: "Second" }], {
+    sendMessage: async (body) => {
+      count += 1;
+      assert.equal(body.reply_parameters?.message_id, count === 1 ? 21 : undefined);
+      if (count === 2) throw new Error("Second chunk rejected");
+      return { message_id: 100 };
+    },
+    editMessage: async () => {},
+  }, { replyToMessageId: 21 }), /Second chunk rejected/);
+  await withTelegramReplyParameters(7, 21, undefined, async (parameters) => { assert.equal(parameters, undefined); });
+});
+
+test("Starting a new turn resets quoting behind the previous turn's queued final", async () => {
+  const publication = createTelegramActivityPublicationRuntime();
+  const anchors: Array<number | undefined> = [];
+  const reply = async () => {
+    await sendTelegramNativeMarkdownReply(7, 21, "Answer", {
+      sendRichMessage: async (body) => { anchors.push(body.reply_parameters?.message_id); return { message_id: 100 }; },
+    });
+  };
+  await reply();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const blocker = publication.enqueue(() => gate);
+  const oldFinal = publication.enqueue(reply);
+  setResetTransportReplyDedup(resetTransportReplyDedup);
+  const start = createAgentStartDedupHook(async () => {}, (task) => { void publication.enqueue(task); });
+  try {
+    await start({ type: "agent_start" }, {} as Parameters<typeof start>[1]);
+    const first = publication.enqueue(reply);
+    const following = publication.enqueue(reply);
+    release();
+    await Promise.all([blocker, oldFinal, first, following]);
+    assert.deepEqual(anchors, [21, undefined, 21, undefined]);
+  } finally { release(); publication.reset(); }
+});
+
+test("Late rejected reply cannot release a replacement generation's anchor", async () => {
+  let reject!: (error: Error) => void;
+  const original = withTelegramReplyParameters(7, 21, undefined, () => new Promise<void>((_resolve, fail) => { reject = fail; }));
+  const rejected = assert.rejects(original, /Old failure/);
+  resetTransportReplyDedup();
+  await withTelegramReplyParameters(7, 21, undefined, async () => {});
+  reject(new Error("Old failure")); await rejected;
+  await withTelegramReplyParameters(7, 21, undefined, async (parameters) => { assert.equal(parameters, undefined); });
+});
+
+for (const native of [false, true]) {
+  test(`${native ? "Native" : "HTML"} rejected send preserves the first successful reply anchor`, async () => {
+    const anchors: Array<number | undefined> = [];
+    const send = async (body: { reply_parameters?: { message_id: number } }) => {
+      anchors.push(body.reply_parameters?.message_id);
+      if (anchors.length === 1) throw new Error("Rejected send");
+      return { message_id: 100 };
+    };
+    const reply = () => native
+      ? sendTelegramNativeMarkdownReply(7, 21, "Answer", { sendRichMessage: send })
+      : sendTelegramRenderedChunks(7, [{ text: "Answer" }], { sendMessage: send, editMessage: async () => {} }, { replyToMessageId: 21 });
+    await assert.rejects(reply(), /Rejected send/);
+    await reply(); await reply();
+    assert.deepEqual(anchors, [21, 21, undefined]);
+  });
+}
 
 test("Transport reply dedup scopes repeated prompt message ids by chat and thread", () => {
   assert.equal(buildTelegramReplyParameters(1, 0), undefined);

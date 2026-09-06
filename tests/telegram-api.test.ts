@@ -42,6 +42,8 @@ import {
   type TelegramInputRichMessage,
 } from "../lib/telegram-api.ts";
 import { isTelegramTopicTargetStaleError } from "../lib/threads.ts";
+import { createTelegramAssistantPreviewRuntime } from "../lib/preview.ts";
+import { createTelegramBusAwareApiRuntime } from "../lib/bus-api.ts";
 
 function createApiResponseBody(result: unknown): { ok: true; result: unknown } {
   return { ok: true, result };
@@ -153,6 +155,154 @@ function createApiRuntimeClient(
     ...overrides,
   };
 }
+
+for (const rich of [false, true]) {
+  for (const follower of [false, true]) {
+    test(`${follower ? "Follower adapter" : "Direct"} ${rich ? "Rich" : "HTML"} drafts defer fresh updates without replaying rate-limited snapshots`, async () => {
+      let now = 1000;
+      let token = "123:fixture";
+      let sleeps = 0;
+      let permanentRequests = 0;
+      const drafts: string[] = [];
+      const restoreFetch = setApiTestFetch(async (input, init) => {
+        const body = JSON.parse(String(init?.body));
+        if (getApiTestFetchUrl(input).endsWith("/sendMessage")) {
+          permanentRequests += 1;
+          return permanentRequests === 1
+            ? createApiErrorResponse(429, "Too Many Requests", new Headers({ "retry-after": "2" }))
+            : createApiJsonResponse({ message_id: 100 });
+        }
+        drafts.push(body.rich_message?.markdown ?? body.text);
+        return drafts.length === 1
+          ? createApiErrorResponse(429, "Too Many Requests", new Headers({ "retry-after": "2" }))
+          : createApiJsonResponse(true);
+      });
+      const client = createTelegramApiClient(() => token, { now: () => now });
+      const runtime = createTelegramBridgeApiRuntime({
+        tempDir: "/fixture", maxFileSizeBytes: 1, tempFileMaxAgeMs: 1, now: () => now,
+        recordRuntimeEvent: () => {},
+        client: createApiRuntimeClient({
+          call: <T>(method: string, body: Record<string, unknown>, options?: TelegramApiCallOptions) =>
+            client.call<T>(method, body, { ...options, sleep: async () => { sleeps += 1; } }),
+        }),
+      });
+      const api = createTelegramBusAwareApiRuntime({
+        directRuntime: runtime, ownsDirect: () => !follower,
+        callFollowerApi: async (method, args) => {
+          assert.equal(method, "call");
+          return runtime.call(String(args[0]), args[1] as Record<string, unknown>, args[2] as TelegramApiCallOptions | undefined);
+        },
+      });
+      const send = (text: string, threadId = 42) => rich
+        ? api.sendRichMessageDraft({ chat_id: 7, message_thread_id: threadId, draft_id: 1, rich_message: { markdown: text } })
+        : api.sendMessageDraft(7, 1, text, { message_thread_id: threadId });
+      try {
+        await assert.rejects(send("Initial"), /429/);
+        assert.equal(sleeps, 0);
+        assert.equal(await send("Deferred"), false);
+        assert.equal(await api.call(rich ? "sendMessageDraft" : "sendRichMessageDraft", { chat_id: 7, message_thread_id: 42, draft_id: 2 }), false);
+        assert.equal(await send("Other target", 43), true);
+        token = "456:fixture";
+        assert.equal(await send("Other bot"), true);
+        token = "123:rotated-fixture";
+        assert.equal(await send("Same bot after rotation"), false);
+        await api.sendMessage({ chat_id: 7, message_thread_id: 42, text: "Final" });
+        assert.equal(permanentRequests, 2);
+        assert.equal(sleeps, 1, "Permanent-send retry policy remains unchanged");
+        now = 2999;
+        assert.equal(await send("Still deferred"), false);
+        now = 3000;
+        assert.equal(await send("Fresh"), true);
+        assert.deepEqual(drafts, ["Initial", "Other target", "Other bot", "Fresh"]);
+      } finally { restoreFetch(); }
+    });
+  }
+}
+
+for (const { status, retryAfter, delayMs } of [
+  { status: 503, retryAfter: "3", delayMs: 3000 },
+  { status: 500, retryAfter: undefined, delayMs: 500 },
+  { status: 400, retryAfter: undefined, delayMs: 0 },
+]) {
+  test(`Draft HTTP ${status} preserves its existing retry eligibility and backoff without delaying final`, async () => {
+    let now = 1000;
+    let sleeps = 0;
+    const drafts: string[] = [];
+    const restoreFetch = setApiTestFetch(async (input, init) => {
+      if (getApiTestFetchUrl(input).endsWith("/sendMessage")) return createApiJsonResponse({ message_id: 100 });
+      const body = JSON.parse(String(init?.body));
+      drafts.push(body.rich_message.markdown);
+      return drafts.length === 1
+        ? createApiErrorResponse(status, "Rejected draft", retryAfter ? new Headers({ "retry-after": retryAfter }) : undefined)
+        : createApiJsonResponse(true);
+    });
+    const client = createTelegramApiClient(() => "123:fixture", { now: () => now });
+    const send = (text: string) => client.call<boolean>("sendRichMessageDraft", {
+      chat_id: 7, message_thread_id: 42, draft_id: 1, rich_message: { markdown: text },
+    }, { sleep: async () => { sleeps += 1; } });
+    try {
+      await assert.rejects(send("Initial"), new RegExp(String(status)));
+      assert.equal(sleeps, 0, "The rejected snapshot must not enter API retry backoff");
+      if (delayMs > 0) {
+        assert.equal(await send("Deferred"), false);
+        now += delayMs - 1;
+        assert.equal(await send("Still deferred"), false);
+      }
+      const final = await client.call<{ message_id: number }>("sendMessage", {
+        chat_id: 7, message_thread_id: 42, text: "Final",
+      });
+      assert.equal(final.message_id, 100);
+      if (delayMs > 0) now += 1;
+      assert.equal(await send("Fresh"), true);
+      assert.deepEqual(drafts, ["Initial", "Fresh"]);
+    } finally { restoreFetch(); }
+  });
+}
+
+test("Sealed preview drains its issued request but never waits for a 429 draft retry", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const issued = new Promise<void>((resolve) => { entered = resolve; });
+  let requests = 0;
+  let sleeps = 0;
+  let finalSent = false;
+  let final: Promise<boolean> | undefined;
+  let flush: Promise<void> | undefined;
+  const restoreFetch = setApiTestFetch(async () => {
+    requests += 1; entered(); await gate;
+    return createApiErrorResponse(429, "Too Many Requests", new Headers({ "retry-after": "3" }));
+  });
+  const client = createTelegramApiClient(() => "123:fixture");
+  const runtime = createTelegramBridgeApiRuntime({
+    tempDir: "/fixture", maxFileSizeBytes: 1, tempFileMaxAgeMs: 1, recordRuntimeEvent: () => {},
+    client: createApiRuntimeClient({
+      call: <T>(method: string, body: Record<string, unknown>, options?: TelegramApiCallOptions) =>
+        client.call<T>(method, body, { ...options, sleep: async () => { sleeps += 1; } }),
+    }),
+  });
+  const preview = createTelegramAssistantPreviewRuntime<{ text: string }>({
+    getActiveTurn: () => ({ chatId: 7 }), isAssistantMessage: () => true, getMessageText: (message) => message.text,
+    sendDraft: createTelegramNativeMarkdownDraftSender(runtime),
+    sendMarkdownReply: async () => { finalSent = true; return 100; },
+  });
+  try {
+    preview.resetState();
+    await preview.onMessageUpdate({ message: { text: "Completed answer." } });
+    flush = preview.getState()?.flushPromise;
+    await issued;
+    final = preview.finalizeMarkdown(7, "Completed answer.", 21);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(finalSent, false, "The issued HTTP request still owns its effect boundary");
+    release(); await final;
+    assert.equal(finalSent, true);
+    assert.equal(requests, 1);
+    assert.equal(sleeps, 0);
+  } finally {
+    release(); await Promise.allSettled([flush, final]);
+    preview.invalidate(); restoreFetch();
+  }
+});
 
 test("Outgoing Rich Message type supports explicit structured blocks", () => {
   const structured: TelegramInputRichMessage = {

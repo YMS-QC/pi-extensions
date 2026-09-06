@@ -37,9 +37,15 @@ export function setResetTransportReplyDedup(fn: () => void): void {
 
 export function createAgentStartDedupHook(
   inner: (event: AgentStartEvent, ctx: ExtensionContext) => Promise<void>,
+  schedulePublication?: (task: () => Promise<void>) => void,
 ): (event: AgentStartEvent, ctx: ExtensionContext) => Promise<void> {
   return async (event, ctx) => {
-    if (resetTransportReplyDedupFn) resetTransportReplyDedupFn();
+    const reset = resetTransportReplyDedupFn;
+    if (reset) {
+      // A new turn must not erase the anchor of a final still ahead in the FIFO.
+      if (schedulePublication) schedulePublication(async () => { reset(); });
+      else reset();
+    }
     return inner(event, ctx);
   };
 }

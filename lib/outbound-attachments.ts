@@ -21,7 +21,7 @@ import {
   TELEGRAM_MESSAGE_PROMPT_SNIPPET,
 } from "./prompts.ts";
 import {
-  buildTelegramMultipartReplyParameters,
+  withTelegramReplyParameters,
   normalizeTelegramNativeMarkdown,
 } from "./replies.ts";
 import {
@@ -189,18 +189,10 @@ export function planTelegramRichOutboundAttachment(options: {
     ],
     skip_entity_detection: true,
   };
-  const replyParameters =
-    options.turn.replyToMessageId > 0
-      ? JSON.stringify({
-          message_id: options.turn.replyToMessageId,
-          allow_sending_without_reply: true,
-        })
-      : undefined;
   return {
     method: "sendRichMessage",
     fields: {
       chat_id: String(options.turn.chatId),
-      ...(replyParameters ? { reply_parameters: replyParameters } : {}),
       ...getTelegramMultipartTargetFields(options.turn.target),
       rich_message: JSON.stringify(richMessage),
       ...(options.replyMarkup
@@ -230,12 +222,15 @@ export function createTelegramRichOutboundAttachmentSender(
     });
     if (!plan) return false;
     try {
-      const result = await deps.sendMultipart(
-        plan.method,
-        plan.fields,
-        plan.fileField,
-        plan.filePath,
-        plan.fileName,
+      const result = await withTelegramReplyParameters(
+        turn.chatId, turn.replyToMessageId, turn.target,
+        (replyParameters) => deps.sendMultipart(
+          plan.method,
+          { ...plan.fields, ...(replyParameters ? { reply_parameters: JSON.stringify(replyParameters) } : {}) },
+          plan.fileField,
+          plan.filePath,
+          plan.fileName,
+        ),
       );
       const messageId =
         result && typeof result === "object" &&
@@ -964,21 +959,19 @@ export async function sendQueuedTelegramOutboundAttachments(
       const isPhoto = isTelegramOutboundPhotoAttachmentPath(attachment.path);
       const method = isPhoto ? "sendPhoto" : "sendDocument";
       const fieldName = isPhoto ? "photo" : "document";
-      const replyParameters = buildTelegramMultipartReplyParameters(
-        turn.chatId,
-        turn.replyToMessageId,
-        turn.target,
-      );
-      await deps.sendMultipart(
-        method,
-        {
-          chat_id: String(turn.chatId),
-          ...(replyParameters ? { reply_parameters: replyParameters } : {}),
-          ...getTelegramMultipartTargetFields(turn.target),
-        },
-        fieldName,
-        attachment.path,
-        attachment.fileName,
+      await withTelegramReplyParameters(
+        turn.chatId, turn.replyToMessageId, turn.target,
+        (replyParameters) => deps.sendMultipart(
+          method,
+          {
+            chat_id: String(turn.chatId),
+            ...(replyParameters ? { reply_parameters: JSON.stringify(replyParameters) } : {}),
+            ...getTelegramMultipartTargetFields(turn.target),
+          },
+          fieldName,
+          attachment.path,
+          attachment.fileName,
+        ),
       );
     } catch (error) {
       if (deps.isDeliveryActive?.() === false) return;

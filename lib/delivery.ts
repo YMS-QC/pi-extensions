@@ -10,7 +10,7 @@ import {
   type TelegramInlineKeyboardMarkup,
 } from "./keyboard.ts";
 import {
-  buildTelegramReplyParameters,
+  withTelegramReplyParameters,
   renderTelegramMessage,
 } from "./replies.ts";
 import {
@@ -724,23 +724,23 @@ export function createTelegramBridgeDeliveryRuntime(
     },
     async sendChunk(target, chunk, options) {
       assertTransportActive();
-      const replyParameters = buildTelegramReplyParameters(
-        target.chatId,
-        options.replyToMessageId,
-        target,
-      );
-      const body = {
-        chat_id: target.chatId,
-        text: chunk.text,
-        ...(chunk.parseMode === "html" ? { parse_mode: "HTML" as const } : {}),
-        ...getTelegramTargetThreadParams(target),
-        ...(replyParameters ? { reply_parameters: replyParameters } : {}),
-        ...(options.replyMarkup ? { reply_markup: options.replyMarkup } : {}),
-      };
-      const sent = await deps.api.sendMessage(
-        target.threadId === undefined
-          ? markTelegramBusAggregateDelivery(body)
-          : body,
+      const sent = await withTelegramReplyParameters(
+        target.chatId, options.replyToMessageId, target,
+        (replyParameters) => {
+          const body = {
+            chat_id: target.chatId,
+            text: chunk.text,
+            ...(chunk.parseMode === "html" ? { parse_mode: "HTML" as const } : {}),
+            ...getTelegramTargetThreadParams(target),
+            ...(replyParameters ? { reply_parameters: replyParameters } : {}),
+            ...(options.replyMarkup ? { reply_markup: options.replyMarkup } : {}),
+          };
+          return deps.api.sendMessage(
+            target.threadId === undefined
+              ? markTelegramBusAggregateDelivery(body)
+              : body,
+          );
+        },
       );
       assertTransportActive();
       deps.recordOwnership({

@@ -32,6 +32,7 @@ export interface TelegramActivityEnvelope {
   sequence: number;
   source: TelegramActivitySource;
   target?: TelegramActivityTarget;
+  replyToMessageId?: number;
   timestamp: number;
 }
 
@@ -422,8 +423,8 @@ export function createTelegramActivityBridgeRuntime(deps: {
     recordInputSource(source) {
       getRuntime()?.recordInputSource(source);
     },
-    onAgentStart(target) {
-      getRuntime()?.onAgentStart(target);
+    onAgentStart(target, replyToMessageId) {
+      getRuntime()?.onAgentStart(target, replyToMessageId);
     },
     onAssistantEvent(event) {
       getRuntime()?.onAssistantEvent(event);
@@ -492,7 +493,7 @@ export type TelegramAssistantStreamEvent =
 export interface TelegramActivityRuntime {
   onSessionStart?: () => void;
   recordInputSource: (source: TelegramActivityInputSource) => void;
-  onAgentStart: (activeTelegramTarget?: TelegramActivityTarget) => void;
+  onAgentStart: (activeTelegramTarget?: TelegramActivityTarget, replyToMessageId?: number) => void;
   onAssistantEvent: (event: TelegramAssistantStreamEvent) => void;
   onAssistantMessageEnd: (stopReason?: string) => void;
   onToolStart: (event: {
@@ -549,6 +550,7 @@ export function createTelegramActivityRuntime(deps: {
   let activityId: string | undefined;
   let activitySource: TelegramActivitySource = "unknown";
   let activityTarget: TelegramActivityTarget | undefined;
+  let activityReplyToMessageId: number | undefined;
   let sequence = 0;
   let pendingInputSource: TelegramActivityInputSource = "unknown";
   let pendingAssistantSegment: PendingAssistantSegment | undefined;
@@ -584,6 +586,7 @@ export function createTelegramActivityRuntime(deps: {
       sequence,
       source: activitySource,
       ...(activityTarget ? { target: activityTarget } : {}),
+      ...(activityReplyToMessageId !== undefined ? { replyToMessageId: activityReplyToMessageId } : {}),
       timestamp: now(),
     } as TelegramActivityEvent;
     try {
@@ -610,6 +613,7 @@ export function createTelegramActivityRuntime(deps: {
     activityId = undefined;
     activitySource = "unknown";
     activityTarget = undefined;
+    activityReplyToMessageId = undefined;
     sequence = 0;
     pendingAssistantSegment = undefined;
     compactionInProgress = false;
@@ -627,9 +631,10 @@ export function createTelegramActivityRuntime(deps: {
     recordInputSource(source) {
       pendingInputSource = source;
     },
-    onAgentStart(activeTelegramTarget) {
+    onAgentStart(activeTelegramTarget, replyToMessageId) {
       abandonCompaction();
       ensureActivity(activeTelegramTarget);
+      activityReplyToMessageId = activitySource === "telegram" ? replyToMessageId : undefined;
       emit({ type: "agent-start" });
     },
     onAssistantEvent(event) {
@@ -804,7 +809,13 @@ export interface TelegramAssistantOutputRuntime {
   stop: () => void;
 }
 
+export interface TelegramAssistantOutputPreparation {
+  wait: () => Promise<void>;
+  settle: () => void;
+}
+
 export function createTelegramAssistantOutputRuntime<TAuthority = undefined>(deps: {
+  prepareSend?: (event: TelegramAssistantSegmentEvent) => TelegramAssistantOutputPreparation | undefined;
   enqueue?: TelegramActivityPublicationRuntime["enqueue"];
   captureAuthority?: () => TAuthority;
   isAuthorityActive?: (authority: TAuthority) => boolean;
@@ -843,6 +854,7 @@ export function createTelegramAssistantOutputRuntime<TAuthority = undefined>(dep
       admitted.add(key);
       const admittedGeneration = generation;
       const admittedAuthority = deps.captureAuthority?.();
+      const preparation = deps.prepareSend?.(event);
       const enqueue = deps.enqueue ?? ((task: () => Promise<void>) => tail.then(task));
       tail = enqueue(async () => {
         const isAdmittedAuthorityActive = () =>
@@ -853,6 +865,8 @@ export function createTelegramAssistantOutputRuntime<TAuthority = undefined>(dep
             deps.isAuthorityActive(admittedAuthority as TAuthority));
         if (!isAdmittedAuthorityActive() || !deps.canDeliver(event)) return;
         try {
+          if (preparation) await preparation.wait();
+          if (!isAdmittedAuthorityActive() || !deps.canDeliver(event)) return;
           await deps.send(
             event,
             admittedAuthority as TAuthority,
@@ -861,7 +875,7 @@ export function createTelegramAssistantOutputRuntime<TAuthority = undefined>(dep
         } catch (error) {
           deps.recordFailure?.(event, error);
         }
-      });
+      }).finally(() => preparation?.settle());
     },
     waitForIdle() {
       return tail;

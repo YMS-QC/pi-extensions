@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { TelegramAssistantSegmentEvent } from "./activity.ts";
 import { resolveTelegramTempDir } from "./paths.ts";
 import * as Replies from "./replies.ts";
+import type { TelegramPreparedPreviewDelivery } from "./preview.ts";
 import { isTelegramApiCommitUnknownError } from "./telegram-api.ts";
 import type {
   TelegramEditMessageTextBody,
@@ -249,12 +250,8 @@ export interface TelegramOutboundTextPreviewRuntimeDeps<
 > {
   execCommand: TelegramVoiceReplySenderDeps["execCommand"];
   getHandlers?: () => TelegramOutboundHandlerConfig[] | undefined;
-  finalizeMarkdownPreview: (
-    chatId: number,
-    markdown: string,
-    replyToMessageId: number,
-    options?: { replyMarkup?: TReplyMarkup },
-  ) => Promise<boolean>;
+  finalizeMarkdownPreview: TelegramPreparedPreviewDelivery<TReplyMarkup>["finalizeMarkdownPreview"];
+  preparePreviewDelivery?: (isDeliveryActive: () => boolean) => TelegramPreparedPreviewDelivery<TReplyMarkup>;
   cwd?: string;
   recordRuntimeEvent?: TelegramVoiceReplySenderDeps["recordRuntimeEvent"];
 }
@@ -729,12 +726,13 @@ export function createTelegramOutboundTextPreviewRuntime<
   TReplyMarkup = unknown,
 >(
   deps: TelegramOutboundTextPreviewRuntimeDeps<TReplyMarkup>,
-): Pick<
-  TelegramOutboundTextPreviewRuntimeDeps<TReplyMarkup>,
-  "finalizeMarkdownPreview"
-> {
-  return {
-    finalizeMarkdownPreview: async (
+): {
+  finalizeMarkdownPreview: TelegramPreparedPreviewDelivery<TReplyMarkup>["finalizeMarkdownPreview"];
+  preparePreviewDelivery: (isDeliveryActive: () => boolean) => TelegramPreparedPreviewDelivery<TReplyMarkup> | undefined;
+} {
+  const wrap = (
+    finalize: TelegramPreparedPreviewDelivery<TReplyMarkup>["finalizeMarkdownPreview"],
+  ): TelegramPreparedPreviewDelivery<TReplyMarkup>["finalizeMarkdownPreview"] => async (
       chatId,
       markdown,
       replyToMessageId,
@@ -747,7 +745,7 @@ export function createTelegramOutboundTextPreviewRuntime<
         recordRuntimeEvent: deps.recordRuntimeEvent,
         replyMarkup: options?.replyMarkup,
       });
-      return deps.finalizeMarkdownPreview(
+      return finalize(
         chatId,
         transformed.text,
         replyToMessageId,
@@ -758,6 +756,12 @@ export function createTelegramOutboundTextPreviewRuntime<
             : {}),
         },
       );
+    };
+  return {
+    finalizeMarkdownPreview: wrap(deps.finalizeMarkdownPreview),
+    preparePreviewDelivery(isDeliveryActive) {
+      const prepared = deps.preparePreviewDelivery?.(isDeliveryActive);
+      return prepared ? { ...prepared, finalizeMarkdownPreview: wrap(prepared.finalizeMarkdownPreview) } : undefined;
     },
   };
 }
@@ -1018,7 +1022,7 @@ export function createTelegramAssistantOutputSender<
     };
     await outboundRuntime.sendMarkdownReply(
       target.chatId,
-      undefined,
+      event.source === "telegram" ? event.replyToMessageId : undefined,
       buttonReply.markdown,
       {
         target,

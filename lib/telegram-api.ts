@@ -1783,11 +1783,44 @@ export function createTelegramBridgeApiRuntime(
  */
 export function createTelegramApiClient(
   getBotToken: () => string | undefined,
-  options: TelegramAnswerCallbackQueryOptions = {},
+  options: TelegramAnswerCallbackQueryOptions & { now?: () => number } = {},
 ): TelegramApiClient {
+  const now = options.now ?? Date.now;
+  const draftRetryNotBeforeByTarget = new Map<string, number>();
   return {
-    call: async (method, body, options) => {
-      return callTelegram(getBotToken(), method, body, options);
+    call: async <TResponse>(
+      method: string,
+      body: Record<string, unknown>,
+      options?: TelegramApiCallOptions,
+    ): Promise<TResponse> => {
+      const token = getBotToken();
+      // Cooldown keys retain only the public bot-id prefix, not the credential.
+      const botId = token?.match(/^(\d+):/)?.[1];
+      const isDraft = method === "sendMessageDraft" || method === "sendRichMessageDraft";
+      const draftKey = isDraft && botId
+        ? `${botId}:${String(body.chat_id)}:${String(body.message_thread_id ?? "all")}`
+        : undefined;
+      if (draftKey) {
+        const nowMs = now();
+        for (const [key, deadline] of draftRetryNotBeforeByTarget) {
+          if (nowMs >= deadline) draftRetryNotBeforeByTarget.delete(key);
+        }
+        if (draftRetryNotBeforeByTarget.has(draftKey)) return false as TResponse;
+      }
+      try {
+        // A draft is a replaceable snapshot, not a body to replay after backoff.
+        return await callTelegram<TResponse>(
+          token, method, body, isDraft ? { ...options, maxAttempts: 1 } : options,
+        );
+      } catch (error) {
+        if (draftKey && isRetryableTelegramApiError(error)) {
+          draftRetryNotBeforeByTarget.set(draftKey, Math.max(
+            draftRetryNotBeforeByTarget.get(draftKey) ?? 0,
+            now() + getTelegramRetryDelayMs(error, 0, options?.retryBaseDelayMs ?? 500),
+          ));
+        }
+        throw error;
+      }
     },
     callMultipart: async (
       method,

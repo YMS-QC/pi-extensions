@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { registerTelegramVoiceSynthesisProvider } from "../lib/voice.ts";
 import { createTelegramActivityPublicationRuntime } from "../lib/activity.ts";
 import { TelegramApiCommitUnknownError } from "../lib/telegram-api.ts";
-import { createTelegramPreviewController } from "../lib/preview.ts";
+import { createTelegramPreviewController, createTelegramAssistantPreviewRuntime } from "../lib/preview.ts";
 import {
   createTelegramQueuedOutboundAttachmentSender,
   createTelegramRichOutboundAttachmentSender,
@@ -21,6 +21,7 @@ import {
   createTelegramButtonActionStore,
   createTelegramOutboundReplyPlanner,
   createTelegramOutboundReplyArtifactSender,
+  createTelegramOutboundTextPreviewRuntime,
 } from "../lib/outbound.ts";
 import {
   appendTelegramPromptTurnOnce,
@@ -2977,6 +2978,64 @@ test("Agent end does not intercept when planOutboundReply returns voiceReplies",
   assert.ok(events.some((e) => e.startsWith("voiceReplies:1")));
   assert.ok(events.some((e) => e.includes("replyToPrompt=false")));
 });
+
+for (const richAttachment of [false, true]) {
+  test(`Queued ${richAttachment ? "Rich attachment" : "text"} final cannot await or mutate a successor's preview`, async () => {
+    const publication = createTelegramActivityPublicationRuntime();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const blocker = publication.enqueue(async () => { await gate; });
+    const effects: string[] = [];
+    const preview = createTelegramAssistantPreviewRuntime<{ text: string }>({
+      getActiveTurn: () => ({ chatId: 7 }), isAssistantMessage: () => true,
+      getMessageText: (message) => message.text, sendDraft: async () => {},
+      sendMarkdownReply: async (_chat, _reply, text) => { effects.push(text); return 1; },
+    });
+    const prepared = createTelegramOutboundTextPreviewRuntime({
+      finalizeMarkdownPreview: preview.finalizeMarkdown,
+      preparePreviewDelivery: preview.prepareDelivery,
+      execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+    });
+    preview.resetState();
+    let oldFinal: Promise<void> | undefined;
+    let completed = false;
+    await handleTelegramAgentEndRuntime({
+      turn: { ...createQueueTestPromptTurn(), queuedAttachments: richAttachment ? [{ path: "/fixture/photo.png", fileName: "photo.png" }] : [] },
+      assistant: { text: "A final" }, foldQueuedPromptsIntoHistory: false,
+      resetRuntimeState: () => {}, updateStatus: () => {}, dispatchNextQueuedTelegramTurn: () => {},
+      preparePreviewDelivery: prepared.preparePreviewDelivery,
+      finalizeMarkdownPreview: prepared.finalizeMarkdownPreview,
+      clearPreview: preview.clear, setPreviewPendingText: preview.setPendingText,
+      scheduleActiveTurnDelivery: (task) => { oldFinal = publication.enqueue(task).then(() => { completed = true; }); },
+      sendMarkdownReply: async (_chat, _reply, text) => { effects.push(text); },
+      sendRichAttachmentReply: richAttachment ? async () => { effects.push("A attachment"); return true; } : undefined,
+      sendTextReply: async () => { assert.fail("Unexpected notice"); }, sendQueuedAttachments: async () => {},
+    });
+    preview.resetState();
+    await preview.onMessageUpdate({ message: { text: "B checkpoint" } });
+    await preview.flush(7);
+    const nextPreparation = preview.preparePublication()!;
+    const nextPublication = publication.enqueue(async () => {
+      await nextPreparation.wait(); effects.push("B checkpoint");
+    }).finally(nextPreparation.settle);
+    await preview.onMessageStart({ message: { text: "" } });
+    preview.setPendingText("B next draft");
+    const successor = preview.getState();
+    try {
+      release(); await blocker;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(completed, true, "Old final must not wait for the publication behind itself");
+      await oldFinal; await nextPublication;
+      assert.deepEqual(effects, [richAttachment ? "A attachment" : "A final", "B checkpoint"]);
+      assert.equal(preview.getState(), successor);
+      assert.equal(successor?.pendingText, "B next draft");
+      assert.notEqual(successor?.sealed, true);
+    } finally {
+      release(); nextPreparation.settle();
+      await oldFinal; await nextPublication; preview.invalidate(); publication.reset();
+    }
+  });
+}
 
 for (const stopReason of ["error", "aborted"] as const) {
 for (const replacement of ["none", "preview", "authority"] as const) {
