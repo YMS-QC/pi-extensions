@@ -11,6 +11,8 @@ import { join } from "node:path";
 import type { TelegramAssistantSegmentEvent } from "./activity.ts";
 import { resolveTelegramTempDir } from "./paths.ts";
 import * as Replies from "./replies.ts";
+import type { TelegramPreparedPreviewDelivery } from "./preview.ts";
+import { isTelegramApiCommitUnknownError } from "./telegram-api.ts";
 import type {
   TelegramEditMessageTextBody,
   TelegramSendMessageBody,
@@ -137,6 +139,7 @@ export interface TelegramVoiceReplySenderDeps {
   ) => Promise<unknown>;
   sendChatAction?: (chatId: number, action: string) => Promise<unknown>;
   sendRecordVoiceAction?: (chatId: number) => Promise<unknown>;
+  isDeliveryActive?: () => boolean;
   getHandlers?: () => TelegramOutboundHandlerConfig[] | undefined;
   cwd?: string;
   tempDir?: string;
@@ -247,12 +250,8 @@ export interface TelegramOutboundTextPreviewRuntimeDeps<
 > {
   execCommand: TelegramVoiceReplySenderDeps["execCommand"];
   getHandlers?: () => TelegramOutboundHandlerConfig[] | undefined;
-  finalizeMarkdownPreview: (
-    chatId: number,
-    markdown: string,
-    replyToMessageId: number,
-    options?: { replyMarkup?: TReplyMarkup },
-  ) => Promise<boolean>;
+  finalizeMarkdownPreview: TelegramPreparedPreviewDelivery<TReplyMarkup>["finalizeMarkdownPreview"];
+  preparePreviewDelivery?: (isDeliveryActive: () => boolean) => TelegramPreparedPreviewDelivery<TReplyMarkup>;
   cwd?: string;
   recordRuntimeEvent?: TelegramVoiceReplySenderDeps["recordRuntimeEvent"];
 }
@@ -727,12 +726,13 @@ export function createTelegramOutboundTextPreviewRuntime<
   TReplyMarkup = unknown,
 >(
   deps: TelegramOutboundTextPreviewRuntimeDeps<TReplyMarkup>,
-): Pick<
-  TelegramOutboundTextPreviewRuntimeDeps<TReplyMarkup>,
-  "finalizeMarkdownPreview"
-> {
-  return {
-    finalizeMarkdownPreview: async (
+): {
+  finalizeMarkdownPreview: TelegramPreparedPreviewDelivery<TReplyMarkup>["finalizeMarkdownPreview"];
+  preparePreviewDelivery: (isDeliveryActive: () => boolean) => TelegramPreparedPreviewDelivery<TReplyMarkup> | undefined;
+} {
+  const wrap = (
+    finalize: TelegramPreparedPreviewDelivery<TReplyMarkup>["finalizeMarkdownPreview"],
+  ): TelegramPreparedPreviewDelivery<TReplyMarkup>["finalizeMarkdownPreview"] => async (
       chatId,
       markdown,
       replyToMessageId,
@@ -745,7 +745,7 @@ export function createTelegramOutboundTextPreviewRuntime<
         recordRuntimeEvent: deps.recordRuntimeEvent,
         replyMarkup: options?.replyMarkup,
       });
-      return deps.finalizeMarkdownPreview(
+      return finalize(
         chatId,
         transformed.text,
         replyToMessageId,
@@ -756,6 +756,12 @@ export function createTelegramOutboundTextPreviewRuntime<
             : {}),
         },
       );
+    };
+  return {
+    finalizeMarkdownPreview: wrap(deps.finalizeMarkdownPreview),
+    preparePreviewDelivery(isDeliveryActive) {
+      const prepared = deps.preparePreviewDelivery?.(isDeliveryActive);
+      return prepared ? { ...prepared, finalizeMarkdownPreview: wrap(prepared.finalizeMarkdownPreview) } : undefined;
     },
   };
 }
@@ -877,15 +883,17 @@ export function createTelegramOutboundReplyPlanner(
 export function createTelegramOutboundReplyArtifactSender(
   deps: TelegramVoiceReplySenderDeps,
 ) {
-  const sendVoiceReply = createTelegramVoiceReplySender(deps);
   return async (
     turn: TelegramVoiceReplyTurnView,
     plan: Pick<
       TelegramOutboundReplyPlan,
       "voiceText" | "voiceReplies" | "lang" | "rate" | "replyMarkup"
     >,
-    options?: { replyToPrompt?: boolean },
+    options?: { replyToPrompt?: boolean; isDeliveryActive?: () => boolean },
   ): Promise<void> => {
+    const isDeliveryActive = () =>
+      deps.isDeliveryActive?.() !== false && options?.isDeliveryActive?.() !== false;
+    const sendVoiceReply = createTelegramVoiceReplySender({ ...deps, isDeliveryActive });
     // Normalize voice replies: either use explicit voiceReplies array or fall back to voiceText
     const voiceReplies = plan.voiceReplies?.length
       ? plan.voiceReplies
@@ -896,6 +904,7 @@ export function createTelegramOutboundReplyArtifactSender(
     let anyDelivered = false;
 
     for (const reply of voiceReplies) {
+      if (!isDeliveryActive()) return;
       try {
         await sendVoiceReply(turn, reply.text, {
           lang: reply.lang ?? plan.lang,
@@ -905,11 +914,13 @@ export function createTelegramOutboundReplyArtifactSender(
           replyMarkup: !anyDelivered ? plan.replyMarkup : undefined,
         });
         anyDelivered = true;
-      } catch {
+      } catch (error) {
+        if (isTelegramApiCommitUnknownError(error)) throw error;
         // sendVoiceReply already recorded the error; continue to next reply
       }
     }
 
+    if (!isDeliveryActive()) return;
     if (!anyDelivered) {
       throw new Error(
         "Failed to send voice reply: every voice synthesis provider failed.",
@@ -1011,7 +1022,7 @@ export function createTelegramAssistantOutputSender<
     };
     await outboundRuntime.sendMarkdownReply(
       target.chatId,
-      undefined,
+      event.source === "telegram" ? event.replyToMessageId : undefined,
       buttonReply.markdown,
       {
         target,

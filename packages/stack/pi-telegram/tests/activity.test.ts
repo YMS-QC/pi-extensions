@@ -10,6 +10,7 @@ import {
   clearTelegramActivityHandlers,
   createTelegramActivityBridgeRuntime,
   createTelegramActivityDispatcher,
+  createTelegramActivityPublicationRuntime,
   createTelegramActivityRuntime,
   createTelegramAssistantOutputRuntime,
   registerTelegramActivityHandler,
@@ -29,6 +30,71 @@ import {
   createTelegramButtonReplyPlanner,
 } from "../lib/outbound.ts";
 import type { TelegramBridgeApiRuntime } from "../lib/telegram-api.ts";
+
+test("Activity publication isolates failed tasks and fences queued work across reset", async () => {
+  const publication = createTelegramActivityPublicationRuntime();
+  const events: string[] = [];
+  const failed = publication.enqueue(async () => { throw new Error("fixture publication failure"); });
+  const next = publication.enqueue(async () => { events.push("after-failure"); });
+  await assert.rejects(failed, /fixture publication failure/);
+  await next;
+  let release!: () => void;
+  let markStarted!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const active = publication.enqueue(async () => { markStarted(); await gate; });
+  const stale = publication.enqueue(async () => { events.push("stale"); });
+  await started;
+  publication.reset();
+  await publication.enqueue(async () => { events.push("replacement"); });
+  release();
+  await Promise.all([active, stale]);
+  assert.deepEqual(events, ["after-failure", "replacement"]);
+});
+
+for (const outcome of ["reset", "failure", "stop"] as const) {
+  test(`Assistant publication preparation settles after ${outcome}`, async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const publication = createTelegramActivityPublicationRuntime();
+    const blocker = publication.enqueue(async () => { await gate; });
+    const effects: string[] = [];
+    const output = createTelegramAssistantOutputRuntime({
+      enqueue: publication.enqueue, canDeliver: () => true,
+      prepareSend: () => ({ wait: async () => { effects.push("wait"); }, settle: () => { effects.push("settle"); } }),
+      send: async () => { effects.push("send"); throw new Error("fixture"); },
+      recordFailure: () => { effects.push("failure"); },
+    });
+    output.start(); output.accept(assistantSegment(1));
+    if (outcome === "reset") publication.reset();
+    if (outcome === "stop") output.stop();
+    release(); await blocker; await output.waitForIdle();
+    assert.deepEqual(effects, outcome === "failure" ? ["wait", "send", "failure", "settle"] : ["settle"]);
+    await publication.enqueue(async () => { effects.push("later"); });
+    assert.equal(effects.at(-1), "later");
+    output.stop();
+  });
+}
+
+test("Publication reservations release on cancellation/reset and accept one task", async () => {
+  const publication = createTelegramActivityPublicationRuntime();
+  const events: string[] = [];
+  const cancelled = publication.reserve();
+  const next = publication.enqueue(async () => { events.push("next"); });
+  cancelled.cancel();
+  await cancelled.publish(async () => { events.push("cancelled"); });
+  await next;
+  const abandoned = publication.reserve();
+  publication.reset();
+  await abandoned.publish(async () => { events.push("abandoned"); });
+  const slot = publication.reserve();
+  const sent = slot.publish(async () => { events.push("sent"); });
+  slot.cancel();
+  await assert.rejects(slot.publish(async () => { events.push("duplicate"); }), /already published/);
+  await sent;
+  await publication.enqueue(async () => { events.push("fresh"); });
+  assert.deepEqual(events, ["next", "sent", "fresh"]);
+});
 
 function waitForActivityDispatch(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -866,6 +932,41 @@ test("Assistant output projection plans prompt buttons before proactive delivery
     /^tgbtn:/u,
   );
 });
+
+for (const rendering of ["rich", "html"] as const) {
+  test(`Delayed ${rendering} assistant projection keeps original prompt anchors across turns`, async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const send = createTelegramAssistantOutputSender<string>({
+      sendMessage: async (body) => { bodies.push(body); return { message_id: bodies.length }; },
+      sendRichMessage: async (body) => { bodies.push(body); return { message_id: bodies.length }; },
+      editMessage: async () => "edited", getAssistantRenderingMode: () => rendering,
+      execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+    });
+    const target = { chatId: rendering === "rich" ? 701 : 702, threadId: 42 };
+    const authority = { target, route: "direct" as const, directEpoch: 1, transportStamp: "fixture" };
+    const output = createTelegramAssistantOutputRuntime({ canDeliver: () => true, send: (event) => send(event, authority, () => true) });
+    const activity = createTelegramActivityRuntime({
+      generation: "fixture", dispatcher: { dispatch: () => {}, stop: () => {} },
+      observeEvent: (event) => { if (event.type === "assistant-segment") output.accept(event); },
+    });
+    try {
+      output.start();
+      for (const prompt of [21, 22, undefined]) {
+        activity.recordInputSource("interactive");
+        activity.onAgentStart(prompt ? target : undefined, prompt ?? 999);
+        activity.onAssistantEvent({ type: "text_end", contentIndex: 0, content: `Reply ${prompt ?? "local"}` });
+        activity.onAssistantEvent({ type: "toolcall_start", contentIndex: 1 });
+        activity.onAgentEnd(); activity.onAgentSettled();
+      }
+      await output.waitForIdle();
+      assert.deepEqual(bodies.map((body) => body.reply_parameters), [
+        { message_id: 21, allow_sending_without_reply: true },
+        { message_id: 22, allow_sending_without_reply: true },
+        undefined,
+      ]);
+    } finally { output.stop(); activity.onSessionShutdown(); }
+  });
+}
 
 test("Assistant output projection strips foreign comments and skips comment-only segments", async () => {
   const sent: Array<Record<string, unknown>> = [];

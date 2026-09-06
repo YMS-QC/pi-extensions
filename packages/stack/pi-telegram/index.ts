@@ -553,13 +553,33 @@ export default function (pi: Pi.ExtensionAPI) {
       editInteractiveMessage,
       recordRuntimeEvent,
     });
+  const nativeMarkdownDraftSender =
+    TelegramApi.createTelegramAssistantDraftSender({
+      getAssistantRenderingMode: configControls.getAssistantRenderingMode,
+      renderMarkdownToHtmlDraft: Replies.renderTelegramMarkdownToHtmlDraft,
+      sendMessageDraft,
+      sendRichMessageDraft,
+    });
+  const previewRuntime = Preview.createTelegramAssistantPreviewRuntime({
+    getActiveTurn: activeTurnRuntime.get,
+    isAssistantMessage: Replies.isAssistantAgentMessage,
+    getMessageText: Replies.getAgentMessageText,
+    getDefaultReplyToMessageId: activeTurnRuntime.getReplyToMessageId,
+    sendDraft: nativeMarkdownDraftSender,
+    canSend: configControls.areDraftPreviewsEnabled,
+    sendMarkdownReply,
+    recordRuntimeEvent,
+    ...replyTransport,
+  });
   const {
     activityRuntime,
     activityVerbosityRuntime,
     assistantOutputRuntime,
+    publicationRuntime,
   } = Bindings.createTelegramActivityBindingRuntime({
     generation: deliveryGenerationSeed,
     assistantOutput: {
+      prepareTelegramPreview: previewRuntime.preparePublication,
       authority: {
         getPreferredTarget: proactivePushTargetGetter,
         getFallbackChatId: proactivePushChatIdGetter,
@@ -616,27 +636,10 @@ export default function (pi: Pi.ExtensionAPI) {
     sendUserMessage,
     recordRuntimeEvent,
   });
-  const nativeMarkdownDraftSender =
-    TelegramApi.createTelegramAssistantDraftSender({
-      getAssistantRenderingMode: configControls.getAssistantRenderingMode,
-      renderMarkdownToHtmlDraft: Replies.renderTelegramMarkdownToHtmlDraft,
-      sendMessageDraft,
-      sendRichMessageDraft,
-    });
-  const previewRuntime = Preview.createTelegramAssistantPreviewRuntime({
-    getActiveTurn: activeTurnRuntime.get,
-    isAssistantMessage: Replies.isAssistantAgentMessage,
-    getMessageText: Replies.getAgentMessageText,
-    getDefaultReplyToMessageId: activeTurnRuntime.getReplyToMessageId,
-    sendDraft: nativeMarkdownDraftSender,
-    canSend: configControls.areDraftPreviewsEnabled,
-    sendMarkdownReply,
-    recordRuntimeEvent,
-    ...replyTransport,
-  });
-  const { finalizeMarkdownPreview } =
+  const { finalizeMarkdownPreview, preparePreviewDelivery } =
     Outbound.createTelegramOutboundTextPreviewRuntime({
       finalizeMarkdownPreview: previewRuntime.finalizeMarkdown,
+      preparePreviewDelivery: previewRuntime.prepareDelivery,
       execCommand: CommandTemplates.execCommandTemplate,
       getHandlers: configStore.getOutboundHandlers,
       recordRuntimeEvent,
@@ -1365,6 +1368,7 @@ export default function (pi: Pi.ExtensionAPI) {
     activityRuntime,
     activityVerbosityRuntime,
     assistantOutputRuntime,
+    publicationRuntime,
     configStore,
     abort,
     typing,
@@ -1395,6 +1399,7 @@ export default function (pi: Pi.ExtensionAPI) {
     deleteMessage: deleteTelegramMessage,
     sendGuestReply,
     finalizeMarkdownPreview,
+    preparePreviewDelivery,
     proactivePushTargetGetter,
     getAssistantRenderingMode: configControls.getAssistantRenderingMode,
     recordMessageOwnership: messageOwnershipRuntime.recordLocal,

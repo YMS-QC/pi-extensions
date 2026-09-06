@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import * as Commands from "../lib/commands.ts";
+import * as Journal from "../lib/journal.ts";
 import * as Media from "../lib/media.ts";
 import * as Menu from "../lib/menu.ts";
 import * as Model from "../lib/model.ts";
@@ -399,6 +400,10 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
 
 interface RouteHarnessOptions {
   config?: unknown;
+  sendStatusMessage?: () => Promise<void>;
+  sendInteractiveMessage?: Routing.TelegramInboundRouteRuntimeDeps<
+    TestMessage, TestCallbackQuery, TestContext, TestModel
+  >["sendInteractiveMessage"];
   threadStore?: Threads.TelegramTopicTargetStore;
   callApi?: Routing.TelegramInboundRouteRuntimeDeps<
     TestMessage,
@@ -510,6 +515,7 @@ function createRouteHarness(options: RouteHarnessOptions = {}) {
     updateStatusMessage: async () => undefined,
     sendStatusMessage: async () => {
       events.push("status-menu");
+      await options.sendStatusMessage?.();
     },
     openModelMenu: async () => undefined,
     openThinkingMenu: async () => undefined,
@@ -573,12 +579,12 @@ function createRouteHarness(options: RouteHarnessOptions = {}) {
     },
     answerGuestQuery: async () => undefined,
     editMessageReplyMarkup: options.editMessageReplyMarkup,
-    sendInteractiveMessage: async (_chatId, text, mode, replyMarkup, options) => {
+    sendInteractiveMessage: options.sendInteractiveMessage ?? (async (_chatId, text, mode, replyMarkup, sendOptions) => {
       events.push(`interactive:${mode}:${text}`);
       events.push(`markup:${JSON.stringify(replyMarkup)}`);
-      events.push(`interactive-options:${JSON.stringify(options ?? {})}`);
+      events.push(`interactive-options:${JSON.stringify(sendOptions ?? {})}`);
       return 99;
-    },
+    }),
     sendTextReply: async (_chatId, _replyToMessageId, text, options) => {
       events.push(`reply:${text}`);
       if (typeof options?.target?.threadId === "number") {
@@ -1791,6 +1797,683 @@ test("Routing runtime preserves follower target and marks generated prompt butto
       },
     },
   ]);
+});
+
+test("All command age policy requires a valid source timestamp and excludes bound threads", () => {
+  const now = 10_000_000;
+  const date = (now - Routing.TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS) / 1000;
+  assert.equal(Routing.isTelegramAllTabCommandExpired({ date }, now), true);
+  assert.equal(Routing.isTelegramAllTabCommandExpired({ date }, now - 1), false);
+  assert.equal(Routing.isTelegramAllTabCommandExpired({ date, message_thread_id: 42 }, now), false);
+  for (const invalid of [undefined, 0, -1, NaN, Infinity, now / 1000 + 1]) {
+    assert.equal(Routing.isTelegramAllTabCommandExpired({ date: invalid }, now), false);
+  }
+});
+
+for (const failSettlement of [false, true]) {
+test(`All start coalescing retains the latest durable source: ${failSettlement ? "journal failure and recovery" : "normal"}`, async () => {
+  await withTopicStore(async (threadStore, path) => {
+    threadStore.upsert({
+      profileKey: "cwd:/repo", target: { chatId: 100, threadId: 42 },
+      status: "active", createdAtMs: Date.now(), updatedAtMs: Date.now(),
+      instanceId: "leader-a", slot: "A", threadName: "Axial",
+    });
+    await threadStore.persist();
+    const { routeRuntime, events } = createRouteHarness({ threadStore });
+    const updates = ["/start", "/start payload", "/status", "/start"].map((text, index) => ({
+      update_id: index + 1,
+      message: { message_id: index + 10, date: Math.floor(Date.now() / 1000),
+        chat: { id: 100, type: "private" as const }, from: { id: 7, is_bot: false }, text },
+    }));
+    const openJournal = () => Journal.createTelegramUpdateJournalStore({
+      path: `${path}.inbox`,
+      botIdentity: Journal.createTelegramUpdateJournalBotIdentity({ botToken: "123:coalesce-command" }),
+    });
+    const journal = openJournal();
+    journal.appendBatch(updates);
+    const removeCompleted = journal.removeCompleted;
+    let writeFails = failSettlement;
+    journal.removeCompleted = (ids) => {
+      if (writeFails) throw new Error("fixture journal settlement write failed");
+      return removeCompleted(ids);
+    };
+    const worker = Updates.createTelegramUpdateAdmissionWorkerRuntime<typeof updates[number], TestContext>({
+      journal, hasAuthority: () => true,
+      defaultHandle: (input, ctx) => routeRuntime.handleUpdate(input, ctx),
+    });
+    try {
+      worker.start({ cwd: "/repo" });
+      await worker.waitForDrain();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (failSettlement) {
+        assert.deepEqual(openJournal().read().entries.map((entry) => entry.updateId), [1, 2, 3, 4]);
+        assert.equal(worker.getState().phase, "blocked");
+        assert.equal(events.includes("status-menu"), false);
+        await worker.stop();
+        writeFails = false;
+        worker.start({ cwd: "/repo" });
+        await worker.waitForDrain();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      assert.deepEqual(openJournal().read().entries.map((entry) => entry.updateId), [2, 3, 4]);
+      assert.equal(worker.getState().deferredClaimCount, 3);
+      await routeRuntime.handleUpdate({ callback_query: {
+        id: "superseded", from: { id: 7, is_bot: false },
+        message: { message_id: 99, chat: { id: 100, type: "private" } }, data: "reroute:1:42",
+      } }, { cwd: "/repo" });
+      assert.ok(events.includes("answer:Message route expired."));
+      assert.equal(events.includes("status-menu"), false);
+      await routeRuntime.handleUpdate({ callback_query: {
+        id: "current", from: { id: 7, is_bot: false },
+        message: { message_id: 99, chat: { id: 100, type: "private" } }, data: `reroute:${failSettlement ? "8" : "4"}:42`,
+      } }, { cwd: "/repo" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(openJournal().read().entries.map((entry) => entry.updateId), [2, 3]);
+    } finally {
+      await worker.stop();
+    }
+  });
+});
+}
+
+for (const boundary of ["selected", "queued", "chat", "user", "worker"] as const) {
+  test(`All start coalescing preserves the ${boundary} boundary`, async () => {
+    await withTopicStore(async (threadStore, path) => {
+      threadStore.upsert({
+        profileKey: "manual:follower-b", owner: { kind: "manual-follower", instanceId: "follower-b" },
+        target: { chatId: 100, threadId: 43 }, status: "active",
+        createdAtMs: Date.now(), updatedAtMs: Date.now(), instanceId: "follower-b", slot: "B",
+      });
+      await threadStore.persist();
+      const { routeRuntime } = createRouteHarness({
+        threadStore, foreignOwnedUpdateForwarder: { forwardMessage: () => retryableForeignUpdateSettlement() },
+      });
+      const createUpdate = (id: number, chatId = 100) => ({
+        update_id: id, message: { message_id: id + 10, date: Math.floor(Date.now() / 1000),
+          chat: { id: chatId, type: "private" as const },
+          from: { id: boundary === "user" && id === 2 ? 8 : 7, is_bot: false }, text: "/start" },
+      });
+      const openJournal = (suffix: string) => Journal.createTelegramUpdateJournalStore({
+        path: `${path}.${suffix}`,
+        botIdentity: Journal.createTelegramUpdateJournalBotIdentity({ botToken: "123:coalesce-boundary" }),
+      });
+      const journal = openJournal("first");
+      journal.appendBatch([createUpdate(1)]);
+      let originalSource: unknown;
+      const createWorker = (store: typeof journal) => Updates.createTelegramUpdateAdmissionWorkerRuntime<ReturnType<typeof createUpdate>, TestContext>({
+        journal: store, hasAuthority: () => true,
+        defaultHandle: async (input, ctx) => {
+          if (input.update_id === 1) originalSource = input.message;
+          await routeRuntime.handleUpdate(input, ctx);
+        },
+      });
+      const worker = createWorker(journal);
+      let replacement: typeof worker | undefined;
+      try {
+        worker.start({ cwd: "/repo" });
+        await worker.waitForDrain();
+        if (boundary === "selected") {
+          await routeRuntime.handleUpdate({ callback_query: {
+            id: "selected", from: { id: 7, is_bot: false },
+            message: { message_id: 99, chat: { id: 100, type: "private" } }, data: "reroute:1:43",
+          } }, { cwd: "/repo" });
+        }
+        if (boundary === "queued") {
+          Updates.reportTelegramQueueAdmission([originalSource], [{
+            queueKind: "prompt", receiptId: "accepted-original", sourceUpdateIds: [1],
+          }]);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.equal(worker.getState().queuedClaimCount, 1);
+        }
+        const secondJournal = boundary === "worker" ? openJournal("second") : journal;
+        secondJournal.appendBatch([createUpdate(2, boundary === "chat" ? 200 : 100)]);
+        if (boundary === "worker") {
+          replacement = createWorker(secondJournal);
+          replacement.start({ cwd: "/repo" });
+          await replacement.waitForDrain();
+        } else {
+          worker.signal();
+          await worker.waitForDrain();
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.deepEqual(journal.read().entries.map((entry) => entry.updateId), boundary === "worker" || boundary === "user" ? [1] : [1, 2]);
+        if (boundary === "worker") assert.deepEqual(secondJournal.read().entries.map((entry) => entry.updateId), [2]);
+        if (boundary === "queued") assert.equal(worker.getState().queuedClaimCount, 1);
+      } finally {
+        await replacement?.stop();
+        await worker.stop();
+      }
+    });
+  });
+}
+
+test("Failed All chooser sends do not exhaust pending route capacity", async () => {
+  await withTopicStore(async (threadStore) => {
+    threadStore.upsert({
+      profileKey: "cwd:/repo", target: { chatId: 100, threadId: 42 },
+      status: "active", createdAtMs: Date.now(), updatedAtMs: Date.now(),
+      instanceId: "leader-a", slot: "A", threadName: "Axial",
+    });
+    await threadStore.persist();
+    let fail = true;
+    let sends = 0;
+    const { routeRuntime } = createRouteHarness({
+      threadStore, sendInteractiveMessage: async () => {
+        sends += 1;
+        if (fail) throw new Error("fixture chooser send failure");
+        return 99;
+      },
+    });
+    const update = { message: {
+      message_id: 12, date: Math.floor(Date.now() / 1000),
+      chat: { id: 100, type: "private" as const }, from: { id: 7, is_bot: false }, text: "/start",
+    } };
+    for (let attempt = 0; attempt < 101; attempt += 1) {
+      await assert.rejects(routeRuntime.handleUpdate(update, { cwd: "/repo" }), /fixture chooser send failure/);
+    }
+    fail = false;
+    await routeRuntime.handleUpdate(update, { cwd: "/repo" });
+    assert.equal(sends, 102);
+  });
+});
+
+for (const replacementFails of [false, true]) {
+  test(`All start replacement preserves the old source until chooser acknowledgement: ${replacementFails ? "failure" : "delayed success"}`, async () => {
+    await withTopicStore(async (threadStore, path) => {
+      threadStore.upsert({
+        profileKey: "cwd:/repo", target: { chatId: 100, threadId: 42 },
+        status: "active", createdAtMs: Date.now(), updatedAtMs: Date.now(),
+        instanceId: "leader-a", slot: "A", threadName: "Axial",
+      });
+      await threadStore.persist();
+      let release!: () => void;
+      let markStarted!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const started = new Promise<void>((resolve) => { markStarted = resolve; });
+      let chooserCalls = 0;
+      const { routeRuntime, events } = createRouteHarness({
+        threadStore,
+        sendInteractiveMessage: async () => {
+          chooserCalls += 1;
+          if (chooserCalls === 2) {
+            markStarted();
+            await gate;
+            if (replacementFails) throw new Error("fixture chooser delivery failed");
+          }
+          return 98 + chooserCalls;
+        },
+      });
+      const updates = [1, 2].map((id) => ({
+        update_id: id, message: { message_id: id + 10, date: Math.floor(Date.now() / 1000),
+          chat: { id: 100, type: "private" as const }, from: { id: 7, is_bot: false }, text: "/start" },
+      }));
+      const journal = Journal.createTelegramUpdateJournalStore({
+        path: `${path}.inbox`,
+        botIdentity: Journal.createTelegramUpdateJournalBotIdentity({ botToken: "123:chooser-replacement" }),
+      });
+      journal.appendBatch([updates[0]!]);
+      const worker = Updates.createTelegramUpdateAdmissionWorkerRuntime<typeof updates[number], TestContext>({
+        journal, hasAuthority: () => true,
+        defaultHandle: (input, ctx) => routeRuntime.handleUpdate(input, ctx),
+      });
+      try {
+        worker.start({ cwd: "/repo" });
+        await worker.waitForDrain();
+        journal.appendBatch([updates[1]!]);
+        worker.signal();
+        const drain = worker.waitForDrain();
+        await started;
+        assert.deepEqual(journal.read().entries.map((entry) => entry.updateId), [1, 2]);
+        assert.equal(worker.getState().deferredClaimCount, 1);
+        release();
+        await drain;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.deepEqual(journal.read().entries.map((entry) => entry.updateId), replacementFails ? [1, 2] : [2]);
+        await routeRuntime.handleUpdate({ callback_query: {
+          id: "old", from: { id: 7, is_bot: false },
+          message: { message_id: 99, chat: { id: 100, type: "private" } }, data: "reroute:1:42",
+        } }, { cwd: "/repo" });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(events.includes("status-menu"), replacementFails);
+        assert.equal(events.includes("answer:Message route expired."), !replacementFails);
+        assert.deepEqual(journal.read().entries.map((entry) => entry.updateId), [2]);
+      } finally {
+        release();
+        await worker.stop();
+      }
+    });
+  });
+}
+
+for (const scenario of ["expired-empty", "expired-restored", "fresh-restored", "classic", "bound"] as const) {
+  test(`All command restart routing respects target and mode: ${scenario}`, async (t) => {
+    const now = 10_000_000;
+    t.mock.method(Date, "now", () => now);
+    await withTopicStore(async (threadStore, path) => {
+      threadStore.setBotState({ threadMode: scenario === "classic" ? "disabled" : "enabled", updatedAtMs: now });
+      const record = {
+        profileKey: "cwd:/repo", target: { chatId: 100, threadId: 42 },
+        status: "active" as const, createdAtMs: now, updatedAtMs: now,
+        instanceId: "leader-a", slot: "A", threadName: "Axial",
+      };
+      if (scenario !== "expired-empty") threadStore.upsert(record);
+      await threadStore.persist();
+      const update = { update_id: 123, message: {
+        message_id: 12,
+        date: (now - (scenario === "fresh-restored" ? 1000 : Routing.TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS)) / 1000,
+        ...(scenario === "bound" ? { message_thread_id: 42 } : {}),
+        chat: { id: 100, type: "private" as const }, from: { id: 7, is_bot: false }, text: "/start",
+      } };
+      const journal = Journal.createTelegramUpdateJournalStore({
+        path: `${path}.inbox`,
+        botIdentity: Journal.createTelegramUpdateJournalBotIdentity({ botToken: "123:target-recovery" }),
+      });
+      journal.appendBatch([update]);
+      const run = async () => {
+        const harness = createRouteHarness({ threadStore });
+        const worker = Updates.createTelegramUpdateAdmissionWorkerRuntime<typeof update, TestContext>({
+          journal, hasAuthority: () => true,
+          defaultHandle: (input, ctx) => harness.routeRuntime.handleUpdate(input, ctx),
+        });
+        try {
+          worker.start({ cwd: "/repo" });
+          await worker.waitForDrain();
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          return harness.events;
+        } finally {
+          await worker.stop();
+        }
+      };
+      const events = await run();
+      assert.equal(events.includes("dispatch"), false);
+      assert.equal(events.includes("status-menu"), scenario === "classic" || scenario === "bound");
+      const chooserCount = events.filter((event) => event.startsWith("interactive:html:")).length;
+      assert.equal(chooserCount, scenario === "fresh-restored" ? 1 : 0);
+      assert.deepEqual(journal.read().entries.map((entry) => entry.updateId), scenario === "fresh-restored" ? [123] : []);
+      if (scenario === "fresh-restored") {
+        threadStore.upsert({ ...record, target: { chatId: 100, threadId: 44 } });
+        await threadStore.persist();
+        const replayEvents = await run();
+        assert.equal(replayEvents.filter((event) => event.startsWith("interactive:html:")).length, 1);
+        assert.ok(replayEvents.some((event) => event.startsWith("markup:") && event.includes("reroute:1:44")));
+        assert.equal(replayEvents.includes("dispatch"), false);
+        assert.equal(replayEvents.includes("status-menu"), false);
+        assert.deepEqual(journal.read().entries.map((entry) => entry.updateId), [123]);
+      }
+    });
+  });
+}
+
+for (const scenario of ["clock-rollback", "unknown-age"] as const) {
+  test(`All chooser lifetime remains fenced under ${scenario}`, async (t) => {
+    let now = 10_000_000;
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    t.mock.method(Date, "now", () => now);
+    const advance = (ms: number) => { now += ms; t.mock.timers.tick(ms); };
+    await withTopicStore(async (threadStore, path) => {
+      threadStore.upsert({
+        profileKey: "cwd:/repo", target: { chatId: 100, threadId: 42 },
+        status: "active", createdAtMs: now, updatedAtMs: now,
+        instanceId: "leader-a", slot: "A", threadName: "Axial",
+      });
+      await threadStore.persist();
+      const { routeRuntime, events } = createRouteHarness({ threadStore });
+      const update = { update_id: 123, message: {
+        message_id: 12, ...(scenario === "clock-rollback" ? { date: now / 1000 } : {}),
+        chat: { id: 100, type: "private" as const }, from: { id: 7, is_bot: false }, text: "/start",
+      } };
+      const journal = Journal.createTelegramUpdateJournalStore({
+        path: `${path}.inbox`,
+        botIdentity: Journal.createTelegramUpdateJournalBotIdentity({ botToken: "123:clock-lifecycle" }),
+      });
+      journal.appendBatch([update]);
+      const worker = Updates.createTelegramUpdateAdmissionWorkerRuntime<typeof update, TestContext>({
+        journal, hasAuthority: () => true,
+        defaultHandle: (input, ctx) => routeRuntime.handleUpdate(input, ctx),
+      });
+      try {
+        worker.start({ cwd: "/repo" });
+        await worker.waitForDrain();
+        if (scenario === "clock-rollback") now -= 30_000;
+        advance(Routing.TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(journal.read().entries.length, 1);
+        if (scenario === "clock-rollback") {
+          advance(29_999);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.equal(journal.read().entries.length, 1);
+          advance(1);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.deepEqual(journal.read().entries, []);
+        } else {
+          await worker.stop();
+        }
+        await routeRuntime.handleUpdate({ callback_query: {
+          id: "old", from: { id: 7, is_bot: false },
+          message: { message_id: 99, chat: { id: 100, type: "private" } }, data: "reroute:1:42",
+        } }, { cwd: "/repo" });
+        assert.ok(events.includes("answer:Message route expired."));
+        assert.equal(events.includes("status-menu"), false);
+        assert.equal(journal.read().entries.length, scenario === "unknown-age" ? 1 : 0);
+      } finally {
+        await worker.stop();
+      }
+    });
+  });
+}
+
+test("Running All chooser expiry settles its journal and rejects the old button", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 10_000_000 });
+  await withTopicStore(async (threadStore, path) => {
+    threadStore.upsert({
+      profileKey: "cwd:/repo", target: { chatId: 100, threadId: 42 },
+      status: "active", createdAtMs: Date.now(), updatedAtMs: Date.now(),
+      instanceId: "leader-a", slot: "A", threadName: "Axial",
+    });
+    await threadStore.persist();
+    const { events, routeRuntime, telegramQueueStore } = createRouteHarness({ threadStore });
+    const update = { update_id: 123, message: {
+      message_id: 12, date: Date.now() / 1000, chat: { id: 100, type: "private" as const },
+      from: { id: 7, is_bot: false }, text: "/start",
+    } };
+    const journal = Journal.createTelegramUpdateJournalStore({
+      path: `${path}.inbox`,
+      botIdentity: Journal.createTelegramUpdateJournalBotIdentity({ botToken: "123:expiry-fixture" }),
+    });
+    journal.appendBatch([update]);
+    const worker = Updates.createTelegramUpdateAdmissionWorkerRuntime<typeof update, TestContext>({
+      journal, hasAuthority: () => true,
+      defaultHandle: (input, ctx) => routeRuntime.handleUpdate(input, ctx),
+    });
+    try {
+      worker.start({ cwd: "/repo" });
+      await worker.waitForDrain();
+      t.mock.timers.tick(Routing.TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS - 1);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(journal.read().entries.length, 1);
+      t.mock.timers.tick(1);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(journal.read().entries, []);
+      assert.equal(worker.getState().deferredClaimCount, 0);
+      await routeRuntime.handleUpdate({ callback_query: {
+        id: "expired", from: { id: 7, is_bot: false },
+        message: { message_id: 99, chat: { id: 100, type: "private" } },
+        data: "reroute:1:42",
+      } }, { cwd: "/repo" });
+      assert.ok(events.includes("answer:Message route expired."));
+      assert.deepEqual(telegramQueueStore.getQueuedItems(), []);
+      assert.equal(events.filter((event) => event.startsWith("interactive:html:")).length, 1);
+    } finally {
+      await worker.stop();
+    }
+  });
+});
+
+test("Selected All command settles after dispatch without awaiting background menu delivery", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 10_000_000 });
+  await withTopicStore(async (threadStore, path) => {
+    threadStore.upsert({
+      profileKey: "cwd:/repo", target: { chatId: 100, threadId: 42 },
+      status: "active", createdAtMs: Date.now(), updatedAtMs: Date.now(),
+      instanceId: "leader-a", slot: "A", threadName: "Axial",
+    });
+    await threadStore.persist();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const { events, routeRuntime } = createRouteHarness({ threadStore, sendStatusMessage: () => { markStarted(); return gate; } });
+    const update = { update_id: 123, message: {
+      message_id: 12, date: Date.now() / 1000, chat: { id: 100, type: "private" as const },
+      from: { id: 7, is_bot: false }, text: "/start",
+    } };
+    const journal = Journal.createTelegramUpdateJournalStore({
+      path: `${path}.inbox`,
+      botIdentity: Journal.createTelegramUpdateJournalBotIdentity({ botToken: "123:selected-command" }),
+    });
+    journal.appendBatch([update]);
+    const worker = Updates.createTelegramUpdateAdmissionWorkerRuntime<typeof update, TestContext>({
+      journal, hasAuthority: () => true,
+      defaultHandle: (input, ctx) => routeRuntime.handleUpdate(input, ctx),
+    });
+    let callback: Promise<void> | undefined;
+    try {
+      worker.start({ cwd: "/repo" });
+      await worker.waitForDrain();
+      t.mock.timers.tick(Routing.TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS - 1);
+      callback = routeRuntime.handleUpdate({ callback_query: {
+        id: "selected", from: { id: 7, is_bot: false },
+        message: { message_id: 99, chat: { id: 100, type: "private" } },
+        data: "reroute:1:42",
+      } }, { cwd: "/repo" });
+      await Promise.race([started, callback.then(() => { throw new Error(`Command returned before execution: ${JSON.stringify(events)}`); })]);
+      assert.ok(events.includes("status-menu"));
+      await callback;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(journal.read().entries, []);
+      t.mock.timers.tick(2);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(journal.read().entries, []);
+      release();
+      assert.equal(events.filter((event) => event === "status-menu").length, 1);
+    } finally {
+      release();
+      await callback;
+      await worker.stop();
+    }
+  });
+});
+
+for (const finish of ["accepted", "expiry", "restart"] as const) {
+test(`Failed All command transfer preserves the original deadline: ${finish}`, async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 10_000_000 });
+  await withTopicStore(async (threadStore, path) => {
+    threadStore.upsert({
+      profileKey: "manual:follower-b", owner: { kind: "manual-follower", instanceId: "follower-b" },
+      target: { chatId: 100, threadId: 43 }, status: "active",
+      createdAtMs: Date.now(), updatedAtMs: Date.now(), instanceId: "follower-b", slot: "B",
+    });
+    await threadStore.persist();
+    let accepted = false;
+    let forwarded = 0;
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const { routeRuntime } = createRouteHarness({
+      threadStore,
+      foreignOwnedUpdateForwarder: { forwardMessage: async () => {
+        forwarded += 1;
+        if (forwarded === 1) {
+          markFirstStarted();
+          await firstGate;
+          throw new Error("fixture follower connection lost");
+        }
+        return accepted ? acceptedForeignUpdateSettlement() : retryableForeignUpdateSettlement();
+      } },
+    });
+    const update = { update_id: 123, message: {
+      message_id: 12, date: Date.now() / 1000, chat: { id: 100, type: "private" as const },
+      from: { id: 7, is_bot: false }, text: "/start",
+    } };
+    const journal = Journal.createTelegramUpdateJournalStore({
+      path: `${path}.inbox`,
+      botIdentity: Journal.createTelegramUpdateJournalBotIdentity({ botToken: "123:follower-command" }),
+    });
+    journal.appendBatch([update]);
+    const worker = Updates.createTelegramUpdateAdmissionWorkerRuntime<typeof update, TestContext>({
+      journal, hasAuthority: () => true,
+      defaultHandle: (input, ctx) => routeRuntime.handleUpdate(input, ctx),
+    });
+    const click = () => routeRuntime.handleUpdate({ callback_query: {
+      id: "selected", from: { id: 7, is_bot: false },
+      message: { message_id: 99, chat: { id: 100, type: "private" } },
+      data: "reroute:1:43",
+    } }, { cwd: "/repo" });
+    try {
+      worker.start({ cwd: "/repo" });
+      await worker.waitForDrain();
+      const firstClick = click();
+      await firstStarted;
+      await click();
+      assert.equal(forwarded, 1);
+      t.mock.timers.tick(Routing.TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS - 1);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(journal.read().entries.length, 1);
+      releaseFirst();
+      await firstClick;
+      await click();
+      assert.equal(forwarded, 2);
+      assert.equal(journal.read().entries.length, 1);
+      if (finish === "accepted") {
+        accepted = true;
+        await click();
+      } else {
+        if (finish === "restart") await worker.stop();
+        t.mock.timers.tick(1);
+        if (finish === "restart") {
+          worker.start({ cwd: "/repo" });
+          await worker.waitForDrain();
+        }
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const expectedForwards = finish === "accepted" ? 3 : 2;
+      assert.equal(forwarded, expectedForwards);
+      assert.deepEqual(journal.read().entries, []);
+      await click();
+      assert.equal(forwarded, expectedForwards);
+    } finally {
+      releaseFirst();
+      await worker.stop();
+    }
+  });
+});
+}
+
+for (const stopWorker of [false, true]) {
+  test(`All chooser delayed target lookup cannot dispatch after ${stopWorker ? "worker stop" : "expiry"}`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 10_000_000 });
+    await withTopicStore(async (threadStore, path) => {
+      threadStore.upsert({
+        profileKey: "cwd:/repo", target: { chatId: 100, threadId: 42 },
+        status: "active", createdAtMs: Date.now(), updatedAtMs: Date.now(),
+        instanceId: "leader-a", slot: "A", threadName: "Axial",
+      });
+      await threadStore.persist();
+      const { events, routeRuntime } = createRouteHarness({ threadStore });
+      const update = { update_id: 123, message: {
+        message_id: 12, date: Date.now() / 1000, chat: { id: 100, type: "private" as const },
+        from: { id: 7, is_bot: false }, text: "/start",
+      } };
+      const journal = Journal.createTelegramUpdateJournalStore({
+        path: `${path}.inbox`,
+        botIdentity: Journal.createTelegramUpdateJournalBotIdentity({ botToken: "123:expiry-race" }),
+      });
+      journal.appendBatch([update]);
+      const worker = Updates.createTelegramUpdateAdmissionWorkerRuntime<typeof update, TestContext>({
+        journal, hasAuthority: () => true,
+        defaultHandle: (input, ctx) => routeRuntime.handleUpdate(input, ctx),
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let lookupStarted = false;
+      let callback: Promise<void> | undefined;
+      try {
+        worker.start({ cwd: "/repo" });
+        await worker.waitForDrain();
+        t.mock.method(threadStore, "load", async () => { lookupStarted = true; await gate; });
+        callback = routeRuntime.handleUpdate({ callback_query: {
+          id: "delayed", from: { id: 7, is_bot: false },
+          message: { message_id: 99, chat: { id: 100, type: "private" } },
+          data: "reroute:1:42",
+        } }, { cwd: "/repo" });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(lookupStarted, true);
+        if (stopWorker) await worker.stop();
+        t.mock.timers.tick(stopWorker ? 1 : Routing.TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(journal.read().entries.length, stopWorker ? 1 : 0);
+        release();
+        await callback;
+        assert.ok(events.includes("answer:Message route expired."));
+        assert.equal(events.includes("status-menu"), false);
+        assert.equal(events.includes("dispatch"), false);
+        if (stopWorker) {
+          t.mock.timers.tick(Routing.TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.equal(journal.read().entries.length, 1);
+        }
+      } finally {
+        release();
+        await callback;
+        await worker.stop();
+      }
+    });
+  });
+}
+
+test("All command expiry settles the durable journal across worker and routing restarts", async (t) => {
+  let now = 10_000_000;
+  t.mock.method(Date, "now", () => now);
+  await withTopicStore(async (threadStore, path) => {
+    threadStore.upsert({
+      profileKey: "cwd:/repo", target: { chatId: 100, threadId: 42 },
+      status: "active", createdAtMs: now, updatedAtMs: now,
+      instanceId: "leader-a", slot: "A", threadName: "Axial",
+    });
+    await threadStore.persist();
+    const update = {
+      update_id: 123,
+      message: {
+        message_id: 12, date: now / 1000, chat: { id: 100, type: "private" as const },
+        from: { id: 7, is_bot: false }, text: "/start",
+      },
+    };
+    const initial = createRouteHarness({ threadStore });
+    const admit = (runtime: typeof initial.routeRuntime) => Updates.createTelegramUpdateAdmissionHandle({
+      defaultHandle: (input: typeof update, ctx: TestContext) => runtime.handleUpdate(input, ctx),
+    });
+    const openJournal = () => Journal.createTelegramUpdateJournalStore({
+      path: `${path}.inbox`,
+      botIdentity: Journal.createTelegramUpdateJournalBotIdentity({ botToken: "123:expiry-fixture" }),
+      getNowMs: () => now,
+    });
+    const journal = openJournal();
+    journal.appendBatch([update]);
+    const runWorker = async (runtime: typeof initial.routeRuntime) => {
+      const reopened = openJournal();
+      const handle = admit(runtime);
+      const executed: number[] = [];
+      const worker = Updates.createTelegramUpdateWorkerRuntime<TestContext>({
+        journal: reopened,
+        hasAuthority: () => true,
+        getNowMs: () => now,
+        executeUpdate(input, ctx, signal) {
+          executed.push(input.update_id);
+          return handle(input as typeof update, ctx, signal);
+        },
+      });
+      try {
+        worker.start({ cwd: "/repo" });
+        await worker.waitForDrain();
+        return { executed, deferred: worker.getState().deferredClaimCount };
+      } finally {
+        await worker.stop();
+      }
+    };
+    assert.deepEqual(await runWorker(initial.routeRuntime), { executed: [123], deferred: 1 });
+    assert.equal(initial.events.filter((event) => event.startsWith("interactive:html:")).length, 1);
+    assert.deepEqual(openJournal().read().entries.map((entry) => entry.updateId), [123]);
+    now += Routing.TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS;
+    const replacement = createRouteHarness({ threadStore });
+    assert.deepEqual(await runWorker(replacement.routeRuntime), { executed: [123], deferred: 0 });
+    assert.equal(replacement.events.some((event) => event.startsWith("interactive:")), false);
+    assert.deepEqual(replacement.telegramQueueStore.getQueuedItems(), []);
+    assert.deepEqual(openJournal().read().entries, []);
+    const finalReplacement = createRouteHarness({ threadStore });
+    assert.deepEqual(await runWorker(finalReplacement.routeRuntime), { executed: [], deferred: 0 });
+    assert.equal(finalReplacement.events.some((event) => event.startsWith("interactive:")), false);
+  });
 });
 
 test("Routing runtime treats All menu commands as threaded target chooser", async () => {

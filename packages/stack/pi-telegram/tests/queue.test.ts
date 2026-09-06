@@ -4,11 +4,24 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { registerTelegramVoiceSynthesisProvider } from "../lib/voice.ts";
+import { createTelegramActivityPublicationRuntime } from "../lib/activity.ts";
+import { TelegramApiCommitUnknownError } from "../lib/telegram-api.ts";
+import { createTelegramPreviewController, createTelegramAssistantPreviewRuntime } from "../lib/preview.ts";
+import {
+  createTelegramQueuedOutboundAttachmentSender,
+  createTelegramRichOutboundAttachmentSender,
+} from "../lib/outbound-attachments.ts";
 import test from "node:test";
 
 import {
   createTelegramButtonActionStore,
   createTelegramOutboundReplyPlanner,
+  createTelegramOutboundReplyArtifactSender,
+  createTelegramOutboundTextPreviewRuntime,
 } from "../lib/outbound.ts";
 import {
   appendTelegramPromptTurnOnce,
@@ -1880,6 +1893,140 @@ test("Agent end runtime records Guest Mode attachment failure without a second a
   ]);
 });
 
+for (const [boundary, stage] of [
+  ["turn", "synthesis"], ["session", "synthesis"],
+  ["turn", "action"], ["session", "action"],
+] as const) {
+test(`Agent end voice preparation fences ${boundary} replacement during ${stage}`, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "tg-voice-fence-"));
+  const effects: string[] = [];
+  let active = true;
+  let syntheses = 0;
+  let release!: () => void;
+  let markStarted!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const pause = async () => { markStarted(); await gate; };
+  const voiceAction = async (name: string) => {
+    effects.push(name);
+    if (stage === "action") await pause();
+  };
+  const unregister = registerTelegramVoiceSynthesisProvider(async () => {
+    syntheses += 1;
+    if (stage === "synthesis") await pause();
+    const path = join(dir, "voice.ogg");
+    await writeFile(path, "fixture voice bytes");
+    return path;
+  }, { id: "queue-authority-fixture" });
+  const unregisterFallback = registerTelegramVoiceSynthesisProvider(async () => {
+    syntheses += 1;
+    return undefined;
+  }, { id: "queue-authority-fixture-fallback" });
+  let delivery: Promise<void> | undefined;
+  try {
+    delivery = handleTelegramAgentEndRuntime({
+      turn: createQueueTestPromptTurn(),
+      assistant: { text: "Spoken answer" },
+      foldQueuedPromptsIntoHistory: false,
+      isTurnTransportActive: () => boundary !== "turn" || active,
+      isSessionActive: () => boundary !== "session" || active,
+      resetRuntimeState: () => {},
+      updateStatus: () => {},
+      dispatchNextQueuedTelegramTurn: () => {},
+      clearPreview: async () => {},
+      setPreviewPendingText: () => {},
+      finalizeMarkdownPreview: async () => false,
+      sendMarkdownReply: async () => { effects.push("fallback"); },
+      sendTextReply: async () => { effects.push("text"); },
+      sendQueuedAttachments: async () => {},
+      planOutboundReply: () => ({ markdown: "", voiceReplies: [{ text: "First answer" }, { text: "Second answer" }] }),
+      sendOutboundReplyArtifacts: createTelegramOutboundReplyArtifactSender({
+        execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+        sendRecordVoiceAction: boundary === "turn" ? () => voiceAction("record-voice") : undefined,
+        sendChatAction: () => voiceAction("chat-action"),
+        sendMultipart: async () => { effects.push("voice"); return { message_id: 1 }; },
+      }),
+    });
+    await started;
+    active = false;
+    release();
+    await delivery;
+    assert.deepEqual(effects, stage === "synthesis" ? [] : [boundary === "turn" ? "record-voice" : "chat-action"]);
+    assert.equal(syntheses, 1);
+  } finally {
+    release();
+    await delivery;
+    unregister();
+    unregisterFallback();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+}
+
+for (const boundary of ["turn", "session"] as const) {
+for (const stage of ["stat", "upload", "failure", "rich-upload", "rich-unknown"] as const) {
+test(`Agent end attachment delivery fences ${boundary} replacement during ${stage}`, async () => {
+  let active = true;
+  let release!: () => void;
+  let markStarted!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const pause = async () => { markStarted(); await gate; };
+  const effects: string[] = [];
+  const attachments = stage.startsWith("rich-")
+    ? [{ path: "/fixture/photo.jpg", fileName: "photo.jpg" }]
+    : [{ path: "/fixture/one.txt", fileName: "one.txt" }, { path: "/fixture/two.txt", fileName: "two.txt" }];
+  const expectedAttachments = attachments.map((attachment) => ({ ...attachment }));
+  const turn = createQueueTestPromptTurn({ queuedAttachments: attachments });
+  const sendMultipart = async () => {
+    effects.push("upload");
+    if (stage !== "stat") await pause();
+    if (stage === "failure") throw new Error("fixture upload failure");
+    if (stage === "rich-unknown") throw Object.assign(new Error("fixture lost acknowledgement"), { kind: "commit-unknown" });
+    return { message_id: 7 };
+  };
+  const delivery = handleTelegramAgentEndRuntime({
+    turn,
+    assistant: { text: "Final caption" },
+    foldQueuedPromptsIntoHistory: false,
+    isTurnTransportActive: () => boundary !== "turn" || active,
+    isSessionActive: () => boundary !== "session" || active,
+    resetRuntimeState: () => {},
+    updateStatus: () => {},
+    dispatchNextQueuedTelegramTurn: () => { effects.push("dispatch"); },
+    clearPreview: async () => {},
+    setPreviewPendingText: () => {},
+    finalizeMarkdownPreview: async () => true,
+    sendMarkdownReply: async () => { effects.push("text"); },
+    sendTextReply: async () => { effects.push("notice"); },
+    sendQueuedAttachments: createTelegramQueuedOutboundAttachmentSender({
+      statPath: async () => { if (stage === "stat") await pause(); return { size: 1 }; },
+      sendMultipart,
+      sendTextReply: async () => { effects.push("fallback"); },
+    }),
+    sendRichAttachmentReply: stage.startsWith("rich-")
+      ? createTelegramRichOutboundAttachmentSender({
+          getRenderingMode: () => "rich",
+          sendMultipart,
+          recordOwnership: () => { effects.push("ownership"); },
+        })
+      : undefined,
+  });
+  try {
+    await started;
+    active = false;
+    release();
+    await delivery;
+    assert.deepEqual(effects, stage === "stat" ? [] : ["upload"]);
+    assert.deepEqual(turn.queuedAttachments, expectedAttachments);
+  } finally {
+    release();
+    await delivery;
+  }
+});
+}
+}
+
 test("Agent end runtime can schedule active-turn final delivery without blocking", async () => {
   const events: string[] = [];
   let scheduledTask: (() => Promise<void>) | undefined;
@@ -2832,6 +2979,169 @@ test("Agent end does not intercept when planOutboundReply returns voiceReplies",
   assert.ok(events.some((e) => e.includes("replyToPrompt=false")));
 });
 
+for (const richAttachment of [false, true]) {
+  test(`Queued ${richAttachment ? "Rich attachment" : "text"} final cannot await or mutate a successor's preview`, async () => {
+    const publication = createTelegramActivityPublicationRuntime();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const blocker = publication.enqueue(async () => { await gate; });
+    const effects: string[] = [];
+    const preview = createTelegramAssistantPreviewRuntime<{ text: string }>({
+      getActiveTurn: () => ({ chatId: 7 }), isAssistantMessage: () => true,
+      getMessageText: (message) => message.text, sendDraft: async () => {},
+      sendMarkdownReply: async (_chat, _reply, text) => { effects.push(text); return 1; },
+    });
+    const prepared = createTelegramOutboundTextPreviewRuntime({
+      finalizeMarkdownPreview: preview.finalizeMarkdown,
+      preparePreviewDelivery: preview.prepareDelivery,
+      execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+    });
+    preview.resetState();
+    let oldFinal: Promise<void> | undefined;
+    let completed = false;
+    await handleTelegramAgentEndRuntime({
+      turn: { ...createQueueTestPromptTurn(), queuedAttachments: richAttachment ? [{ path: "/fixture/photo.png", fileName: "photo.png" }] : [] },
+      assistant: { text: "A final" }, foldQueuedPromptsIntoHistory: false,
+      resetRuntimeState: () => {}, updateStatus: () => {}, dispatchNextQueuedTelegramTurn: () => {},
+      preparePreviewDelivery: prepared.preparePreviewDelivery,
+      finalizeMarkdownPreview: prepared.finalizeMarkdownPreview,
+      clearPreview: preview.clear, setPreviewPendingText: preview.setPendingText,
+      scheduleActiveTurnDelivery: (task) => { oldFinal = publication.enqueue(task).then(() => { completed = true; }); },
+      sendMarkdownReply: async (_chat, _reply, text) => { effects.push(text); },
+      sendRichAttachmentReply: richAttachment ? async () => { effects.push("A attachment"); return true; } : undefined,
+      sendTextReply: async () => { assert.fail("Unexpected notice"); }, sendQueuedAttachments: async () => {},
+    });
+    preview.resetState();
+    await preview.onMessageUpdate({ message: { text: "B checkpoint" } });
+    await preview.flush(7);
+    const nextPreparation = preview.preparePublication()!;
+    const nextPublication = publication.enqueue(async () => {
+      await nextPreparation.wait(); effects.push("B checkpoint");
+    }).finally(nextPreparation.settle);
+    await preview.onMessageStart({ message: { text: "" } });
+    preview.setPendingText("B next draft");
+    const successor = preview.getState();
+    try {
+      release(); await blocker;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(completed, true, "Old final must not wait for the publication behind itself");
+      await oldFinal; await nextPublication;
+      assert.deepEqual(effects, [richAttachment ? "A attachment" : "A final", "B checkpoint"]);
+      assert.equal(preview.getState(), successor);
+      assert.equal(successor?.pendingText, "B next draft");
+      assert.notEqual(successor?.sealed, true);
+    } finally {
+      release(); nextPreparation.settle();
+      await oldFinal; await nextPublication; preview.invalidate(); publication.reset();
+    }
+  });
+}
+
+for (const stopReason of ["error", "aborted"] as const) {
+for (const replacement of ["none", "preview", "authority"] as const) {
+for (const timing of ["queued", "flushing"] as const) {
+  test(`Terminal ${stopReason} preview cleanup stays background with ${replacement} replacement while ${timing}`, async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let active = true;
+    const effects: string[] = [];
+    const preview = createTelegramPreviewController({ sendDraft: async () => { effects.push("clear"); } });
+    const original = preview.createState();
+    original.mode = "draft"; original.draftId = 1; original.flushPromise = gate;
+    preview.setState(original);
+    let task: (() => Promise<void>) | undefined;
+    let delivery: Promise<void> | undefined;
+    let hook: Promise<void> | undefined;
+    let settled = false;
+    try {
+      hook = handleTelegramAgentEndRuntime({
+        turn: createQueueTestPromptTurn(),
+        assistant: { text: "", stopReason, errorMessage: stopReason === "error" ? "fixture failure" : undefined },
+        foldQueuedPromptsIntoHistory: false,
+        resetRuntimeState: () => {}, updateStatus: () => {}, dispatchNextQueuedTelegramTurn: () => {},
+        isTurnTransportActive: () => active,
+        scheduleActiveTurnDelivery: (work) => { task = work; },
+        preparePreviewClear: preview.prepareClear, clearPreview: preview.clear,
+        setPreviewPendingText: preview.setPendingText, finalizeMarkdownPreview: async () => false,
+        sendMarkdownReply: async () => { assert.fail("Unexpected Markdown"); },
+        sendTextReply: async () => { effects.push("error"); }, sendQueuedAttachments: async () => {},
+      });
+      void hook.then(() => { settled = true; });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, true, "Lifecycle hook must not wait for the flush acknowledgement");
+      await hook;
+      assert.ok(task, "Lifecycle hook must schedule delivery before the flush acknowledgement");
+      assert.deepEqual(effects, []);
+      if (timing === "flushing") {
+        delivery = task();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      const next = preview.createState();
+      if (replacement === "preview") preview.setState(next);
+      if (replacement === "authority") active = false;
+      if (timing === "queued") delivery = task();
+      release();
+      await delivery;
+      assert.deepEqual(effects, [
+        ...(replacement === "none" ? ["clear"] : []),
+        ...(stopReason === "error" && replacement !== "authority" ? ["error"] : []),
+      ]);
+      assert.equal(preview.getState(), replacement === "none" ? undefined : replacement === "preview" ? next : original);
+    } finally {
+      release(); await hook; await delivery; preview.invalidate();
+    }
+  });
+}
+}
+}
+
+for (const uncertain of [false, true]) {
+  test(`Voice final ${uncertain ? "uncertainty suppresses replay" : "synthesis failure permits fallback"} without poisoning publication`, async () => {
+    const failure = new TelegramApiCommitUnknownError("sendVoice", new Error("Lost acknowledgement"));
+    const effects: string[] = [];
+    const diagnostics: unknown[] = [];
+    const publication = createTelegramActivityPublicationRuntime();
+    const disposeFirst = registerTelegramVoiceSynthesisProvider(async () => {
+      if (!uncertain) throw new Error("Synthesis unavailable");
+      return "/fixture/first.opus";
+    });
+    const disposeNext = registerTelegramVoiceSynthesisProvider(async () => "/fixture/next.opus");
+    let delivery: Promise<void> | undefined;
+    try {
+      await handleTelegramAgentEndRuntime({
+        turn: createQueueTestPromptTurn(),
+        assistant: { text: "One logical answer" },
+        foldQueuedPromptsIntoHistory: false,
+        resetRuntimeState: () => {}, updateStatus: () => {},
+        clearPreview: async () => {}, setPreviewPendingText: () => {}, finalizeMarkdownPreview: async () => false,
+        scheduleActiveTurnDelivery: (task) => { delivery = publication.enqueue(task); },
+        planOutboundReply: () => ({ markdown: "", voiceReplies: [{ text: "First part" }, { text: "Second part" }] }),
+        sendMarkdownReply: async () => { effects.push("fallback"); },
+        sendTextReply: async () => { effects.push("notice"); },
+        sendQueuedAttachments: async () => { effects.push("attachments"); },
+        dispatchNextQueuedTelegramTurn: () => { effects.push("dispatch"); },
+        recordRuntimeEvent: (_category, error) => { diagnostics.push(error); },
+        sendOutboundReplyArtifacts: createTelegramOutboundReplyArtifactSender({
+          execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+          sendMultipart: async () => {
+            effects.push("upload");
+            if (uncertain) throw failure;
+            return { message_id: 1 };
+          },
+        }),
+      });
+      await delivery;
+      await publication.enqueue(async () => { effects.push("later"); });
+      assert.deepEqual(effects, uncertain
+        ? ["upload", "dispatch", "later"]
+        : ["upload", "upload", "attachments", "dispatch", "later"]);
+      assert.deepEqual(diagnostics, uncertain ? [failure] : []);
+    } finally {
+      disposeFirst(); disposeNext(); publication.reset();
+    }
+  });
+}
+
 test("Agent end records event when voice fallback text delivery also fails", async () => {
   const events: string[] = [];
   const turn: PendingTelegramTurn = {
@@ -3009,6 +3319,97 @@ test("Agent end runtime rejects non-stale status after typing cleanup", async ()
     /status update broke/,
   );
 });
+
+for (const scenario of ["replacement", "cleared", "local-to-telegram"] as const) {
+  test(`Agent end hook fences ${scenario} during config loading`, async () => {
+    const effects: string[] = [];
+    const original = createQueueTestPromptTurn();
+    const replacement = createQueueTestPromptTurn({ chatId: 9, replyToMessageId: 10 });
+    let current: PendingTelegramTurn | undefined = scenario === "local-to-telegram" ? undefined : original;
+    let release!: () => void;
+    let markStarted!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const hook = createTelegramAgentEndHook<PendingTelegramTurn, { id: string }, string>({
+      loadConfig: async () => { markStarted(); await gate; },
+      getActiveTurn: () => current,
+      extractAssistant: () => ({ text: "Old final" }),
+      getFoldQueuedPromptsIntoHistory: () => false,
+      resetRuntimeState: () => { effects.push("reset"); current = undefined; },
+      updateStatus: () => { effects.push("status"); },
+      dispatchNextQueuedTelegramTurn: () => { effects.push("dispatch"); },
+      requestDeferredDispatchNextQueuedTelegramTurn: () => { effects.push("schedule"); },
+      clearPreview: async () => { effects.push("clear"); },
+      setPreviewPendingText: () => { effects.push("preview"); },
+      finalizeMarkdownPreview: async () => { effects.push("finalize"); return true; },
+      sendMarkdownReply: async () => { effects.push("markdown"); },
+      sendTextReply: async () => { effects.push("text"); },
+      sendQueuedAttachments: async () => { effects.push("attachments"); },
+    });
+    const ending = hook({ messages: ["Old final"] }, { id: "same-session" });
+    try {
+      await started;
+      const expected = scenario === "cleared" ? undefined : replacement;
+      current = expected;
+      release();
+      await ending;
+      assert.deepEqual(effects, []);
+      assert.equal(current, expected);
+    } finally {
+      release();
+      await ending;
+    }
+  });
+}
+
+for (const outcome of ["final", "error", "empty", "replacement", "config-failure"] as const) {
+  test(`Agent end reserves publication before config preparation: ${outcome}`, async () => {
+    const publication = createTelegramActivityPublicationRuntime();
+    const effects: string[] = [];
+    let current = createQueueTestPromptTurn();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const hook = createTelegramAgentEndHook<PendingTelegramTurn, string, string>({
+      loadConfig: async () => { await gate; if (outcome === "config-failure") throw new Error("config fixture"); },
+      getActiveTurn: () => current,
+      extractAssistant: () => outcome === "error"
+        ? { stopReason: "error", errorMessage: "error" }
+        : { text: outcome === "empty" ? "" : "final" },
+      getFoldQueuedPromptsIntoHistory: () => false,
+      resetRuntimeState: () => {},
+      updateStatus: () => {},
+      dispatchNextQueuedTelegramTurn: () => {},
+      requestDeferredDispatchNextQueuedTelegramTurn: () => {},
+      reserveActiveTurnDelivery: () => {
+        const slot = publication.reserve();
+        return { schedule: (task) => { void slot.publish(task); }, cancel: slot.cancel };
+      },
+      clearPreview: async () => {},
+      setPreviewPendingText: () => {},
+      finalizeMarkdownPreview: async () => false,
+      sendMarkdownReply: async () => { effects.push("final"); },
+      sendTextReply: async () => { effects.push("error"); },
+      sendQueuedAttachments: async () => {},
+    });
+    const ending = hook({ messages: [] }, "session");
+    const settled = outcome === "config-failure" ? assert.rejects(ending, /config fixture/) : ending;
+    const later = publication.enqueue(async () => { effects.push("later"); });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(effects, outcome === "empty" ? ["later"] : []);
+      if (outcome === "replacement") current = createQueueTestPromptTurn();
+      release();
+      await settled;
+      await later;
+      assert.deepEqual(effects, outcome === "final" || outcome === "error" ? [outcome, "later"] : ["later"]);
+    } finally {
+      release();
+      await settled;
+      publication.reset();
+      await later;
+    }
+  });
+}
 
 test("Agent end hook binds assistant extraction and runtime ports", async () => {
   const events: string[] = [];

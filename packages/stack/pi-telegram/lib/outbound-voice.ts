@@ -8,12 +8,13 @@ import { unlink } from "node:fs/promises";
 import { basename, extname } from "node:path";
 
 import { assertTelegramInlineKeyboardCallbackData } from "./keyboard.ts";
-import { buildTelegramMultipartReplyParameters } from "./replies.ts";
+import { withTelegramReplyParameters } from "./replies.ts";
 import {
   getTelegramTargetThreadParams,
   type TelegramTarget,
 } from "./target.ts";
 import { getTelegramVoiceSynthesisProviders } from "./voice.ts";
+import { isTelegramApiCommitUnknownError } from "./telegram-api.ts";
 
 export interface TelegramVoiceReplyTurnView {
   chatId: number;
@@ -47,6 +48,7 @@ export interface TelegramVoiceReplySenderDeps {
   ) => Promise<unknown>;
   sendChatAction?: (chatId: number, action: string) => Promise<unknown>;
   sendRecordVoiceAction?: (chatId: number) => Promise<unknown>;
+  isDeliveryActive?: () => boolean;
   getHandlers?: () => unknown[] | undefined;
   cwd?: string;
   tempDir?: string;
@@ -76,17 +78,6 @@ export interface TelegramVoiceReplySenderPorts<THandler = unknown> {
     },
   ) => Promise<string | undefined>;
   getProgrammaticVoiceHandlers?: () => TelegramOutboundProgrammaticVoiceHandler[];
-}
-
-function buildVoiceReplyParameters(
-  chatId: number,
-  replyToPrompt: boolean | undefined,
-  replyToMessageId: number | undefined,
-  target?: TelegramTarget,
-): string | undefined {
-  if (replyToPrompt === false || replyToMessageId === undefined)
-    return undefined;
-  return buildTelegramMultipartReplyParameters(chatId, replyToMessageId, target);
 }
 
 async function ensureTelegramVoiceFileFormat(
@@ -123,39 +114,39 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
       replyMarkup?: unknown;
     },
   ): Promise<void> => {
+    if (deps.isDeliveryActive?.() === false) return;
     const voiceFilePath = await ensureTelegramVoiceFileFormat(filePath);
     assertTelegramInlineKeyboardCallbackData(options?.replyMarkup);
+    if (deps.isDeliveryActive?.() === false) return;
     await sendVoiceChatAction(deps, turn.chatId);
-    const replyParameters = buildVoiceReplyParameters(
-      turn.chatId,
-      options?.replyToPrompt,
-      turn.replyToMessageId,
-      turn.target,
-    );
-    await deps.sendMultipart(
-      "sendVoice",
-      {
-        chat_id: String(turn.chatId),
-        ...(replyParameters ? { reply_parameters: replyParameters } : {}),
-        ...(turn.target
-          ? Object.fromEntries(
-              Object.entries(getTelegramTargetThreadParams(turn.target)).map(
-                ([key, value]) => [key, String(value)],
-              ),
-            )
-          : {}),
-        ...(options?.replyMarkup !== undefined && options.replyMarkup !== null
-          ? {
-              reply_markup:
-                typeof options.replyMarkup === "string"
-                  ? options.replyMarkup
-                  : JSON.stringify(options.replyMarkup),
-            }
-          : {}),
-      },
-      "voice",
-      voiceFilePath,
-      basename(voiceFilePath),
+    if (deps.isDeliveryActive?.() === false) return;
+    await withTelegramReplyParameters(
+      turn.chatId, options?.replyToPrompt === false ? undefined : turn.replyToMessageId, turn.target,
+      (replyParameters) => deps.sendMultipart(
+        "sendVoice",
+        {
+          chat_id: String(turn.chatId),
+          ...(replyParameters ? { reply_parameters: JSON.stringify(replyParameters) } : {}),
+          ...(turn.target
+            ? Object.fromEntries(
+                Object.entries(getTelegramTargetThreadParams(turn.target)).map(
+                  ([key, value]) => [key, String(value)],
+                ),
+              )
+            : {}),
+          ...(options?.replyMarkup !== undefined && options.replyMarkup !== null
+            ? {
+                reply_markup:
+                  typeof options.replyMarkup === "string"
+                    ? options.replyMarkup
+                    : JSON.stringify(options.replyMarkup),
+              }
+            : {}),
+        },
+        "voice",
+        voiceFilePath,
+        basename(voiceFilePath),
+      ),
     );
   };
 
@@ -171,6 +162,7 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
   ): Promise<void> => {
     for (const handler of ports.findVoiceHandlers?.(deps.getHandlers?.()) ??
       []) {
+      if (deps.isDeliveryActive?.() === false) return;
       try {
         const filePath = await ports.generateVoiceFile?.(text, {
           lang: options?.lang,
@@ -187,6 +179,7 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
         });
         return;
       } catch (error) {
+        if (isTelegramApiCommitUnknownError(error)) throw error;
         deps.recordRuntimeEvent?.("voice", error, {
           phase: "template-handler-send",
         });
@@ -194,6 +187,7 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
     }
 
     for (const handler of ports.getProgrammaticVoiceHandlers?.() ?? []) {
+      if (deps.isDeliveryActive?.() === false) return;
       try {
         const filePath = await handler(text, {
           lang: options?.lang,
@@ -206,6 +200,7 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
         });
         return;
       } catch (error) {
+        if (isTelegramApiCommitUnknownError(error)) throw error;
         deps.recordRuntimeEvent?.("voice", error, {
           phase: "programmatic-handler-send",
         });
@@ -215,6 +210,7 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
     const providers = getTelegramVoiceSynthesisProviders();
 
     for (const provider of providers) {
+      if (deps.isDeliveryActive?.() === false) return;
       let voiceFilePath: string | undefined;
       let originalFilePath: string | undefined;
 
@@ -252,6 +248,7 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
         });
         return;
       } catch (error) {
+        if (isTelegramApiCommitUnknownError(error)) throw error;
         deps.recordRuntimeEvent?.("voice", error, { phase: "send" });
       } finally {
         if (voiceFilePath && voiceFilePath !== originalFilePath) {

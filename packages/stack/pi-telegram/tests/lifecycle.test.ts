@@ -424,6 +424,56 @@ test("Compaction observer stops typing on timeout and shutdown", () => {
   ]);
 });
 
+test("Superseded compaction timeout cannot abandon the current observation", () => {
+  const timers: Array<() => void> = [];
+  const effects: string[] = [];
+  const observer = createTelegramCompactionObserverRuntime({
+    setCompactionInProgress: (value) => { effects.push(`active:${value}`); },
+    updateStatus: () => {},
+    requestDeferredDispatchNextQueuedTelegramTurn: () => { effects.push("dispatch"); },
+    dispatchNextQueuedTelegramTurn: () => {},
+    onCompactionAbandoned: () => { effects.push("abandoned"); },
+    setTimer: (callback) => { timers.push(callback); return timers.length; },
+    clearTimer: () => {},
+  });
+  const ctx = createLifecycleContext();
+  observer.onSessionBeforeCompact({} as never, ctx);
+  observer.onSessionBeforeCompact({} as never, ctx);
+  timers[0]!();
+  assert.deepEqual(effects, ["active:true", "active:true"]);
+  timers[1]!();
+  assert.deepEqual(effects, ["active:true", "active:true", "active:false", "abandoned", "dispatch"]);
+  timers[1]!();
+  assert.equal(effects.length, 5);
+});
+
+test("Stale compaction completion cannot cancel the replacement context timeout", () => {
+  const oldContext = createLifecycleContext();
+  const currentContext = createLifecycleContext();
+  let current = oldContext;
+  let timer: (() => void) | undefined;
+  let abandoned = 0;
+  const observer = createTelegramCompactionObserverRuntime({
+    isContextActive: (ctx) => ctx === current,
+    setCompactionInProgress: () => {},
+    updateStatus: () => {},
+    requestDeferredDispatchNextQueuedTelegramTurn: () => {},
+    dispatchNextQueuedTelegramTurn: () => {},
+    onCompactionAbandoned: () => { abandoned += 1; },
+    setTimer: (callback) => { timer = callback; return 1; },
+    clearTimer: () => { timer = undefined; },
+  });
+  observer.onSessionBeforeCompact({} as never, oldContext);
+  current = currentContext;
+  observer.onSessionBeforeCompact({} as never, currentContext);
+  const replacementTimer = timer;
+  observer.onSessionCompact({} as never, oldContext);
+  observer.onSessionCompactFailed({} as never, oldContext);
+  assert.equal(timer, replacementTimer);
+  timer!();
+  assert.equal(abandoned, 1);
+});
+
 test("Message activity hooks re-arm typing for active Telegram turns", async () => {
   const events: string[] = [];
   let active = true;

@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 
 import { isVoiceTurn } from "./voice.ts";
+import { isTelegramApiCommitUnknownError } from "./telegram-api.ts";
 
 // --- Queue Items ---
 
@@ -1497,6 +1498,14 @@ export interface TelegramAgentEndRuntimeDeps<
   updateStatus: () => void;
   dispatchNextQueuedTelegramTurn: () => void;
   scheduleActiveTurnDelivery?: (task: () => Promise<void>) => void;
+  preparePreviewDelivery?: (isDeliveryActive: () => boolean) => Pick<
+    TelegramAgentEndRuntimeDeps<TTurn, TReplyMarkup>,
+    "clearPreview" | "setPreviewPendingText" | "finalizeMarkdownPreview"
+  > | undefined;
+  preparePreviewClear?: (
+    chatId: number,
+    options?: { target?: TelegramQueueTarget; isDeliveryActive?: () => boolean },
+  ) => () => Promise<void>;
   clearPreview: (
     chatId: number,
     options?: { target?: TelegramQueueTarget },
@@ -1520,11 +1529,14 @@ export interface TelegramAgentEndRuntimeDeps<
     text: string,
     options?: { target?: TelegramQueueTarget },
   ) => Promise<unknown>;
-  sendQueuedAttachments: (turn: TTurn) => Promise<void>;
+  sendQueuedAttachments: (
+    turn: TTurn,
+    options?: { isDeliveryActive?: () => boolean },
+  ) => Promise<void>;
   sendRichAttachmentReply?: (
     turn: TTurn,
     markdown: string,
-    options?: { replyMarkup?: TReplyMarkup },
+    options?: { replyMarkup?: TReplyMarkup; isDeliveryActive?: () => boolean },
   ) => Promise<boolean>;
   answerGuestQuery?: (
     guestQueryId: string,
@@ -1548,7 +1560,7 @@ export interface TelegramAgentEndRuntimeDeps<
   sendOutboundReplyArtifacts?: (
     turn: TTurn,
     plan: TelegramAgentEndOutboundReplyPlan,
-    options?: { replyToPrompt?: boolean },
+    options?: { replyToPrompt?: boolean; isDeliveryActive?: () => boolean },
   ) => Promise<void>;
   recordRuntimeEvent?: (
     category: string,
@@ -1583,6 +1595,12 @@ export interface TelegramAgentEndHookRuntimeDeps<
     TTurn,
     TReplyMarkup
   >["scheduleActiveTurnDelivery"];
+  reserveActiveTurnDelivery?: () => {
+    schedule: (task: () => Promise<void>) => void;
+    cancel: () => void;
+  };
+  preparePreviewDelivery?: TelegramAgentEndRuntimeDeps<TTurn, TReplyMarkup>["preparePreviewDelivery"];
+  preparePreviewClear?: TelegramAgentEndRuntimeDeps<TTurn, TReplyMarkup>["preparePreviewClear"];
   clearPreview: TelegramAgentEndRuntimeDeps<
     TTurn,
     TReplyMarkup
@@ -1597,7 +1615,7 @@ export interface TelegramAgentEndHookRuntimeDeps<
     TReplyMarkup
   >["sendMarkdownReply"];
   sendTextReply: TelegramAgentEndRuntimeDeps<TTurn>["sendTextReply"];
-  sendQueuedAttachments: (turn: TTurn) => Promise<void>;
+  sendQueuedAttachments: TelegramAgentEndRuntimeDeps<TTurn>["sendQueuedAttachments"];
   sendRichAttachmentReply?: TelegramAgentEndRuntimeDeps<
     TTurn,
     TReplyMarkup
@@ -1702,48 +1720,57 @@ export function createTelegramAgentEndHook<
     ctx: TContext,
     assistantOverride?: TelegramAgentEndAssistantResult,
   ): Promise<void> => {
-    await deps.loadConfig?.();
-    if (deps.isSessionActive && !deps.isSessionActive(ctx)) return;
+    if (deps.isSessionActive?.(ctx) === false) return;
     const turn = deps.getActiveTurn();
-    await handleTelegramAgentEndRuntime({
-      turn,
-      assistant:
-        assistantOverride ??
-        (turn ? deps.extractAssistant(event.messages) : {}),
-      foldQueuedPromptsIntoHistory: deps.getFoldQueuedPromptsIntoHistory(),
-      resetRuntimeState: deps.resetRuntimeState,
-      isSessionActive: () => deps.isSessionActive?.(ctx) ?? true,
-      isTurnTransportActive: deps.isTurnTransportActive,
-      waitForTypingIdle: deps.waitForTypingIdle,
-      waitForActivityIdle: deps.waitForActivityIdle,
-      updateStatus: () => deps.updateStatus(ctx),
-      dispatchNextQueuedTelegramTurn: () => {
-        deps.requestDeferredDispatchNextQueuedTelegramTurn(
-          deps.dispatchNextQueuedTelegramTurn,
-        );
-      },
-      scheduleActiveTurnDelivery: deps.scheduleActiveTurnDelivery
-        ? (task) =>
-            deps.scheduleActiveTurnDelivery?.(async () => {
-              if (deps.isSessionActive?.(ctx) === false) return;
-              await task();
-            })
-        : undefined,
-      clearPreview: deps.clearPreview,
-      setPreviewPendingText: deps.setPreviewPendingText,
-      finalizeMarkdownPreview: deps.finalizeMarkdownPreview,
-      sendMarkdownReply: deps.sendMarkdownReply,
-      sendTextReply: deps.sendTextReply,
-      sendQueuedAttachments: deps.sendQueuedAttachments,
-      sendRichAttachmentReply: deps.sendRichAttachmentReply,
-      answerGuestQuery: deps.answerGuestQuery,
-      sendGuestReply: deps.sendGuestReply,
-      sendGuestAttachment: deps.sendGuestAttachment,
-      sendGuestVoiceReply: deps.sendGuestVoiceReply,
-      planOutboundReply: deps.planOutboundReply,
-      sendOutboundReplyArtifacts: deps.sendOutboundReplyArtifacts,
-      recordRuntimeEvent: deps.recordRuntimeEvent,
-    });
+    const assistant = assistantOverride ?? (turn ? deps.extractAssistant(event.messages) : {});
+    const hasPublication = !!assistant.text || assistant.stopReason === "error" || !!turn?.queuedAttachments.length;
+    const reservation = turn && !turn.guestQueryId && hasPublication ? deps.reserveActiveTurnDelivery?.() : undefined;
+    const scheduleDelivery = reservation?.schedule ?? deps.scheduleActiveTurnDelivery;
+    try {
+      await deps.loadConfig?.();
+      if (deps.isSessionActive?.(ctx) === false || deps.getActiveTurn() !== turn) return;
+      await handleTelegramAgentEndRuntime({
+        turn,
+        assistant,
+        foldQueuedPromptsIntoHistory: deps.getFoldQueuedPromptsIntoHistory(),
+        resetRuntimeState: deps.resetRuntimeState,
+        isSessionActive: () => deps.isSessionActive?.(ctx) ?? true,
+        isTurnTransportActive: deps.isTurnTransportActive,
+        waitForTypingIdle: deps.waitForTypingIdle,
+        waitForActivityIdle: deps.waitForActivityIdle,
+        updateStatus: () => deps.updateStatus(ctx),
+        dispatchNextQueuedTelegramTurn: () => {
+          deps.requestDeferredDispatchNextQueuedTelegramTurn(
+            deps.dispatchNextQueuedTelegramTurn,
+          );
+        },
+        scheduleActiveTurnDelivery: scheduleDelivery
+          ? (task) =>
+              scheduleDelivery(async () => {
+                if (deps.isSessionActive?.(ctx) === false) return;
+                await task();
+              })
+          : undefined,
+        preparePreviewDelivery: deps.preparePreviewDelivery,
+        preparePreviewClear: deps.preparePreviewClear,
+        clearPreview: deps.clearPreview,
+        setPreviewPendingText: deps.setPreviewPendingText,
+        finalizeMarkdownPreview: deps.finalizeMarkdownPreview,
+        sendMarkdownReply: deps.sendMarkdownReply,
+        sendTextReply: deps.sendTextReply,
+        sendQueuedAttachments: deps.sendQueuedAttachments,
+        sendRichAttachmentReply: deps.sendRichAttachmentReply,
+        answerGuestQuery: deps.answerGuestQuery,
+        sendGuestReply: deps.sendGuestReply,
+        sendGuestAttachment: deps.sendGuestAttachment,
+        sendGuestVoiceReply: deps.sendGuestVoiceReply,
+        planOutboundReply: deps.planOutboundReply,
+        sendOutboundReplyArtifacts: deps.sendOutboundReplyArtifacts,
+        recordRuntimeEvent: deps.recordRuntimeEvent,
+      });
+    } finally {
+      reservation?.cancel();
+    }
   };
 }
 
@@ -1786,6 +1813,14 @@ export async function handleTelegramAgentEndRuntime<
   const isDeliveryActive = (): boolean =>
     deps.isSessionActive?.() !== false &&
     (!turn || deps.isTurnTransportActive?.(turn) !== false);
+  const preview = turn && !turn.guestQueryId ? deps.preparePreviewDelivery?.(isDeliveryActive) : undefined;
+  const setPreviewPendingText = preview?.setPreviewPendingText ?? deps.setPreviewPendingText;
+  const finalizeMarkdownPreview = preview?.finalizeMarkdownPreview ?? deps.finalizeMarkdownPreview;
+  const clearPreview = turn
+    ? preview ? () => preview.clearPreview(turn.chatId, { target: turn.target })
+      : deps.preparePreviewClear?.(turn.chatId, { target: turn.target, isDeliveryActive })
+        ?? (() => deps.clearPreview(turn.chatId, { target: turn.target }))
+    : undefined;
   const updateStatusIgnoringStaleContext = (): void => {
     try {
       deps.updateStatus();
@@ -1869,28 +1904,28 @@ export async function handleTelegramAgentEndRuntime<
     if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
     return;
   }
-  if (endPlan.shouldClearPreview) {
-    await deps.clearPreview(turn.chatId, { target: turn.target });
-  }
   if (!isDeliveryActive()) return;
-  if (endPlan.shouldSendErrorMessage) {
-    await deps.sendTextReply(
-      turn.chatId,
-      turn.replyToMessageId,
-      assistant.errorMessage ||
-        "Telegram bridge: Pi failed while processing the request.",
-      { target: turn.target },
-    );
-    if (!isDeliveryActive()) return;
-    if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
-    return;
-  }
   const deliverActiveTurn = async () => {
     await deps.waitForActivityIdle?.();
     if (!isDeliveryActive()) return;
-    if (finalText) deps.setPreviewPendingText(finalText);
-    if (!finalText && hasOutboundArtifacts)
-      await deps.clearPreview(turn.chatId, { target: turn.target });
+    if (endPlan.shouldClearPreview || (!finalText && hasOutboundArtifacts)) {
+      await clearPreview?.();
+      if (!isDeliveryActive()) return;
+    }
+    if (endPlan.shouldSendErrorMessage) {
+      await deps.sendTextReply(
+        turn.chatId,
+        turn.replyToMessageId,
+        assistant.errorMessage ||
+          "Telegram bridge: Pi failed while processing the request.",
+        { target: turn.target },
+      );
+      if (!isDeliveryActive()) return;
+      if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
+      return;
+    }
+    if (finalText) setPreviewPendingText(finalText);
+
     if (!isDeliveryActive()) return;
     let richAttachmentDelivered = false;
     if (
@@ -1903,15 +1938,16 @@ export async function handleTelegramAgentEndRuntime<
         richAttachmentDelivered = await deps.sendRichAttachmentReply(
           turn,
           finalText,
-          { replyMarkup },
+          { replyMarkup, isDeliveryActive },
         );
         if (!isDeliveryActive()) return;
         if (richAttachmentDelivered) {
-          await deps.clearPreview(turn.chatId, { target: turn.target });
+          await clearPreview?.();
           if (!isDeliveryActive()) return;
-          deps.setPreviewPendingText("");
+          setPreviewPendingText("");
         }
       } catch (error) {
+        if (!isDeliveryActive()) return;
         deps.recordRuntimeEvent?.("delivery", error, {
           phase: "rich-attachment-commit-unknown",
           chatId: turn.chatId,
@@ -1923,7 +1959,7 @@ export async function handleTelegramAgentEndRuntime<
     if (!isDeliveryActive()) return;
     if (!richAttachmentDelivered && endPlan.kind === "text" && finalText) {
       try {
-        const finalized = await deps.finalizeMarkdownPreview(
+        const finalized = await finalizeMarkdownPreview(
           turn.chatId,
           finalText,
           turn.replyToMessageId,
@@ -1931,7 +1967,7 @@ export async function handleTelegramAgentEndRuntime<
         );
         if (!isDeliveryActive()) return;
         if (!finalized) {
-          await deps.clearPreview(turn.chatId, { target: turn.target });
+          await clearPreview?.();
           if (!isDeliveryActive()) return;
           await deps.sendMarkdownReply(
             turn.chatId,
@@ -1941,7 +1977,7 @@ export async function handleTelegramAgentEndRuntime<
           );
         }
         if (!isDeliveryActive()) return;
-        deps.setPreviewPendingText("");
+        setPreviewPendingText("");
       } catch (error) {
         deps.recordRuntimeEvent?.("delivery", error, {
           phase: "final-text",
@@ -1955,6 +1991,7 @@ export async function handleTelegramAgentEndRuntime<
       try {
         await deps.sendOutboundReplyArtifacts(turn, outboundReply, {
           replyToPrompt: !finalText,
+          isDeliveryActive,
         });
         if (!isDeliveryActive()) return;
       } catch (error) {
@@ -1962,8 +1999,12 @@ export async function handleTelegramAgentEndRuntime<
           phase: "voice-artifacts",
           chatId: turn.chatId,
         });
-        // Fallback to planned text when voice delivery fails and text wasn't already delivered
         if (!isDeliveryActive()) return;
+        if (isTelegramApiCommitUnknownError(error)) {
+          if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
+          return;
+        }
+        // Fallback only when voice delivery is not uncertain and text wasn't already delivered.
         if (rawFinalText?.trim() && !finalText && hasOutboundArtifacts) {
           try {
             const fallbackMarkdown =
@@ -2000,13 +2041,13 @@ export async function handleTelegramAgentEndRuntime<
       );
     }
     if (!isDeliveryActive()) return;
-    if (!richAttachmentDelivered) await deps.sendQueuedAttachments(turn);
+    if (!richAttachmentDelivered) await deps.sendQueuedAttachments(turn, { isDeliveryActive });
     if (!isDeliveryActive()) return;
     if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
   };
   if (
     deps.scheduleActiveTurnDelivery &&
-    (endPlan.kind === "text" || endPlan.kind === "attachments-only")
+    (endPlan.kind === "text" || endPlan.kind === "attachments-only" || endPlan.shouldSendErrorMessage || endPlan.shouldClearPreview)
   ) {
     deps.scheduleActiveTurnDelivery(deliverActiveTurn);
     return;

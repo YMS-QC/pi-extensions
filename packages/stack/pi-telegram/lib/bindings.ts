@@ -353,6 +353,8 @@ export function createTelegramAssistantOutputBindingRuntime<
     typeof OutboundHandlers.createTelegramAssistantOutputSender<TTransportStamp>
   >[0];
   waitForActivityIdle?: () => Promise<void>;
+  prepareTelegramPreview?: () => Activity.TelegramAssistantOutputPreparation | undefined;
+  enqueue?: Activity.TelegramActivityPublicationRuntime["enqueue"];
   recordRuntimeEvent: TelegramRuntimeEventRecorder;
 }): TelegramAssistantOutputBindingRuntime<TTransportStamp> {
   const authority = Routing.createTelegramAssistantOutputAuthorityRuntime(
@@ -364,6 +366,8 @@ export function createTelegramAssistantOutputBindingRuntime<
     );
   const runtime = Activity.createTelegramAssistantOutputRuntime({
     ...authority,
+    enqueue: deps.enqueue,
+    prepareSend: (event) => event.source === "telegram" ? deps.prepareTelegramPreview?.() : undefined,
     async send(event, authority, isAuthorityActive) {
       await deps.waitForActivityIdle?.();
       if (!isAuthorityActive()) return;
@@ -390,7 +394,14 @@ type TelegramAssistantOutputAuthority<TTransportStamp> = ReturnType<
   Routing.TelegramAssistantOutputAuthorityRuntime<TTransportStamp>["captureAuthority"]
 >;
 
+export interface TelegramBridgePublicationRuntime {
+  enqueue: Activity.TelegramActivityPublicationRuntime["enqueue"];
+  reserve: Activity.TelegramActivityPublicationRuntime["reserve"];
+  capture: () => { target?: Queue.TelegramQueueTarget; isCurrent: () => boolean };
+}
+
 export interface TelegramActivityBindingRuntime {
+  publicationRuntime: TelegramBridgePublicationRuntime;
   activityRuntime: Activity.TelegramActivityRuntime;
   activityVerbosityRuntime: ActivityVerbosity.TelegramActivityVerbosityRuntime;
   assistantOutputRuntime: Activity.TelegramAssistantOutputRuntime;
@@ -403,7 +414,7 @@ export function createTelegramActivityBindingRuntime<TTransportStamp>(deps: {
     Parameters<
       typeof createTelegramAssistantOutputBindingRuntime<TTransportStamp>
     >[0],
-    "waitForActivityIdle"
+    "waitForActivityIdle" | "enqueue"
   >;
   activityVerbosity: Omit<
     Parameters<
@@ -411,19 +422,19 @@ export function createTelegramActivityBindingRuntime<TTransportStamp>(deps: {
         TelegramAssistantOutputAuthority<TTransportStamp>
       >
     >[0],
-    "captureAuthority" | "isAuthorityActive" | "recordFailure"
+    "captureAuthority" | "isAuthorityActive" | "recordFailure" | "enqueue"
   >;
 }): TelegramActivityBindingRuntime {
-  const activityVerbosityBinding =
-    ActivityVerbosity.createTelegramActivityVerbosityBinding();
+  const publication = Activity.createTelegramActivityPublicationRuntime();
   const assistantOutputBinding =
     createTelegramAssistantOutputBindingRuntime({
       ...deps.assistantOutput,
-      waitForActivityIdle: activityVerbosityBinding.waitForIdle,
+      enqueue: publication.enqueue,
     });
   const activityVerbosityRuntime =
     ActivityVerbosity.createTelegramActivityVerbosityRuntime({
       ...deps.activityVerbosity,
+      enqueue: publication.enqueue,
       captureAuthority: assistantOutputBinding.authority.captureAuthority,
       isAuthorityActive: assistantOutputBinding.authority.isAuthorityActive,
       recordFailure(operation, event, error) {
@@ -434,7 +445,6 @@ export function createTelegramActivityBindingRuntime<TTransportStamp>(deps: {
         });
       },
     });
-  activityVerbosityBinding.bind(activityVerbosityRuntime);
   const activityRuntime = Activity.createTelegramActivityBridgeRuntime({
     generation: deps.generation,
     observeEvent(event) {
@@ -450,9 +460,30 @@ export function createTelegramActivityBindingRuntime<TTransportStamp>(deps: {
     },
   });
   return {
-    activityRuntime,
+    activityRuntime: {
+      ...activityRuntime,
+      onSessionStart() {
+        publication.reset();
+        activityRuntime.onSessionStart?.();
+      },
+      onSessionShutdown() {
+        publication.reset();
+        activityRuntime.onSessionShutdown();
+      },
+    },
     activityVerbosityRuntime,
     assistantOutputRuntime: assistantOutputBinding.runtime,
+    publicationRuntime: {
+      enqueue: publication.enqueue,
+      reserve: publication.reserve,
+      capture() {
+        const authority = assistantOutputBinding.authority.captureAuthority();
+        return {
+          target: authority.target ? { ...authority.target } : undefined,
+          isCurrent: () => assistantOutputBinding.authority.isAuthorityActive(authority),
+        };
+      },
+    },
   };
 }
 
@@ -680,6 +711,7 @@ export function registerTelegramCommandsAndTools({
 
 interface TelegramLifecycleBindingDeps {
   pi: Pi.ExtensionAPI;
+  publicationRuntime: TelegramBridgePublicationRuntime;
   activityRuntime: Activity.TelegramActivityRuntime;
   activityVerbosityRuntime?: ActivityVerbosity.TelegramActivityVerbosityRuntime;
   assistantOutputRuntime: Pick<
@@ -748,6 +780,7 @@ interface TelegramLifecycleBindingDeps {
       Keyboard.TelegramInlineKeyboardMarkup
     >["sendGuestReply"]
   >;
+  preparePreviewDelivery?: Queue.TelegramAgentEndRuntimeDeps<Queue.PendingTelegramTurn>["preparePreviewDelivery"];
   finalizeMarkdownPreview: Queue.TelegramAgentEndHookRuntimeDeps<
     Queue.PendingTelegramTurn,
     Pi.ExtensionContext,
@@ -770,6 +803,7 @@ interface TelegramLifecycleBindingDeps {
 
 export function registerTelegramLifecycleRuntimeHooks({
   pi,
+  publicationRuntime,
   activityRuntime,
   activityVerbosityRuntime,
   assistantOutputRuntime,
@@ -798,6 +832,7 @@ export function registerTelegramLifecycleRuntimeHooks({
   answerGuestQuery,
   deleteMessage,
   sendGuestReply,
+  preparePreviewDelivery,
   finalizeMarkdownPreview,
   proactivePushTargetGetter,
   getAssistantRenderingMode,
@@ -936,24 +971,19 @@ export function registerTelegramLifecycleRuntimeHooks({
       { replyToPrompt: false },
     );
   };
-  let activeTurnDeliveryTail = Promise.resolve();
-  const scheduleActiveTurnDelivery = (task: () => Promise<void>): void => {
-    const previous = activeTurnDeliveryTail;
-    activeTurnDeliveryTail = (async () => {
-      await previous;
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 0);
-        timer.unref?.();
-      });
-      await task();
-    })().catch((error) => {
-      recordRuntimeEvent("delivery", error, {
-        phase: "agent-end-background-delivery",
-      });
-    });
+  let pendingFinalPublication: {
+    turn: Queue.PendingTelegramTurn;
+    reservation: Activity.TelegramActivityPublicationReservation;
+  } | undefined;
+  const cancelPendingFinalPublication = (): void => {
+    pendingFinalPublication?.reservation.cancel();
+    pendingFinalPublication = undefined;
   };
-  const waitForActiveTurnDelivery = async (): Promise<void> => {
-    await activeTurnDeliveryTail;
+  const recordPublicationFailure = (error: unknown): void => {
+    recordRuntimeEvent("delivery", error, { phase: "agent-end-background-delivery" });
+  };
+  const scheduleActiveTurnDelivery = (task: () => Promise<void>): void => {
+    void publicationRuntime.enqueue(task).catch(recordPublicationFailure);
   };
   const agentLifecycleHooks = Queue.createTelegramAgentLifecycleHooks<
     Queue.PendingTelegramTurn,
@@ -989,14 +1019,23 @@ export function registerTelegramLifecycleRuntimeHooks({
     isSessionActive: isSessionContextActive,
     isTurnTransportActive,
     waitForTypingIdle: typing.waitForIdle,
-    async waitForActivityIdle() {
-      await activityVerbosityRuntime?.waitForIdle();
-      await assistantOutputRuntime.waitForIdle();
-    },
     dispatchNextQueuedTelegramTurn,
     requestDeferredDispatchNextQueuedTelegramTurn:
       deferredQueueDispatchRuntime.request,
     scheduleActiveTurnDelivery,
+    reserveActiveTurnDelivery() {
+      const pending = pendingFinalPublication;
+      pendingFinalPublication = undefined;
+      const matches = pending?.turn === activeTurnRuntime.get();
+      if (!matches) pending?.reservation.cancel();
+      const reservation = matches && pending ? pending.reservation : publicationRuntime.reserve();
+      return {
+        schedule: (task) => { void reservation.publish(task).catch(recordPublicationFailure); },
+        cancel: reservation.cancel,
+      };
+    },
+    preparePreviewDelivery,
+    preparePreviewClear: previewRuntime.prepareClear,
     clearPreview: previewRuntime.clear,
     setPreviewPendingText: previewRuntime.setPendingText,
     finalizeMarkdownPreview,
@@ -1018,6 +1057,7 @@ export function registerTelegramLifecycleRuntimeHooks({
   Lifecycle.setResetTransportReplyDedup(Replies.resetTransportReplyDedup);
   const agentStartWithDedupReset = Lifecycle.createAgentStartDedupHook(
     agentLifecycleHooks.onAgentStart,
+    scheduleActiveTurnDelivery,
   );
   let uiPromptActive = false;
   const startAgentActivityTypingLoop = (ctx: Pi.ExtensionContext): boolean => {
@@ -1038,25 +1078,24 @@ export function registerTelegramLifecycleRuntimeHooks({
   };
   let observedAutomaticCompaction = false;
   let agentWorkActive = false;
-  let terminalAssistantMessagePendingDelivery = false;
-  const deferredAutomaticCompactionNotices: string[] = [];
-  const sendCompactionNotice = async (text: string): Promise<void> => {
+  const prepareCompactionNotice = (text: string, ctx: Pi.ExtensionContext): (() => Promise<void>) => {
+    const authority = publicationRuntime.capture();
     const turn = activeTurnRuntime.get();
-    const target = turn?.target ?? proactivePushTargetGetter?.();
-    if (!target) return;
-    try {
-      await sendMarkdownReply(target.chatId, turn?.replyToMessageId, text, {
-        target,
-      });
-    } catch (error) {
-      recordRuntimeEvent("delivery", error, {
-        phase: "compaction-notice",
-      });
-    }
+    const selectedTarget = turn?.target ?? authority.target;
+    const target = selectedTarget ? { ...selectedTarget } : undefined;
+    const replyToMessageId = turn?.replyToMessageId;
+    return async () => {
+      if (!target || !isSessionContextActive(ctx) || !authority.isCurrent()) return;
+      if (turn && isTurnTransportActive?.(turn) === false) return;
+      try {
+        await sendMarkdownReply(target.chatId, replyToMessageId, text, { target });
+      } catch (error) {
+        recordRuntimeEvent("delivery", error, { phase: "compaction-notice" });
+      }
+    };
   };
-  const flushDeferredAutomaticCompactionNotices = async (): Promise<void> => {
-    const notices = deferredAutomaticCompactionNotices.splice(0);
-    for (const notice of notices) await sendCompactionNotice(notice);
+  const sendCompactionNotice = (text: string, ctx: Pi.ExtensionContext): void => {
+    scheduleActiveTurnDelivery(prepareCompactionNotice(text, ctx));
   };
   const compactionObserver = Lifecycle.createTelegramCompactionObserverRuntime({
     isContextActive: isSessionContextActive,
@@ -1070,7 +1109,6 @@ export function registerTelegramLifecycleRuntimeHooks({
     recordRuntimeEvent,
     onCompactionAbandoned: () => {
       observedAutomaticCompaction = false;
-      deferredAutomaticCompactionNotices.length = 0;
       activityRuntime.onCompactionAbandoned();
     },
   });
@@ -1091,6 +1129,7 @@ export function registerTelegramLifecycleRuntimeHooks({
       activityRuntime.recordInputSource(event.source ?? "unknown");
     },
     async onSessionStart(event, ctx) {
+      cancelPendingFinalPublication();
       previewRuntime.invalidate();
       assistantOutputRuntime.start();
       activityRuntime.onSessionStart?.();
@@ -1106,9 +1145,8 @@ export function registerTelegramLifecycleRuntimeHooks({
       assistantOutputRuntime.stop();
       observedAutomaticCompaction = false;
       agentWorkActive = false;
-      terminalAssistantMessagePendingDelivery = false;
+      cancelPendingFinalPublication();
       uiPromptActive = false;
-      deferredAutomaticCompactionNotices.length = 0;
       compactionObserver.onSessionShutdown();
       if (event.reason === "quit" && disconnectOnQuit) {
         try {
@@ -1129,19 +1167,7 @@ export function registerTelegramLifecycleRuntimeHooks({
       if (shouldNotify) observedAutomaticCompaction = true;
       activityRuntime.onCompactionStart(Pi.getSessionCompactionReason(event));
       compactionObserver.onSessionBeforeCompact(event, ctx);
-      if (shouldNotify) {
-        if (terminalAssistantMessagePendingDelivery) {
-          deferredAutomaticCompactionNotices.push(
-            Commands.TELEGRAM_COMPACTION_STARTED_MARKDOWN,
-          );
-        } else {
-          await waitForActiveTurnDelivery();
-          if (!isSessionContextActive(ctx)) return;
-          await sendCompactionNotice(
-            Commands.TELEGRAM_COMPACTION_STARTED_MARKDOWN,
-          );
-        }
-      }
+      if (shouldNotify) sendCompactionNotice(Commands.TELEGRAM_COMPACTION_STARTED_MARKDOWN, ctx);
     },
     async onSessionCompact(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
@@ -1149,40 +1175,26 @@ export function registerTelegramLifecycleRuntimeHooks({
       compactionObserver.onSessionCompact(event, ctx);
       if (observedAutomaticCompaction) {
         observedAutomaticCompaction = false;
-        if (deferredAutomaticCompactionNotices.length > 0) {
-          deferredAutomaticCompactionNotices.push(
-            Commands.TELEGRAM_COMPACTION_COMPLETED_MARKDOWN,
-          );
-        } else {
-          await sendCompactionNotice(
-            Commands.TELEGRAM_COMPACTION_COMPLETED_MARKDOWN,
-          );
-        }
+        sendCompactionNotice(Commands.TELEGRAM_COMPACTION_COMPLETED_MARKDOWN, ctx);
       }
     },
     async onSessionCompactFailed(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
       const shouldNotify = observedAutomaticCompaction;
-      const deferredNotices = deferredAutomaticCompactionNotices.splice(0);
-      const shouldDefer =
-        deferredNotices.length > 0 || terminalAssistantMessagePendingDelivery;
       compactionObserver.onSessionCompactFailed(event, ctx);
       if (!shouldNotify) return;
       const notice = event.aborted
         ? "**⚠️ Compaction cancelled.**"
         : "**⚠️ Compaction failed.**";
-      if (shouldDefer) {
-        deferredAutomaticCompactionNotices.push(...deferredNotices, notice);
-      } else {
-        await sendCompactionNotice(notice);
-      }
+      sendCompactionNotice(notice, ctx);
     },
     async onAgentStart(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
       agentWorkActive = true;
-      terminalAssistantMessagePendingDelivery = false;
+      cancelPendingFinalPublication();
       await agentStartWithDedupReset(event, ctx);
-      activityRuntime.onAgentStart(activeTurnRuntime.get()?.target);
+      const turn = activeTurnRuntime.get();
+      activityRuntime.onAgentStart(turn?.target, turn?.replyToMessageId);
       startAgentActivityTypingLoop(ctx);
     },
     async onToolExecutionStart(event, ctx) {
@@ -1228,13 +1240,16 @@ export function registerTelegramLifecycleRuntimeHooks({
     onMessageEnd(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
       if (event.message.role === "assistant") {
+        previewRuntime.seal();
         activityRuntime.onAssistantMessageEnd(event.message.stopReason);
       }
-      terminalAssistantMessagePendingDelivery =
-        event.message.role === "assistant" &&
-        event.message.stopReason !== "toolUse" &&
-        event.message.stopReason !== "error" &&
-        event.message.stopReason !== "aborted";
+      if (event.message.role !== "assistant" || event.message.stopReason === "toolUse" || event.message.stopReason === "aborted") return;
+      const turn = activeTurnRuntime.get();
+      if (!turn || turn.guestQueryId || pendingFinalPublication?.turn === turn) return;
+      cancelPendingFinalPublication();
+      const assistant = Replies.extractLatestAssistantMessageText([event.message]);
+      if (!assistant.text && assistant.stopReason !== "error" && turn.queuedAttachments.length === 0) return;
+      pendingFinalPublication = { turn, reservation: publicationRuntime.reserve() };
     },
     onUiPromptStart(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
@@ -1254,18 +1269,22 @@ export function registerTelegramLifecycleRuntimeHooks({
     },
     async onAgentEnd(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
+      if (pendingFinalPublication && pendingFinalPublication.turn !== activeTurnRuntime.get()) {
+        cancelPendingFinalPublication();
+        return;
+      }
       activityRuntime.onAgentEnd();
       await agentLifecycleHooks.onAgentEnd(event, ctx);
     },
     async onAgentSettled(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
-      await agentLifecycleHooks.onAgentSettled(event, ctx);
-      if (deferredAutomaticCompactionNotices.length > 0) {
-        await waitForActiveTurnDelivery();
-        if (!isSessionContextActive(ctx)) return;
-        await flushDeferredAutomaticCompactionNotices();
+      const pending = pendingFinalPublication;
+      try {
+        await agentLifecycleHooks.onAgentSettled(event, ctx);
+      } finally {
+        if (pendingFinalPublication === pending) cancelPendingFinalPublication();
       }
-      terminalAssistantMessagePendingDelivery = false;
+      if (!isSessionContextActive(ctx)) return;
       agentWorkActive = false;
       activityRuntime.onAgentSettled();
       modelContextAvailabilityRuntime.reconcile();

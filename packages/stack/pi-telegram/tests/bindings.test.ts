@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,7 +18,14 @@ import {
   registerTelegramCommandsAndTools,
   registerTelegramLifecycleRuntimeHooks,
 } from "../lib/bindings.ts";
+import * as Activity from "../lib/activity.ts";
+import * as Bus from "../lib/bus.ts";
+import * as BusApi from "../lib/bus-api.ts";
+import * as BusFollower from "../lib/bus-follower.ts";
+import * as BusLeader from "../lib/bus-leader.ts";
+import type { TelegramBridgeApiRuntime } from "../lib/telegram-api.ts";
 import * as Outbound from "../lib/outbound.ts";
+import * as OutboundAttachments from "../lib/outbound-attachments.ts";
 import * as Queue from "../lib/queue.ts";
 import * as Runtime from "../lib/runtime.ts";
 import * as GenerativeApps from "../lib/generative-apps.ts";
@@ -375,6 +382,203 @@ test("Queue binding composes mutation, admission, dispatch, and watchdog ports",
   ]);
 });
 
+for (const preparation of ["text", "voice", "attachment"] as const) {
+for (const replaceRegistration of [false, true]) {
+  test(`Follower IPC fences delayed ${preparation} preparation${replaceRegistration ? " across registration replacement" : " before later activity"}`, { timeout: 10_000 }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), "tg-publication-"));
+    const socketPath = join(dir, "leader.sock");
+    const committed: string[] = [];
+    const failures: unknown[] = [];
+    let generation = "registration-1";
+    let requestId = 0;
+    let release!: () => void;
+    let markStarted!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const registry = Bus.createTelegramBusFollowerRegistry();
+    const register = () => registry.register({
+      instanceId: "follower", connectedAtMs: Date.now(),
+      registrationGeneration: generation, target: { chatId: 7, threadId: 42 },
+    });
+    register();
+    const server = Bus.createTelegramBusLocalServer({
+      socketPath,
+      handleEnvelope: BusLeader.createTelegramBusLeaderEnvelopeHandler({
+        followerRegistry: registry,
+        authSecret: "fixture-secret",
+        protocolIdentity: Bus.createTelegramBusProtocolIdentity({ runtimeBuild: "test" }),
+        authorizeFollowerApiCall: Bus.isTelegramFollowerApiCallAllowed,
+        callApi: async (method, args) => {
+          if (method === "callMultipart") {
+            assert.equal(args[0], preparation === "voice" ? "sendVoice" : "sendDocument");
+            const fields = args[1] as Record<string, string>;
+            assert.equal(fields.chat_id, "7");
+            assert.equal(fields.message_thread_id, "42");
+            committed.push(String(args[0]));
+            return { message_id: committed.length };
+          }
+          assert.equal(method, "call");
+          assert.equal(args[0], "sendRichMessage");
+          const body = args[1] as { chat_id: number; message_thread_id: number; rich_message: { markdown?: string } };
+          assert.equal(body.chat_id, 7);
+          assert.equal(body.message_thread_id, 42);
+          committed.push(body.rich_message.markdown ?? "tool");
+          return { message_id: committed.length };
+        },
+      }),
+    });
+    const api = BusApi.createTelegramBusAwareApiRuntime({
+      directRuntime: {} as TelegramBridgeApiRuntime,
+      ownsDirect: () => false,
+      callFollowerApi: BusFollower.createTelegramBusFollowerApiCaller({
+        socketPath, instanceId: "follower",
+        createRequestId: () => `publication-${++requestId}`,
+        getAuthSecret: () => "fixture-secret",
+        getRegistrationGeneration: () => generation,
+      }),
+    });
+    const binding = createTelegramActivityBindingRuntime({
+      generation: "session",
+      assistantOutput: {
+        authority: {
+          getPreferredTarget: () => ({ chatId: 7, threadId: 42 }),
+          getFallbackChatId: () => 7,
+          getTransportStamp: () => "stamp",
+          isTransportStampActive: () => true,
+          ownsDirect: () => false,
+          getDirectEpoch: () => undefined,
+          isFollowerRegistered: () => true,
+          getFollowerGeneration: () => generation,
+        },
+        sender: {
+          sendMessage: api.sendMessage,
+          sendRichMessage: api.sendRichMessage,
+          editMessage: async () => undefined,
+          getAssistantRenderingMode: () => "rich",
+          getHandlers: () => [{ type: "text", template: "/fixture/prepare" }],
+          execCommand: async (_command, _args, options) => {
+            markStarted();
+            await gate;
+            return { stdout: options?.stdin ?? "", stderr: "", code: 0, killed: false };
+          },
+        },
+        recordRuntimeEvent: (_category, error) => { failures.push(error); },
+      },
+      activityVerbosity: {
+        getActivityMode: () => "tools",
+        resolveTarget: () => ({ chatId: 7, threadId: 42 }),
+        sendMessage: api.sendMessage,
+        sendRichMessage: api.sendRichMessage,
+        editMessageText: async () => "edited",
+      },
+    });
+    const startTurn = () => {
+      binding.activityRuntime.recordInputSource("extension");
+      binding.activityRuntime.onAgentStart();
+    };
+    const finishTurn = () => {
+      binding.activityRuntime.onAgentEnd();
+      binding.activityRuntime.onAgentSettled();
+    };
+    const unregisterVoice = preparation === "voice"
+      ? Outbound.registerTelegramVoiceSynthesisProvider(async () => {
+          markStarted(); await gate;
+          const path = join(dir, "voice.ogg");
+          await writeFile(path, "fixture voice bytes");
+          return path;
+        }, { id: "publication-ipc-fixture" })
+      : () => {};
+    try {
+      await server.start();
+      binding.assistantOutputRuntime.start();
+      binding.activityRuntime.onSessionStart?.();
+      if (preparation === "text") {
+        startTurn();
+        binding.activityRuntime.onAssistantEvent({ type: "text_end", contentIndex: 0, content: "Prepared final" });
+        binding.activityRuntime.onAssistantEvent({ type: "done" });
+        finishTurn();
+      } else {
+        const path = join(dir, "artifact.txt");
+        await writeFile(path, "fixture attachment");
+        const authority = binding.publicationRuntime.capture();
+        await Queue.handleTelegramAgentEndRuntime({
+          turn: {
+            kind: "prompt", chatId: 7, replyToMessageId: 1,
+            target: { chatId: 7, threadId: 42 }, sourceMessageIds: [1],
+            queueOrder: 1, queueLane: "default", laneOrder: 1,
+            content: [{ type: "text", text: "fixture" }], historyText: "fixture", statusSummary: "fixture",
+            queuedAttachments: preparation === "attachment" ? [{ path, fileName: "artifact.txt" }] : [],
+          },
+          assistant: { text: "Final caption" },
+          foldQueuedPromptsIntoHistory: false,
+          isTurnTransportActive: authority.isCurrent,
+          resetRuntimeState: () => {}, updateStatus: () => {}, dispatchNextQueuedTelegramTurn: () => {},
+          scheduleActiveTurnDelivery: (task) => { void binding.publicationRuntime.enqueue(task).catch((error) => failures.push(error)); },
+          clearPreview: async () => {}, setPreviewPendingText: () => {}, finalizeMarkdownPreview: async () => false,
+          sendMarkdownReply: async (_chat, _reply, text) => {
+            await api.sendRichMessage({ chat_id: 7, message_thread_id: 42, rich_message: { markdown: text } });
+          },
+          sendTextReply: async () => { assert.fail("Unexpected attachment fallback"); },
+          sendQueuedAttachments: OutboundAttachments.createTelegramQueuedOutboundAttachmentSender({
+            statPath: async (file) => { markStarted(); await gate; return stat(file); },
+            sendMultipart: api.callMultipart,
+            sendTextReply: async () => { assert.fail("Unexpected attachment failure notice"); },
+          }),
+          planOutboundReply: preparation === "voice" ? () => ({ markdown: "", voiceText: "Spoken final" }) : undefined,
+          sendOutboundReplyArtifacts: Outbound.createTelegramOutboundReplyArtifactSender({
+            execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+            sendMultipart: api.callMultipart,
+          }),
+        });
+      }
+      await started;
+      startTurn();
+      binding.activityRuntime.onToolEnd({ toolCallId: "read", toolName: "read", result: "contents", isError: false });
+      finishTurn();
+      if (preparation !== "text") {
+        const authority = binding.publicationRuntime.capture();
+        void binding.publicationRuntime.enqueue(async () => {
+          if (authority.isCurrent()) await api.sendRichMessage({ chat_id: 7, message_thread_id: 42, rich_message: { markdown: "Following notice" } });
+        }).catch((error) => failures.push(error));
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const prefix = preparation === "attachment" ? ["Final caption"] : [];
+      assert.deepEqual(committed, prefix);
+      if (replaceRegistration) {
+        generation = "registration-2";
+        register();
+      }
+      release();
+      await binding.publicationRuntime.enqueue(async () => {});
+      const expected = preparation === "text"
+        ? ["Prepared final", "tool"]
+        : [...prefix, preparation === "voice" ? "sendVoice" : "sendDocument", "tool", "Following notice"];
+      assert.deepEqual(committed, replaceRegistration ? prefix : expected);
+      assert.equal(requestId, replaceRegistration ? prefix.length : expected.length);
+      assert.equal(failures.length, replaceRegistration && preparation === "text" ? 1 : 0);
+      if (replaceRegistration) {
+        if (preparation === "text") assert.match(String(failures[0]), /lost admission authority before transport mutation/);
+        startTurn();
+        binding.activityRuntime.onAssistantEvent({ type: "text_end", contentIndex: 0, content: "Fresh final" });
+        binding.activityRuntime.onAssistantEvent({ type: "done" });
+        finishTurn();
+        await binding.publicationRuntime.enqueue(async () => {});
+        assert.deepEqual(committed, [...prefix, "Fresh final"]);
+        assert.equal(requestId, prefix.length + 1);
+      }
+    } finally {
+      release();
+      binding.activityRuntime.onSessionShutdown();
+      binding.assistantOutputRuntime.stop();
+      binding.activityVerbosityRuntime.stop();
+      await server.stop();
+      unregisterVoice();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+}
+
 test("Activity binding composes bridge fanout and output ordering", async () => {
   const sent: string[] = [];
   const binding = createTelegramActivityBindingRuntime({
@@ -433,6 +637,85 @@ test("Activity binding composes bridge fanout and output ordering", async () => 
   binding.activityVerbosityRuntime.stop();
   binding.assistantOutputRuntime.stop();
 });
+
+for (const [route, replaceAuthority] of [
+  ["direct", false], ["follower", false],
+  ["direct", true], ["follower", true],
+] as const) {
+test(`Activity publication preserves cross-turn order with ${route}${replaceAuthority ? " replacement" : ""}`, async () => {
+  const sent: string[] = [];
+  let epoch = 1;
+  let release!: () => void;
+  let markStarted!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const binding = createTelegramActivityBindingRuntime({
+    generation: "ordered-generation",
+    assistantOutput: {
+      authority: {
+        getPreferredTarget: () => ({ chatId: 7, threadId: 42 }),
+        getFallbackChatId: () => 7,
+        getTransportStamp: () => "stamp",
+        isTransportStampActive: () => true,
+        ownsDirect: () => route === "direct",
+        getDirectEpoch: () => epoch,
+        isFollowerRegistered: () => route === "follower",
+        getFollowerGeneration: () => `registration-${epoch}`,
+      },
+      sender: {
+        sendMessage: async () => ({ message_id: 1 }),
+        sendRichMessage: async () => { markStarted(); await gate; sent.push("assistant"); return { message_id: 2 }; },
+        editMessage: async () => undefined,
+        getAssistantRenderingMode: () => "rich",
+        execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+      },
+      recordRuntimeEvent: () => undefined,
+    },
+    activityVerbosity: {
+      getActivityMode: () => "tools",
+      resolveTarget: () => ({ chatId: 7, threadId: 42 }),
+      sendMessage: async () => { sent.push("tool"); return { message_id: 3 }; },
+      sendRichMessage: async () => { sent.push("tool"); return { message_id: 3 }; },
+      editMessageText: async () => "edited",
+    },
+  });
+  try {
+    binding.assistantOutputRuntime.start();
+    binding.activityRuntime.onSessionStart?.();
+    binding.activityRuntime.recordInputSource("extension");
+    binding.activityRuntime.onAgentStart();
+    binding.activityRuntime.onAssistantEvent({ type: "text_end", contentIndex: 0, content: "Checkpoint" });
+    binding.activityRuntime.onAssistantEvent({ type: "toolcall_start", contentIndex: 1 });
+    binding.activityRuntime.onAgentEnd();
+    binding.activityRuntime.onAgentSettled();
+    binding.activityRuntime.recordInputSource("extension");
+    binding.activityRuntime.onAgentStart();
+    binding.activityRuntime.onToolStart({ toolCallId: "read-1", toolName: "read", args: { path: "fixture.txt" } });
+    binding.activityRuntime.onToolEnd({ toolCallId: "read-1", toolName: "read", result: "fixture contents", isError: false });
+    await started;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent, []);
+    if (replaceAuthority) epoch += 1;
+    release();
+    await binding.publicationRuntime.enqueue(async () => {});
+    assert.deepEqual(sent, replaceAuthority ? ["assistant"] : ["assistant", "tool"]);
+    if (replaceAuthority) {
+      binding.activityRuntime.onAgentEnd();
+      binding.activityRuntime.onAgentSettled();
+      binding.activityRuntime.recordInputSource("extension");
+      binding.activityRuntime.onAgentStart();
+      binding.activityRuntime.onToolEnd({ toolCallId: "read-new", toolName: "read", result: "current output", isError: false });
+      await binding.publicationRuntime.enqueue(async () => {});
+      assert.deepEqual(sent, ["assistant", "tool"]);
+    }
+  } finally {
+    release();
+    binding.activityRuntime.onSessionShutdown();
+    binding.assistantOutputRuntime.stop();
+    binding.activityVerbosityRuntime.stop();
+  }
+});
+}
 
 test("Assistant output binding composes admission, delivery, and observation", async () => {
   const sent: string[] = [];
@@ -770,6 +1053,10 @@ test("Lifecycle binding disconnects only graceful quit and preserves cleanup aft
       onAgentSettled: () => {},
       onSessionShutdown: () => {},
     },
+    publicationRuntime: {
+      ...Activity.createTelegramActivityPublicationRuntime(),
+      capture: () => ({ target: { chatId: 7 }, isCurrent: () => true }),
+    },
     assistantOutputRuntime: { start: () => {}, stop: () => {} },
     sessionLifecycleRuntime: {
       onSessionStart: async () => {
@@ -930,6 +1217,10 @@ test("Lifecycle binding routes native typing, previews, and normalized activity"
       onAgentSettled: () => events.push("activity:agent-settled"),
       onSessionShutdown: () => events.push("activity:shutdown"),
     },
+    publicationRuntime: {
+      ...Activity.createTelegramActivityPublicationRuntime(),
+      capture: () => ({ target: { chatId: 7 }, isCurrent: () => true }),
+    },
     assistantOutputRuntime: {
       start: () => events.push("assistant-output:start"),
       stop: () => events.push("assistant-output:stop"),
@@ -1073,7 +1364,8 @@ test("Lifecycle binding routes native typing, previews, and normalized activity"
     {} as ExtensionContext,
   );
 
-  assert.deepEqual(events, [
+  await deps.publicationRuntime.enqueue(async () => {});
+  const expected = [
     "activity:agent-start:none",
     "typing:42:8",
     "activity:ui-start:confirm:Approve?",
@@ -1101,5 +1393,8 @@ test("Lifecycle binding routes native typing, previews, and normalized activity"
     "typing:42:8",
     "activity:compact-end:unknown",
     "send:**✅ Compaction completed.**",
-  ]);
+  ];
+  // Pi hooks keep their order without waiting for the independently delivered projection.
+  assert.deepEqual(events.filter((event) => !event.startsWith("send:")), expected.filter((event) => !event.startsWith("send:")));
+  assert.deepEqual(events.filter((event) => event.startsWith("send:")), expected.filter((event) => event.startsWith("send:")));
 });
