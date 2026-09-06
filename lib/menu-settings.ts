@@ -184,8 +184,8 @@ export function buildDraftPreviewsSettingsText(enabled: boolean): string {
     "",
     "Show live answer drafts while the model is answering.",
     "",
-    "<code>-</code> <code>on</code>: stream safe Telegram Rich Draft frames before the final answer.",
-    "<code>-</code> <code>off</code> (default): show native active status, then send one final answer.",
+    "<code>-</code> <code>on</code> (default): stream safe Telegram Rich Draft frames before the final answer.",
+    "<code>-</code> <code>off</code>: show native active status, then send one final answer.",
   ].join("\n");
 }
 
