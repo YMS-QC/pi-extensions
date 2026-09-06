@@ -305,7 +305,121 @@ test("Preview runtime optional send gate clears without sending new content", as
   assert.equal(harness.getState(), undefined);
 });
 
-test("Native Markdown finalizer waits for active draft flush before final reply", async () => {
+test("Draft throttle sends immediately then the latest snapshot at two seconds without debounce starvation", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 10_000 });
+  const drafts: Array<{ text: string | undefined; at: number }> = [];
+  const preview = createTelegramAssistantPreviewRuntime<{ text: string }>({
+    getActiveTurn: () => ({ chatId: 7 }), isAssistantMessage: () => true, getMessageText: (message) => message.text,
+    sendDraft: async (_chat, _id, text) => { drafts.push({ text, at: Date.now() }); },
+    sendMarkdownReply: async () => 100,
+  });
+  try {
+    preview.resetState();
+    await preview.onMessageUpdate({ message: { text: "First" } }); await preview.flush(7);
+    await preview.onMessageUpdate({ message: { text: "Discarded intermediate" } }); await preview.flush(7);
+    t.mock.timers.tick(1000);
+    await preview.onMessageUpdate({ message: { text: "Latest" } }); await preview.flush(7);
+    t.mock.timers.tick(999);
+    assert.deepEqual(drafts, [{ text: "First", at: 10_000 }]);
+    t.mock.timers.tick(1); await preview.flush(7);
+    assert.deepEqual(drafts, [{ text: "First", at: 10_000 }, { text: "Latest", at: 12_000 }]);
+  } finally { preview.invalidate(); }
+});
+
+test("Final publication cancels the draft throttle timer without waiting for its deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 10_000 });
+  const effects: string[] = [];
+  const preview = createTelegramAssistantPreviewRuntime<{ text: string }>({
+    getActiveTurn: () => ({ chatId: 7 }), isAssistantMessage: () => true, getMessageText: (message) => message.text,
+    sendDraft: async (_chat, _id, text) => { effects.push(`draft:${text}`); },
+    sendMarkdownReply: async () => { effects.push("final"); return 100; },
+  });
+  try {
+    preview.resetState();
+    await preview.onMessageUpdate({ message: { text: "First" } }); await preview.flush(7);
+    await preview.onMessageUpdate({ message: { text: "Queued tail" } }); await preview.flush(7);
+    const state = preview.getState()!;
+    assert.ok(state.flushTimer);
+    assert.equal(await preview.finalizeMarkdown(7, "Complete answer", 21), true);
+    assert.equal(Date.now(), 10_000);
+    assert.equal(state.flushTimer, undefined);
+    t.mock.timers.tick(2000); await Promise.resolve();
+    assert.deepEqual(effects, ["draft:First", "final"]);
+  } finally { preview.invalidate(); }
+});
+
+test("Replacing a throttled preview cancels old text and retains the interval with the new target", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 10_000 });
+  let threadId = 42;
+  const drafts: Array<{ text: string | undefined; thread: number | undefined }> = [];
+  const preview = createTelegramAssistantPreviewRuntime<{ text: string }>({
+    getActiveTurn: () => ({ chatId: 7, target: { chatId: 7, threadId } }),
+    isAssistantMessage: () => true, getMessageText: (message) => message.text,
+    sendDraft: async (_chat, _id, text, options) => { drafts.push({ text, thread: options?.message_thread_id }); },
+    sendMarkdownReply: async () => 100,
+  });
+  try {
+    preview.resetState();
+    await preview.onMessageUpdate({ message: { text: "First" } }); await preview.flush(7);
+    await preview.onMessageUpdate({ message: { text: "Obsolete" } }); await preview.flush(7);
+    const old = preview.getState()!;
+    threadId = 43; preview.resetState();
+    assert.equal(old.flushTimer, undefined);
+    await preview.onMessageUpdate({ message: { text: "Replacement" } }); await preview.flush(7);
+    t.mock.timers.tick(2000); await preview.flush(7);
+    assert.deepEqual(drafts, [{ text: "First", thread: 42 }, { text: "Replacement", thread: 43 }]);
+  } finally { preview.invalidate(); }
+});
+
+test("Slow draft requests remain single-flight and coalesce updates past the throttle deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 10_000 });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const texts: string[] = [];
+  const preview = createTelegramAssistantPreviewRuntime<{ text: string }>({
+    getActiveTurn: () => ({ chatId: 7 }), isAssistantMessage: () => true, getMessageText: (message) => message.text,
+    sendDraft: async (_chat, _id, text) => { texts.push(text!); if (texts.length === 1) await gate; },
+    sendMarkdownReply: async () => 100,
+  });
+  preview.resetState();
+  await preview.onMessageUpdate({ message: { text: "First" } });
+  const flush = preview.getState()?.flushPromise;
+  try {
+    t.mock.timers.tick(2500);
+    await preview.onMessageUpdate({ message: { text: "Intermediate" } });
+    await preview.onMessageUpdate({ message: { text: "Latest" } });
+    assert.deepEqual(texts, ["First"]);
+    release(); await flush;
+    assert.deepEqual(texts, ["First", "Latest"]);
+  } finally { release(); await flush; preview.invalidate(); }
+});
+
+test("Sealed preview ignores late updates while a replacement preview can stream", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 10_000 });
+  const drafts: string[] = [];
+  const preview = createTelegramAssistantPreviewRuntime<{ text: string }>({
+    getActiveTurn: () => ({ chatId: 7, replyToMessageId: 55 }),
+    isAssistantMessage: () => true,
+    getMessageText: (message) => message.text,
+    sendDraft: async (_chat, _id, text) => { if (text) drafts.push(text); },
+    sendMarkdownReply: async () => { assert.fail("No permanent publication expected"); },
+  });
+  preview.resetState();
+  await preview.onMessageUpdate({ message: { text: "First draft." } });
+  await preview.flush(7);
+  preview.seal();
+  await preview.onMessageUpdate({ message: { text: "Obsolete late update." } });
+  await preview.flush(7);
+  assert.equal(preview.getState()?.pendingText, "First draft.");
+  t.mock.timers.tick(2000);
+  preview.resetState();
+  await preview.onMessageUpdate({ message: { text: "Replacement draft." } });
+  await preview.flush(7);
+  assert.deepEqual(drafts, ["First draft.", "Replacement draft."]);
+  preview.invalidate();
+});
+
+test("Native Markdown finalizer drains only the issued draft and suppresses queued and late drafts", async () => {
   const harness = createPreviewRuntimeHarness({
     mode: "draft",
     draftId: 10,
@@ -313,9 +427,10 @@ test("Native Markdown finalizer waits for active draft flush before final reply"
     lastSentText: "",
   });
   const releases: Array<() => void> = [];
+  let sends = 0;
   harness.deps.sendDraft = async (chatId, draftId, text) => {
     harness.events.push(`draft-start:${chatId}:${draftId}:${text}`);
-    await new Promise<void>((resolve) => {
+    if (++sends === 1) await new Promise<void>((resolve) => {
       releases.push(resolve);
     });
     harness.events.push(`draft-finish:${chatId}:${draftId}:${text}`);
@@ -333,17 +448,68 @@ test("Native Markdown finalizer waits for active draft flush before final reply"
   });
   const flush = flushTelegramPreview(7, harness.deps);
   await Promise.resolve();
+  harness.getState()!.pendingText = "queued follow-up draft";
+  const followUp = flushTelegramPreview(7, harness.deps);
   const finalize = finalizeMarkdown(7, "final body", 55);
+  const lateFlush = flushTelegramPreview(7, harness.deps);
   await Promise.resolve();
   assert.deepEqual(harness.events, ["draft-start:7:10:draft body"]);
   releases.shift()?.();
-  await Promise.all([flush, finalize]);
+  await Promise.all([flush, followUp, lateFlush, finalize]);
   assert.deepEqual(harness.events, [
     "draft-start:7:10:draft body",
     "draft-finish:7:10:draft body",
     "final:7:55:final body",
   ]);
   assert.equal(harness.getState(), undefined);
+});
+
+test("A deferred draft does not consume its latest text snapshot", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 10_000 });
+  const texts: string[] = [];
+  const preview = createTelegramAssistantPreviewRuntime<{ text: string }>({
+    getActiveTurn: () => ({ chatId: 7 }), isAssistantMessage: () => true,
+    getMessageText: (message) => message.text,
+    sendDraft: async (_chat, _draft, text) => { texts.push(text!); return texts.length > 1; },
+    sendMarkdownReply: async () => 100,
+  });
+  try {
+    preview.resetState();
+    preview.setPendingText("Latest snapshot");
+    await preview.flush(7);
+    assert.equal(preview.getState()?.lastSentText, "");
+    t.mock.timers.tick(2000);
+    await preview.flush(7);
+    assert.equal(preview.getState()?.lastSentText, "Latest snapshot");
+    assert.deepEqual(texts, ["Latest snapshot", "Latest snapshot"]);
+  } finally { preview.invalidate(); }
+});
+
+test("Prepared final rechecks delivery authority after its original draft flush", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let active = true;
+  const effects: string[] = [];
+  const preview = createTelegramAssistantPreviewRuntime<{ text: string }>({
+    getActiveTurn: () => ({ chatId: 7 }), isAssistantMessage: () => true,
+    getMessageText: (message) => message.text,
+    sendDraft: async () => { effects.push("draft"); await gate; },
+    sendMarkdownReply: async () => { effects.push("final"); return 1; },
+  });
+  preview.resetState();
+  await preview.onMessageUpdate({ message: { text: "Original draft." } });
+  const original = preview.getState();
+  const prepared = preview.prepareDelivery(() => active);
+  const result = prepared.finalizeMarkdownPreview(7, "Final.", 21);
+  try {
+    active = false; release();
+    assert.equal(await result, false);
+    prepared.setPreviewPendingText("stale mutation");
+    await prepared.clearPreview(7);
+    assert.deepEqual(effects, ["draft"]);
+    assert.equal(preview.getState(), original);
+    assert.equal(original?.pendingText, "Original draft.");
+  } finally { release(); await result; preview.invalidate(); }
 });
 
 test("Native Markdown finalizer stops when preview generation changes during flush", async () => {
@@ -398,7 +564,7 @@ test("Plain preview finalization does not send fallback messages", async () => {
   assert.equal(harness.getState(), undefined);
 });
 
-test("Assistant preview runtime finalizes previous markdown through native reply sender", async () => {
+test("Assistant preview rollover does not republish intermediate assistant text", async () => {
   const events: string[] = [];
   const runtime = createTelegramAssistantPreviewRuntime<{
     role: string;
@@ -428,9 +594,69 @@ test("Assistant preview runtime finalizes previous markdown through native reply
     lastSentText: "**previous**",
   });
   await runtime.onMessageStart({ message: { role: "assistant" } });
-  assert.deepEqual(events, ["native-final:7:24:**previous**:42"]);
+  assert.deepEqual(events, []);
   assert.equal(runtime.getState()?.pendingText, "");
 });
+
+test("Preview rollover waits for admitted publication without holding the message-start hook", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 10_000 });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const drafts: string[] = [];
+  const runtime = createTelegramAssistantPreviewRuntime<{ text: string }>({
+    getActiveTurn: () => ({ chatId: 7 }), isAssistantMessage: () => true,
+    getMessageText: (message) => message.text,
+    sendDraft: async (_chat, _id, text) => {
+      drafts.push(text ?? "clear");
+      if (drafts.length === 1) await gate;
+    },
+    sendMarkdownReply: async () => { assert.fail("Preview must not publish intermediate text"); },
+  });
+  runtime.resetState();
+  await runtime.onMessageUpdate({ message: { text: "Old draft." } });
+  const preparation = runtime.preparePublication()!;
+  let started = false;
+  const start = runtime.onMessageStart({ message: { text: "" } }).then(() => { started = true; });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(started, true);
+    await runtime.onMessageUpdate({ message: { text: "Next draft." } });
+    assert.deepEqual(drafts, ["Old draft."]);
+    release();
+    await preparation.wait();
+    assert.deepEqual(drafts, ["Old draft."], "Next draft must also wait for the permanent publication");
+    t.mock.timers.tick(2000);
+    preparation.settle();
+    await runtime.flush(7);
+    assert.deepEqual(drafts, ["Old draft.", "Next draft."]);
+  } finally {
+    release(); preparation.settle(); await start; await runtime.flush(7); runtime.invalidate();
+  }
+});
+
+for (const operation of ["final", "clear"] as const) {
+  test(`Preview rollover carries issued draft authority into ${operation} without a new update`, async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const effects: string[] = [];
+    const runtime = createTelegramAssistantPreviewRuntime<{ text: string }>({
+      getActiveTurn: () => ({ chatId: 7 }), isAssistantMessage: () => true,
+      getMessageText: (message) => message.text,
+      sendDraft: async (_chat, _id, text) => { effects.push(text ? "draft" : "clear"); if (text) await gate; },
+      sendMarkdownReply: async () => { effects.push("final"); return 1; },
+    });
+    runtime.resetState();
+    await runtime.onMessageUpdate({ message: { text: "Old draft." } });
+    await runtime.onMessageStart({ message: { text: "" } });
+    const delivery = operation === "final" ? runtime.finalizeMarkdown(7, "Final.") : runtime.prepareClear(7)();
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(effects, ["draft"]);
+      release(); await delivery;
+      assert.deepEqual(effects, ["draft", operation]);
+    } finally { release(); await delivery; runtime.invalidate(); }
+  });
+}
 
 test("Assistant preview runtime suppresses text preview for voice-tagged turns", async () => {
   const events: string[] = [];

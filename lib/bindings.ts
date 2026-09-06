@@ -353,6 +353,7 @@ export function createTelegramAssistantOutputBindingRuntime<
     typeof OutboundHandlers.createTelegramAssistantOutputSender<TTransportStamp>
   >[0];
   waitForActivityIdle?: () => Promise<void>;
+  prepareTelegramPreview?: () => Activity.TelegramAssistantOutputPreparation | undefined;
   enqueue?: Activity.TelegramActivityPublicationRuntime["enqueue"];
   recordRuntimeEvent: TelegramRuntimeEventRecorder;
 }): TelegramAssistantOutputBindingRuntime<TTransportStamp> {
@@ -366,6 +367,7 @@ export function createTelegramAssistantOutputBindingRuntime<
   const runtime = Activity.createTelegramAssistantOutputRuntime({
     ...authority,
     enqueue: deps.enqueue,
+    prepareSend: (event) => event.source === "telegram" ? deps.prepareTelegramPreview?.() : undefined,
     async send(event, authority, isAuthorityActive) {
       await deps.waitForActivityIdle?.();
       if (!isAuthorityActive()) return;
@@ -778,6 +780,7 @@ interface TelegramLifecycleBindingDeps {
       Keyboard.TelegramInlineKeyboardMarkup
     >["sendGuestReply"]
   >;
+  preparePreviewDelivery?: Queue.TelegramAgentEndRuntimeDeps<Queue.PendingTelegramTurn>["preparePreviewDelivery"];
   finalizeMarkdownPreview: Queue.TelegramAgentEndHookRuntimeDeps<
     Queue.PendingTelegramTurn,
     Pi.ExtensionContext,
@@ -829,6 +832,7 @@ export function registerTelegramLifecycleRuntimeHooks({
   answerGuestQuery,
   deleteMessage,
   sendGuestReply,
+  preparePreviewDelivery,
   finalizeMarkdownPreview,
   proactivePushTargetGetter,
   getAssistantRenderingMode,
@@ -1030,6 +1034,7 @@ export function registerTelegramLifecycleRuntimeHooks({
         cancel: reservation.cancel,
       };
     },
+    preparePreviewDelivery,
     preparePreviewClear: previewRuntime.prepareClear,
     clearPreview: previewRuntime.clear,
     setPreviewPendingText: previewRuntime.setPendingText,
@@ -1052,6 +1057,7 @@ export function registerTelegramLifecycleRuntimeHooks({
   Lifecycle.setResetTransportReplyDedup(Replies.resetTransportReplyDedup);
   const agentStartWithDedupReset = Lifecycle.createAgentStartDedupHook(
     agentLifecycleHooks.onAgentStart,
+    scheduleActiveTurnDelivery,
   );
   let uiPromptActive = false;
   const startAgentActivityTypingLoop = (ctx: Pi.ExtensionContext): boolean => {
@@ -1187,7 +1193,8 @@ export function registerTelegramLifecycleRuntimeHooks({
       agentWorkActive = true;
       cancelPendingFinalPublication();
       await agentStartWithDedupReset(event, ctx);
-      activityRuntime.onAgentStart(activeTurnRuntime.get()?.target);
+      const turn = activeTurnRuntime.get();
+      activityRuntime.onAgentStart(turn?.target, turn?.replyToMessageId);
       startAgentActivityTypingLoop(ctx);
     },
     async onToolExecutionStart(event, ctx) {
@@ -1233,6 +1240,7 @@ export function registerTelegramLifecycleRuntimeHooks({
     onMessageEnd(event, ctx) {
       if (!isSessionContextActive(ctx)) return;
       if (event.message.role === "assistant") {
+        previewRuntime.seal();
         activityRuntime.onAssistantMessageEnd(event.message.stopReason);
       }
       if (event.message.role !== "assistant" || event.message.stopReason === "toolUse" || event.message.stopReason === "aborted") return;

@@ -16,7 +16,7 @@ import {
   generateTelegramVoiceReplyFile,
 } from "../lib/outbound.ts";
 import { createTelegramVoiceReplySender } from "../lib/outbound-voice.ts";
-import { resetTransportReplyDedup } from "../lib/replies.ts";
+import { resetTransportReplyDedup, sendTelegramNativeMarkdownReply } from "../lib/replies.ts";
 import { createTelegramThreadTarget } from "../lib/target.ts";
 import {
   clearTelegramVoiceSynthesisProviders,
@@ -173,6 +173,28 @@ test("Outbound voice sender uploads voice into thread target", async () => {
       allow_sending_without_reply: true,
     }),
   );
+});
+
+test("Rejected voice upload preserves the fallback text's first reply anchor", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-telegram-voice-anchor-"));
+  registerTelegramVoiceSynthesisProvider(async () => join(directory, "voice.ogg"), { id: "anchor-test" });
+  const sendVoice = createTelegramVoiceReplySender({
+    execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+    sendMultipart: async (_method, fields) => {
+      assert.equal(JSON.parse(fields.reply_parameters!).message_id, 2);
+      throw new Error("Rejected voice upload");
+    },
+  });
+  try {
+    await assert.rejects(sendVoice({ chatId: 1, replyToMessageId: 2 }, "Voice"), /every voice synthesis provider/);
+    const anchors: Array<number | undefined> = [];
+    for (const text of ["Fallback text", "Following answer"]) {
+      await sendTelegramNativeMarkdownReply(1, 2, text, {
+        sendRichMessage: async (body) => { anchors.push(body.reply_parameters?.message_id); return { message_id: 100 }; },
+      });
+    }
+    assert.deepEqual(anchors, [2, undefined]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("Outbound voice sender records and throws when every source fails", async () => {

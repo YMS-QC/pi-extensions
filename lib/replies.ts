@@ -9,6 +9,7 @@ import {
   getTelegramTargetThreadParams,
   type TelegramTarget,
 } from "./target.ts";
+import { isTelegramApiCommitUnknownError } from "./telegram-api.ts";
 import type {
   TelegramInputRichMessage,
   TelegramReplyParameters,
@@ -67,6 +68,7 @@ export function createReplyDedupRuntime(): ReplyDedupRuntime {
 // --- Transport-level dedup ---
 
 const lastRepliedToMessageIdByTarget = new Map<string, number>();
+let replyDedupGeneration = 0;
 
 function getReplyDedupTargetKey(
   chatId: number,
@@ -79,6 +81,7 @@ function getReplyDedupTargetKey(
 }
 
 export function resetTransportReplyDedup(): void {
+  replyDedupGeneration += 1;
   lastRepliedToMessageIdByTarget.clear();
 }
 
@@ -99,13 +102,29 @@ export function buildTelegramReplyParameters(
   };
 }
 
-export function buildTelegramMultipartReplyParameters(
+// Answer publications are caller-serialized. A rejected send releases its anchor;
+// an uncertain ACK retains it because Telegram may already have delivered it.
+export async function withTelegramReplyParameters<T>(
   chatId: number,
   messageId: number | undefined,
-  target?: TelegramTarget,
-): string | undefined {
+  target: TelegramTarget | undefined,
+  send: (parameters: TelegramReplyParameters | undefined) => Promise<T>,
+): Promise<T> {
+  const key = getReplyDedupTargetKey(chatId, target);
+  const generation = replyDedupGeneration;
+  const previous = lastRepliedToMessageIdByTarget.get(key);
   const parameters = buildTelegramReplyParameters(chatId, messageId, target);
-  return parameters ? JSON.stringify(parameters) : undefined;
+  try {
+    return await send(parameters);
+  } catch (error) {
+    if (parameters && !isTelegramApiCommitUnknownError(error)
+      && generation === replyDedupGeneration
+      && lastRepliedToMessageIdByTarget.get(key) === messageId) {
+      if (previous === undefined) lastRepliedToMessageIdByTarget.delete(key);
+      else lastRepliedToMessageIdByTarget.set(key, previous);
+    }
+    throw error;
+  }
 }
 
 function getAgentMessageField(message: unknown, field: string): unknown {
@@ -239,24 +258,18 @@ export async function sendTelegramRenderedChunks<TReplyMarkup>(
   assertTelegramInlineKeyboardCallbackData(options?.replyMarkup);
   let lastMessageId: number | undefined;
   for (const [index, chunk] of chunks.entries()) {
-    const replyParameters =
-      index === 0
-        ? buildTelegramReplyParameters(
-            chatId,
-            options?.replyToMessageId,
-            options?.target,
-          )
-        : undefined;
-    const body = {
-      chat_id: chatId,
-      text: chunk.text,
-      parse_mode: chunk.parseMode,
-      reply_markup:
-        index === chunks.length - 1 ? options?.replyMarkup : undefined,
-      ...(replyParameters ? { reply_parameters: replyParameters } : {}),
-      ...(options?.target ? getTelegramTargetThreadParams(options.target) : {}),
-    };
-    const sent = await deps.sendMessage(body);
+    const sent = await withTelegramReplyParameters(
+      chatId, index === 0 ? options?.replyToMessageId : undefined, options?.target,
+      (replyParameters) => deps.sendMessage({
+        chat_id: chatId,
+        text: chunk.text,
+        parse_mode: chunk.parseMode,
+        reply_markup:
+          index === chunks.length - 1 ? options?.replyMarkup : undefined,
+        ...(replyParameters ? { reply_parameters: replyParameters } : {}),
+        ...(options?.target ? getTelegramTargetThreadParams(options.target) : {}),
+      }),
+    );
     lastMessageId = sent.message_id;
     deps.recordOwnership?.({
       chatId,
@@ -655,22 +668,17 @@ export async function sendTelegramNativeMarkdownReply<TReplyMarkup = unknown>(
   let lastMessageId: number | undefined;
   const chunks = splitTelegramNativeMarkdown(markdown);
   for (const [index, chunk] of chunks.entries()) {
-    const replyParameters =
-      index === 0
-        ? buildTelegramReplyParameters(
-            chatId,
-            replyToMessageId,
-            options?.target,
-          )
-        : undefined;
-    const sent = await deps.sendRichMessage({
-      chat_id: chatId,
-      rich_message: { markdown: chunk, skip_entity_detection: true },
-      reply_markup:
-        index === chunks.length - 1 ? options?.replyMarkup : undefined,
-      ...(replyParameters ? { reply_parameters: replyParameters } : {}),
-      ...(options?.target ? getTelegramTargetThreadParams(options.target) : {}),
-    });
+    const sent = await withTelegramReplyParameters(
+      chatId, index === 0 ? replyToMessageId : undefined, options?.target,
+      (replyParameters) => deps.sendRichMessage({
+        chat_id: chatId,
+        rich_message: { markdown: chunk, skip_entity_detection: true },
+        reply_markup:
+          index === chunks.length - 1 ? options?.replyMarkup : undefined,
+        ...(replyParameters ? { reply_parameters: replyParameters } : {}),
+        ...(options?.target ? getTelegramTargetThreadParams(options.target) : {}),
+      }),
+    );
     lastMessageId = sent.message_id;
     deps.recordOwnership?.({
       chatId,

@@ -28,6 +28,9 @@ import {
 import type { ExtensionAPI } from "../lib/pi.ts";
 import { createTelegramThreadTarget } from "../lib/target.ts";
 import { TelegramApiCommitUnknownError } from "../lib/telegram-api.ts";
+import { resetTransportReplyDedup, sendTelegramNativeMarkdownReply } from "../lib/replies.ts";
+
+test.beforeEach(resetTransportReplyDedup);
 
 function createAttachmentQueueTarget(
   queuedAttachments: TelegramOutboundAttachmentQueueTargetView["queuedAttachments"] = [],
@@ -62,6 +65,52 @@ type RegisteredAnyTool = {
   ) => Promise<unknown>;
 };
 
+for (const fails of [false, true]) {
+  test(`Rich media ${fails ? "rejection preserves" : "success consumes"} the turn's first reply anchor`, async () => {
+    const turn = createAttachmentTurn();
+    const sender = createTelegramRichOutboundAttachmentSender({
+      getRenderingMode: () => "rich",
+      sendMultipart: async (_method, fields) => {
+        assert.equal(JSON.parse(fields.reply_parameters!).message_id, 2);
+        if (fails) throw new Error("Rejected upload");
+        return { message_id: 100 };
+      },
+    });
+    assert.equal(await sender(turn, "Report"), !fails);
+    const anchors: Array<number | undefined> = [];
+    for (const text of ["Following text", "Final text"]) {
+      await sendTelegramNativeMarkdownReply(1, 2, text, {
+        sendRichMessage: async (body) => { anchors.push(body.reply_parameters?.message_id); return { message_id: 101 }; },
+      });
+    }
+    assert.deepEqual(anchors, [fails ? 2 : undefined, undefined]);
+  });
+}
+
+test("Rich media following a commentary does not repeat the prompt anchor", async () => {
+  await sendTelegramNativeMarkdownReply(1, 2, "Commentary", { sendRichMessage: async () => ({ message_id: 100 }) });
+  const sender = createTelegramRichOutboundAttachmentSender({
+    getRenderingMode: () => "rich",
+    sendMultipart: async (_method, fields) => {
+      assert.equal(fields.reply_parameters, undefined); return { message_id: 101 };
+    },
+  });
+  assert.equal(await sender(createAttachmentTurn(), "Report"), true);
+});
+
+test("Rejected ordinary attachment leaves its failure notice anchored", async () => {
+  let anchor: number | undefined;
+  await sendQueuedTelegramOutboundAttachments(createAttachmentTurn(), {
+    sendMultipart: async () => { throw new Error("Rejected file"); },
+    sendTextReply: async (chat, reply, text) => {
+      await sendTelegramNativeMarkdownReply(chat, reply, text, {
+        sendRichMessage: async (body) => { anchor = body.reply_parameters?.message_id; return { message_id: 100 }; },
+      });
+    },
+  });
+  assert.equal(anchor, 2);
+});
+
 test("Rich outbound attachment planner builds one target-scoped media result", () => {
   const turn = {
     ...createAttachmentTurn([
@@ -81,10 +130,6 @@ test("Rich outbound attachment planner builds one target-scoped media result", (
       method: "sendRichMessage",
       fields: {
         chat_id: "1",
-        reply_parameters: JSON.stringify({
-          message_id: 2,
-          allow_sending_without_reply: true,
-        }),
         message_thread_id: "42",
         rich_message: JSON.stringify({
           markdown: ">quoted report\n\n![](tg://photo?id=artifact)",

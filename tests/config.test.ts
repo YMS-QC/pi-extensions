@@ -680,6 +680,23 @@ test("Thread cleanup fails closed after invalid shared config recovery", async (
   assert.equal(controls.isAutomaticThreadCleanupEnabled(), false);
 });
 
+test("Telegram draft previews default on while explicit current and legacy choices remain authoritative", async () => {
+  for (const [config, expected] of [
+    [{ profiles: { default: { botToken: "123:abc" } } }, true],
+    [{ profiles: { default: { botToken: "123:abc" } }, assistant: { draftPreviews: false } }, false],
+    [{ profiles: { default: { botToken: "123:abc" } }, draftPreviews: false }, false],
+    [{ profiles: { default: { botToken: "123:abc" } }, richDraftPreviews: false }, false],
+  ] as const) {
+    const agentDir = await mkdtemp(join(tmpdir(), "pi-telegram-draft-default-"));
+    const configPath = join(agentDir, "telegram.json");
+    await writeTelegramConfig(agentDir, configPath, config);
+    const store = createTelegramConfigStore({ agentDir, configPath });
+    await store.load();
+    assert.equal(createTelegramConfigControls(store).areDraftPreviewsEnabled(), expected);
+    assert.deepEqual(await readTelegramConfig(configPath), config, "Reading a default must not persist or migrate config");
+  }
+});
+
 test("Telegram draft preview config reads and migrates legacy rich flag", async () => {
   const agentDir = await mkdtemp(join(tmpdir(), "pi-telegram-draft-legacy-"));
   const configPath = join(agentDir, "telegram.json");
