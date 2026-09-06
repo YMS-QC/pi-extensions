@@ -219,8 +219,9 @@ export function createTelegramRichOutboundAttachmentSender(
   return async (
     turn: TelegramQueuedOutboundAttachmentTurnView,
     markdown: string,
-    options?: { replyMarkup?: unknown },
+    options?: { replyMarkup?: unknown; isDeliveryActive?: () => boolean },
   ): Promise<boolean> => {
+    if (options?.isDeliveryActive?.() === false) return false;
     const plan = planTelegramRichOutboundAttachment({
       turn,
       markdown,
@@ -246,11 +247,13 @@ export function createTelegramRichOutboundAttachmentSender(
           new Error("Successful Rich media upload omitted message_id."),
         );
       }
-      deps.recordOwnership?.({
-        chatId: turn.chatId,
-        messageId,
-        target: turn.target,
-      });
+      if (options?.isDeliveryActive?.() !== false) {
+        deps.recordOwnership?.({
+          chatId: turn.chatId,
+          messageId,
+          target: turn.target,
+        });
+      }
       return true;
     } catch (error) {
       if (isTelegramRichAttachmentCommitUnknownError(error)) throw error;
@@ -580,6 +583,7 @@ export interface TelegramQueuedOutboundAttachmentDeliveryDeps {
   ) => void;
   statPath?: (path: string) => Promise<{ size: number }>;
   maxAttachmentSizeBytes?: number;
+  isDeliveryActive?: () => boolean;
 }
 
 export async function queueTelegramOutboundAttachments(options: {
@@ -925,9 +929,13 @@ export async function sendTelegramOutboundFiles(options: {
 export function createTelegramQueuedOutboundAttachmentSender(
   deps: TelegramQueuedOutboundAttachmentDeliveryDeps,
 ) {
-  return async (turn: TelegramQueuedOutboundAttachmentTurnView): Promise<void> => {
+  return async (
+    turn: TelegramQueuedOutboundAttachmentTurnView,
+    options?: { isDeliveryActive?: () => boolean },
+  ): Promise<void> => {
     await sendQueuedTelegramOutboundAttachments(turn, {
       ...deps,
+      isDeliveryActive: () => deps.isDeliveryActive?.() !== false && options?.isDeliveryActive?.() !== false,
       maxAttachmentSizeBytes:
         deps.maxAttachmentSizeBytes ?? TELEGRAM_OUTBOUND_ATTACHMENT_MAX_BYTES,
     });
@@ -939,9 +947,11 @@ export async function sendQueuedTelegramOutboundAttachments(
   deps: TelegramQueuedOutboundAttachmentDeliveryDeps,
 ): Promise<void> {
   for (const attachment of turn.queuedAttachments) {
+    if (deps.isDeliveryActive?.() === false) return;
     try {
       if (deps.maxAttachmentSizeBytes !== undefined) {
         const stats = await (deps.statPath ?? stat)(attachment.path);
+        if (deps.isDeliveryActive?.() === false) return;
         if (stats.size > deps.maxAttachmentSizeBytes) {
           throw new Error(
             formatTelegramOutboundAttachmentSizeLimitError(
@@ -971,6 +981,7 @@ export async function sendQueuedTelegramOutboundAttachments(
         attachment.fileName,
       );
     } catch (error) {
+      if (deps.isDeliveryActive?.() === false) return;
       const message = error instanceof Error ? error.message : String(error);
       deps.recordRuntimeEvent?.("attachment", error, {
         fileName: attachment.fileName,

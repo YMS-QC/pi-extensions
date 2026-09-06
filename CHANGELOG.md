@@ -2,6 +2,22 @@
 
 > Each release keeps at most 8 outcome records of at most 512 characters.
 
+## 0.43.2: Command Lifetime And Publication Order
+
+- `All-Tab Command Expiry`: Uses the original Telegram timestamp to expire unselected Threaded Mode command choosers after 60 minutes, settle their deferred source, and reject stale buttons; replay of an expired command creates no new chooser. Active dispatch pauses expiry; failed attempts retain the original deadline, and accepted queue receipts remain protected. Excludes `/thread`, bound threads, classic mode, and invalid timestamps; storage failures retain journal authority.
+- `Selected All-Tab Commands`: Settles still-deferred sources after successful local command dispatch or confirmed follower acceptance, preventing replay after chooser cleanup. Failed follower transfers retain their sources. Background menu rendering remains non-blocking, and commands admitted to the Pi queue retain receipt-governed settlement.
+- `Repeated All-Tab Starts`: A newly delivered chooser for an identical unselected `/start` supersedes older sources from the same user/chat and active admission worker. Different arguments, other commands, and previously selected intents remain separate; superseded callbacks become inert. Failed chooser sends discard their in-memory attempt without settling the journal source, so retries do not exhaust chooser capacity.
+
+- `Causal Publication Order`: Serializes bridge-owned assistant blocks, activity disclosures, active-turn finals/artifacts, and automatic compaction notices through their existing activity domain before transport routing. Compaction notices cannot overtake delayed local finals; Pi hooks do not wait for their network delivery. Captures notice/activity target and authority at admission and fences queued publications across session replacement; independent handler queues remain separate.
+
+- `Artifact Delivery Authority`: Rechecks active-turn/session authority after voice/file preparation and recording actions. Cancellation suppresses later uploads, provider/text fallbacks, and stale Rich-message ownership writes without discarding the attachment list. Already-issued requests and in-flight synthesis are not undone; ambiguous uploads never authorize replay.
+
+- `Final Admission`: Reserves final/error publication at the terminal message boundary and transfers it only to the originating turn before asynchronous config loading. Compaction uses the same queue instead of a separate buffer. Empty outcomes reserve no slot; replacement, preparation failure, settlement, and session reset release unused reservations. Terminal preview cleanup is background and bound to the captured draft.
+
+- `Compaction Observation`: Fences superseded timeout callbacks and stale-context terminal hooks so they cannot clear a newer observation. The five-minute fallback remains an observer timeout, not proof of Pi completion or cancellation.
+
+- `Activity Replacement`: Fences late config refresh, thinking acknowledgements, tool edits, failures, and settlement cleanup before state mutation or HTML fallback. Old work can no longer overwrite a replacement target/message, erase new tool arguments, or block new thinking output; loss of transport authority also suppresses fallback without requiring a session reset.
+
 ## 0.43.1: Transport And Preview Continuity
 
 - `Conflict Stand-Down`: Stops transport after ten consecutive competing getUpdates conflicts, including ownership checks, heartbeat, monitoring, and bus teardown. Releases only the exact local lock and revokes direct authority even if release fails, while preserving accepted local queue work. A persistent terminal status and one diagnostic distinguish lost ownership from a competing external client; cancelled reconnects and stale admission cannot supersede current lifecycle work.

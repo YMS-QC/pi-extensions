@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { TelegramAssistantSegmentEvent } from "./activity.ts";
 import { resolveTelegramTempDir } from "./paths.ts";
 import * as Replies from "./replies.ts";
+import { isTelegramApiCommitUnknownError } from "./telegram-api.ts";
 import type {
   TelegramEditMessageTextBody,
   TelegramSendMessageBody,
@@ -137,6 +138,7 @@ export interface TelegramVoiceReplySenderDeps {
   ) => Promise<unknown>;
   sendChatAction?: (chatId: number, action: string) => Promise<unknown>;
   sendRecordVoiceAction?: (chatId: number) => Promise<unknown>;
+  isDeliveryActive?: () => boolean;
   getHandlers?: () => TelegramOutboundHandlerConfig[] | undefined;
   cwd?: string;
   tempDir?: string;
@@ -877,15 +879,17 @@ export function createTelegramOutboundReplyPlanner(
 export function createTelegramOutboundReplyArtifactSender(
   deps: TelegramVoiceReplySenderDeps,
 ) {
-  const sendVoiceReply = createTelegramVoiceReplySender(deps);
   return async (
     turn: TelegramVoiceReplyTurnView,
     plan: Pick<
       TelegramOutboundReplyPlan,
       "voiceText" | "voiceReplies" | "lang" | "rate" | "replyMarkup"
     >,
-    options?: { replyToPrompt?: boolean },
+    options?: { replyToPrompt?: boolean; isDeliveryActive?: () => boolean },
   ): Promise<void> => {
+    const isDeliveryActive = () =>
+      deps.isDeliveryActive?.() !== false && options?.isDeliveryActive?.() !== false;
+    const sendVoiceReply = createTelegramVoiceReplySender({ ...deps, isDeliveryActive });
     // Normalize voice replies: either use explicit voiceReplies array or fall back to voiceText
     const voiceReplies = plan.voiceReplies?.length
       ? plan.voiceReplies
@@ -896,6 +900,7 @@ export function createTelegramOutboundReplyArtifactSender(
     let anyDelivered = false;
 
     for (const reply of voiceReplies) {
+      if (!isDeliveryActive()) return;
       try {
         await sendVoiceReply(turn, reply.text, {
           lang: reply.lang ?? plan.lang,
@@ -905,11 +910,13 @@ export function createTelegramOutboundReplyArtifactSender(
           replyMarkup: !anyDelivered ? plan.replyMarkup : undefined,
         });
         anyDelivered = true;
-      } catch {
+      } catch (error) {
+        if (isTelegramApiCommitUnknownError(error)) throw error;
         // sendVoiceReply already recorded the error; continue to next reply
       }
     }
 
+    if (!isDeliveryActive()) return;
     if (!anyDelivered) {
       throw new Error(
         "Failed to send voice reply: every voice synthesis provider failed.",

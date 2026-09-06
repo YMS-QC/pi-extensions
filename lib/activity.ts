@@ -738,6 +738,63 @@ export function createTelegramActivityRuntime(deps: {
   };
 }
 
+// --- Ordered Bridge-Owned Publication ---
+
+export interface TelegramActivityPublicationReservation {
+  publish: (task: () => Promise<void>) => Promise<void>;
+  cancel: () => void;
+}
+
+export interface TelegramActivityPublicationRuntime {
+  enqueue: (task: () => Promise<void>) => Promise<void>;
+  reserve: () => TelegramActivityPublicationReservation;
+  reset: () => void;
+}
+
+export function createTelegramActivityPublicationRuntime(): TelegramActivityPublicationRuntime {
+  let generation = 0;
+  let tail = Promise.resolve();
+  const pending = new Set<() => void>();
+  const reserve = (): TelegramActivityPublicationReservation => {
+    const admittedGeneration = generation;
+    let state: "pending" | "published" | "cancelled" = "pending";
+    let resolve!: (task: (() => Promise<void>) | undefined) => void;
+    const ready = new Promise<(() => Promise<void>) | undefined>((accept) => { resolve = accept; });
+    const cancel = () => {
+      if (state !== "pending") return;
+      state = "cancelled";
+      pending.delete(cancel);
+      resolve(undefined);
+    };
+    pending.add(cancel);
+    const result = tail.then(async () => {
+      const task = await ready;
+      if (admittedGeneration === generation && task) await task();
+    });
+    tail = result.catch(() => {});
+    return {
+      publish(task) {
+        if (state === "cancelled") return result;
+        if (state === "published") return Promise.reject(new Error("Publication reservation already published."));
+        state = "published";
+        pending.delete(cancel);
+        resolve(task);
+        return result;
+      },
+      cancel,
+    };
+  };
+  return {
+    reserve,
+    enqueue: (task) => reserve().publish(task),
+    reset() {
+      generation += 1;
+      for (const cancel of pending) cancel();
+      tail = Promise.resolve();
+    },
+  };
+}
+
 // --- Public Assistant Output Projection ---
 
 export interface TelegramAssistantOutputRuntime {
@@ -748,6 +805,7 @@ export interface TelegramAssistantOutputRuntime {
 }
 
 export function createTelegramAssistantOutputRuntime<TAuthority = undefined>(deps: {
+  enqueue?: TelegramActivityPublicationRuntime["enqueue"];
   captureAuthority?: () => TAuthority;
   isAuthorityActive?: (authority: TAuthority) => boolean;
   canDeliver: (event: TelegramAssistantSegmentEvent) => boolean;
@@ -785,7 +843,8 @@ export function createTelegramAssistantOutputRuntime<TAuthority = undefined>(dep
       admitted.add(key);
       const admittedGeneration = generation;
       const admittedAuthority = deps.captureAuthority?.();
-      tail = tail.then(async () => {
+      const enqueue = deps.enqueue ?? ((task: () => Promise<void>) => tail.then(task));
+      tail = enqueue(async () => {
         const isAdmittedAuthorityActive = () =>
           running &&
           generation === admittedGeneration &&

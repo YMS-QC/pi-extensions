@@ -448,7 +448,19 @@ async function deleteReservedTelegramTopicThroughReconciler(
   );
 }
 
-export type TelegramRoutedMessage = Updates.TelegramUpdateMessage &
+export const TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS = 60 * 60_000;
+
+export function isTelegramAllTabCommandExpired(
+  message: { date?: number; message_thread_id?: number },
+  nowMs = Date.now(),
+): boolean {
+  return message.message_thread_id === undefined &&
+    typeof message.date === "number" && Number.isFinite(message.date) &&
+    message.date > 0 && Number.isFinite(nowMs) &&
+    nowMs - message.date * 1000 >= TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS;
+}
+
+export type TelegramRoutedMessage = { date?: number } & Updates.TelegramUpdateMessage &
   Media.TelegramMediaMessage &
   Media.TelegramMediaGroupMessage &
   Commands.TelegramCommandRuntimeMessage &
@@ -738,6 +750,12 @@ export function createTelegramInboundRouteRuntime<
     messages: TMessage[];
     createdAtMs: number;
     dispatchKind: "prompt" | "command";
+    expiresAtMs?: number;
+    destinationSelected?: boolean;
+    selectionAttempted?: boolean;
+    dispatching?: boolean;
+    pauseExpiry?: () => void;
+    stopExpiry?: () => void;
     cleanup?: PendingRerouteCleanup;
     foreignRetry?: {
       instanceId: string;
@@ -822,17 +840,61 @@ export function createTelegramInboundRouteRuntime<
   ): void => {
     Updates.reportTelegramQueueAdmission(sources, receipts);
   };
+  const removePendingReroute = (id: string): void => {
+    pendingUnboundReroutes.get(id)?.stopExpiry?.();
+    pendingUnboundReroutes.delete(id);
+  };
+  const expirePendingCommand = (id: string, pending: PendingUnboundReroute): boolean => {
+    if (pending.destinationSelected || pending.expiresAtMs === undefined ||
+        Date.now() < pending.expiresAtMs) return false;
+    if (pendingUnboundReroutes.get(id) !== pending) return true;
+    for (const message of pending.messages) Updates.reportTelegramUpdateCompleted(message);
+    removePendingReroute(id);
+    return true;
+  };
+  const armPendingCommandExpiry = (id: string, pending: PendingUnboundReroute): void => {
+    if (pending.dispatchKind !== "command" || pending.sourceTarget.threadId !== undefined) return;
+    pending.stopExpiry?.();
+    const execution = Updates.getTelegramUpdateExecutionFence(pending.messages[0]);
+    const onAbort = () => removePendingReroute(id);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    pending.pauseExpiry = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    };
+    pending.stopExpiry = () => {
+      stopped = true;
+      pending.pauseExpiry?.();
+      execution?.signal.removeEventListener("abort", onAbort);
+    };
+    execution?.signal.addEventListener("abort", onAbort, { once: true });
+    if (execution?.signal.aborted) {
+      onAbort();
+      return;
+    }
+    if (pending.expiresAtMs === undefined) {
+      const date = pending.messages[0]?.date;
+      if (typeof date !== "number" || !Number.isFinite(date) || date <= 0 || date * 1000 > Date.now()) return;
+      pending.expiresAtMs = date * 1000 + TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS;
+    }
+    const schedule = (): void => {
+      if (stopped || pending.destinationSelected || pendingUnboundReroutes.get(id) !== pending) return;
+      if (expirePendingCommand(id, pending)) return;
+      const delay = Math.min(TELEGRAM_ALL_TAB_COMMAND_MAX_AGE_MS, pending.expiresAtMs! - Date.now());
+      timer = setTimeout(schedule, Math.max(1, delay));
+      timer.unref?.();
+    };
+    schedule();
+  };
   const prunePendingUnboundReroutes = () => {
     const nowMs = Date.now();
     for (const [id, entry] of pendingUnboundReroutes) {
-      if (nowMs - entry.createdAtMs > 30 * 60_000) {
-        pendingUnboundReroutes.delete(id);
+      if (entry.dispatchKind === "command" && entry.sourceTarget.threadId === undefined) {
+        expirePendingCommand(id, entry);
+      } else if (nowMs - entry.createdAtMs > 30 * 60_000) {
+        removePendingReroute(id);
       }
-    }
-    while (pendingUnboundReroutes.size > 100) {
-      const oldest = pendingUnboundReroutes.keys().next().value;
-      if (!oldest) break;
-      pendingUnboundReroutes.delete(oldest);
     }
   };
   const storePendingUnboundReroute = (
@@ -840,6 +902,9 @@ export function createTelegramInboundRouteRuntime<
     dispatchKind: "prompt" | "command" = "prompt",
   ): string => {
     prunePendingUnboundReroutes();
+    if (pendingUnboundReroutes.size >= 100) {
+      throw new Error("Telegram route chooser capacity reached; source remains retryable.");
+    }
     nextUnboundRerouteId += 1;
     const id = nextUnboundRerouteId.toString(36);
     pendingUnboundReroutes.set(id, {
@@ -853,11 +918,33 @@ export function createTelegramInboundRouteRuntime<
       createdAtMs: Date.now(),
       dispatchKind,
     });
+    const pending = pendingUnboundReroutes.get(id)!;
+    armPendingCommandExpiry(id, pending);
     return id;
   };
   const rememberRerouteChooser = (id: string, messageId: number | undefined): void => {
     const pending = pendingUnboundReroutes.get(id);
-    if (pending) pending.chooserMessageId = messageId;
+    if (!pending) return;
+    pending.chooserMessageId = messageId;
+    if (messageId === undefined || pending.dispatchKind !== "command" ||
+        pending.sourceTarget.threadId !== undefined || pending.selectionAttempted) return;
+    const source = pending.messages[0];
+    const text = source?.text?.trim();
+    const execution = Updates.getTelegramUpdateExecutionFence(source);
+    const sourceIds = Updates.collectTelegramAdmissionSourceUpdateIds(pending.messages);
+    if (!text || Commands.parseTelegramCommand(text)?.name !== "start" ||
+        source?.from?.id === undefined || !execution?.isCurrent() || sourceIds.length !== 1 ||
+        expirePendingCommand(id, pending)) return;
+    for (const [oldId, old] of pendingUnboundReroutes) {
+      if (oldId === id || old.dispatchKind !== "command" || old.selectionAttempted || old.dispatching ||
+          old.sourceTarget.threadId !== undefined || old.sourceTarget.chatId !== pending.sourceTarget.chatId) continue;
+      const oldSource = old.messages[0];
+      const oldIds = Updates.collectTelegramAdmissionSourceUpdateIds(old.messages);
+      if (oldSource?.from?.id !== source.from.id || oldSource?.text?.trim() !== text ||
+          oldIds.length !== 1 || oldIds[0]! >= sourceIds[0]! ||
+          Updates.getTelegramUpdateExecutionFence(oldSource)?.signal !== execution.signal) continue;
+      if (Updates.reportTelegramUpdateCompleted(oldSource)) removePendingReroute(oldId);
+    }
   };
   const matchesRerouteChooser = (
     pending: PendingUnboundReroute,
@@ -1123,12 +1210,15 @@ export function createTelegramInboundRouteRuntime<
     | ((messages: TMessage[], ctx: TContext) => Promise<void>)
     | undefined;
   const dispatchPendingRerouteMessages = async (
-    pending: { dispatchKind: "prompt" | "command" },
+    pending: Pick<PendingUnboundReroute, "dispatchKind" | "sourceTarget">,
     messages: TMessage[],
     ctx: TContext,
   ): Promise<void> => {
     if (pending.dispatchKind === "command" && dispatchReroutedCommandMessages) {
       await dispatchReroutedCommandMessages(messages, ctx);
+      if (pending.sourceTarget.threadId === undefined) {
+        for (const message of messages) Updates.reportTelegramUpdateCompleted(message);
+      }
       return;
     }
     await promptEnqueue(messages, ctx);
@@ -1147,7 +1237,7 @@ export function createTelegramInboundRouteRuntime<
     );
     assertExecutionCurrent();
     if (dismissed) {
-      pendingUnboundReroutes.delete(rerouteId);
+      removePendingReroute(rerouteId);
       await deps.answerCallbackQuery(query.id, successMessage);
       return;
     }
@@ -1184,6 +1274,9 @@ export function createTelegramInboundRouteRuntime<
         outcome?.status === "fulfilled" &&
         outcome.value.status === "accepted"
       ) {
+        if (pending.dispatchKind === "command" && pending.sourceTarget.threadId === undefined) {
+          Updates.reportTelegramUpdateCompleted(pending.messages[index]);
+        }
         return false;
       }
       if (outcome?.status === "rejected") {
@@ -1216,7 +1309,8 @@ export function createTelegramInboundRouteRuntime<
       typeof messageId !== "number" ||
       !deps.threadStore ||
       !pending ||
-      !matchesRerouteChooser(pending, query)
+      !matchesRerouteChooser(pending, query) ||
+      expirePendingCommand(parsed.rerouteId, pending)
     ) {
       await deps.answerCallbackQuery(query.id, "Message route expired.");
       return true;
@@ -1258,7 +1352,7 @@ export function createTelegramInboundRouteRuntime<
     await deps.answerCallbackQuery(query.id, "Choose instance to restore.");
     return true;
   };
-  const handleUnboundRerouteCallback = async (
+  const executeUnboundRerouteCallback = async (
     query: TCallbackQuery,
     ctx: TContext,
   ): Promise<boolean> => {
@@ -1270,12 +1364,17 @@ export function createTelegramInboundRouteRuntime<
     const chatId = query.message?.chat?.id;
     const pending = pendingUnboundReroutes.get(parsed.rerouteId);
     if (typeof chatId !== "number" || !deps.threadStore || !pending ||
-      !matchesRerouteChooser(pending, query)) {
+      !matchesRerouteChooser(pending, query) || expirePendingCommand(parsed.rerouteId, pending)) {
       await deps.answerCallbackQuery(query.id, "Message route expired.");
       return true;
     }
     await deps.threadStore.load();
     assertExecutionCurrent();
+    if (pendingUnboundReroutes.get(parsed.rerouteId) !== pending ||
+      expirePendingCommand(parsed.rerouteId, pending)) {
+      await deps.answerCallbackQuery(query.id, "Message route expired.");
+      return true;
+    }
     if (pending.finalizeMessage) {
       await finalizePendingReroute(
         parsed.rerouteId,
@@ -1361,6 +1460,9 @@ export function createTelegramInboundRouteRuntime<
       await deps.answerCallbackQuery(query.id, "🚫 Thread restore source is already owned.");
       return true;
     }
+    pending.destinationSelected = true;
+    pending.selectionAttempted = true;
+    pending.pauseExpiry?.();
     const currentInstanceId = deps.getCurrentInstanceId?.();
     const leaderProfileKey = getLeaderTopicProfileKey(ctx, currentInstanceId);
     const isCurrentLeaderRecord = isCurrentLeaderTopicRecord(
@@ -1656,6 +1758,33 @@ export function createTelegramInboundRouteRuntime<
       "Message routed.",
     );
     return true;
+  };
+  const handleUnboundRerouteCallback = async (
+    query: TCallbackQuery,
+    ctx: TContext,
+  ): Promise<boolean> => {
+    const parsed = parseTelegramUnboundRerouteCallbackData(query.data);
+    const pending = parsed && pendingUnboundReroutes.get(parsed.rerouteId);
+    if (!parsed || !pending || pending.dispatchKind !== "command" ||
+        pending.sourceTarget.threadId !== undefined || !matchesRerouteChooser(pending, query)) {
+      return executeUnboundRerouteCallback(query, ctx);
+    }
+    if (pending.dispatching) {
+      await deps.answerCallbackQuery(query.id, "Command routing is already in progress.");
+      return true;
+    }
+    pending.dispatching = true;
+    try {
+      return await executeUnboundRerouteCallback(query, ctx);
+    } finally {
+      pending.dispatching = false;
+      if (pendingUnboundReroutes.get(parsed.rerouteId) === pending &&
+          pending.destinationSelected && pending.messages.length > 0 &&
+          !pending.cleanup && !pending.finalizeMessage) {
+        pending.destinationSelected = false;
+        armPendingCommandExpiry(parsed.rerouteId, pending);
+      }
+    }
   };
   const callbackHandler = async (
     query: TCallbackQuery,
@@ -2122,11 +2251,11 @@ export function createTelegramInboundRouteRuntime<
       deps.getLiveThreadTargets?.(),
     );
     if (activeRecords.length === 0) return false;
-    const commandMessage = {
+    const commandMessage = Updates.carryTelegramUpdateExecutionFence(message, {
       ...message,
       text: commandText,
       caption: undefined,
-    } as TMessage;
+    } as TMessage);
     const rerouteId = storePendingUnboundReroute([commandMessage], "command");
     Updates.reportTelegramUpdateDeferred(commandMessage);
     const text = formatTelegramAllTabMenuChooserText(command.name);
@@ -2135,49 +2264,52 @@ export function createTelegramInboundRouteRuntime<
       activeRecords,
       { canRestore: typeof message.message_thread_id === "number" },
     );
-    if (deps.sendInteractiveMessage) {
-      const chooserId = await deps.sendInteractiveMessage(
-        message.chat.id,
-        text,
-        "html",
-        replyMarkup,
-        options.target || options.replyToSource
-          ? {
-              ...(options.target ? { target: options.target } : {}),
-              ...(options.replyToSource
-                ? { replyToMessageId: message.message_id }
-                : {}),
-            }
-          : undefined,
-      );
-      rememberRerouteChooser(rerouteId, chooserId);
-      return true;
+    let chooserId: number | undefined;
+    try {
+      if (deps.sendInteractiveMessage) {
+        chooserId = await deps.sendInteractiveMessage(
+          message.chat.id,
+          text,
+          "html",
+          replyMarkup,
+          options.target || options.replyToSource
+            ? {
+                ...(options.target ? { target: options.target } : {}),
+                ...(options.replyToSource
+                  ? { replyToMessageId: message.message_id }
+                  : {}),
+              }
+            : undefined,
+        );
+      } else if (deps.callApi) {
+        const chooser = await deps.callApi<{ message_id?: number }>("sendMessage", {
+          chat_id: message.chat.id,
+          text,
+          parse_mode: "HTML",
+          reply_markup: replyMarkup,
+          ...(typeof options.target?.threadId === "number"
+            ? { message_thread_id: options.target.threadId }
+            : {}),
+          ...(options.replyToSource
+            ? {
+                reply_parameters: {
+                  message_id: message.message_id,
+                  allow_sending_without_reply: true,
+                },
+              }
+            : {}),
+        });
+        chooserId = chooser?.message_id;
+      } else {
+        chooserId = await deps.sendTextReply(message.chat.id, message.message_id, text, {
+          parseMode: "HTML",
+          target: options.target,
+        });
+      }
+    } catch (error) {
+      removePendingReroute(rerouteId);
+      throw error;
     }
-    if (deps.callApi) {
-      const chooser = await deps.callApi<{ message_id?: number }>("sendMessage", {
-        chat_id: message.chat.id,
-        text,
-        parse_mode: "HTML",
-        reply_markup: replyMarkup,
-        ...(typeof options.target?.threadId === "number"
-          ? { message_thread_id: options.target.threadId }
-          : {}),
-        ...(options.replyToSource
-          ? {
-              reply_parameters: {
-                message_id: message.message_id,
-                allow_sending_without_reply: true,
-              },
-            }
-          : {}),
-      });
-      rememberRerouteChooser(rerouteId, chooser?.message_id);
-      return true;
-    }
-    const chooserId = await deps.sendTextReply(message.chat.id, message.message_id, text, {
-      parseMode: "HTML",
-      target: options.target,
-    });
     rememberRerouteChooser(rerouteId, chooserId);
     return true;
   };
@@ -2497,6 +2629,8 @@ export function createTelegramInboundRouteRuntime<
           deps.getLiveThreadTargets?.(),
         );
         const command = getKnownTelegramAllTabCommand(text);
+        // Returning before deferral lets the admission worker terminally settle expired replay.
+        if (command && command.name !== "thread" && isTelegramAllTabCommandExpired(message)) return;
         if (bindings.length > 0 && command && command.name !== "thread") {
           if (
             await sendAllTabCommandChooser(command, text, message as TMessage, {

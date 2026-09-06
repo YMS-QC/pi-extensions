@@ -10,6 +10,7 @@ import {
   clearTelegramActivityHandlers,
   createTelegramActivityBridgeRuntime,
   createTelegramActivityDispatcher,
+  createTelegramActivityPublicationRuntime,
   createTelegramActivityRuntime,
   createTelegramAssistantOutputRuntime,
   registerTelegramActivityHandler,
@@ -29,6 +30,47 @@ import {
   createTelegramButtonReplyPlanner,
 } from "../lib/outbound.ts";
 import type { TelegramBridgeApiRuntime } from "../lib/telegram-api.ts";
+
+test("Activity publication isolates failed tasks and fences queued work across reset", async () => {
+  const publication = createTelegramActivityPublicationRuntime();
+  const events: string[] = [];
+  const failed = publication.enqueue(async () => { throw new Error("fixture publication failure"); });
+  const next = publication.enqueue(async () => { events.push("after-failure"); });
+  await assert.rejects(failed, /fixture publication failure/);
+  await next;
+  let release!: () => void;
+  let markStarted!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const active = publication.enqueue(async () => { markStarted(); await gate; });
+  const stale = publication.enqueue(async () => { events.push("stale"); });
+  await started;
+  publication.reset();
+  await publication.enqueue(async () => { events.push("replacement"); });
+  release();
+  await Promise.all([active, stale]);
+  assert.deepEqual(events, ["after-failure", "replacement"]);
+});
+
+test("Publication reservations release on cancellation/reset and accept one task", async () => {
+  const publication = createTelegramActivityPublicationRuntime();
+  const events: string[] = [];
+  const cancelled = publication.reserve();
+  const next = publication.enqueue(async () => { events.push("next"); });
+  cancelled.cancel();
+  await cancelled.publish(async () => { events.push("cancelled"); });
+  await next;
+  const abandoned = publication.reserve();
+  publication.reset();
+  await abandoned.publish(async () => { events.push("abandoned"); });
+  const slot = publication.reserve();
+  const sent = slot.publish(async () => { events.push("sent"); });
+  slot.cancel();
+  await assert.rejects(slot.publish(async () => { events.push("duplicate"); }), /already published/);
+  await sent;
+  await publication.enqueue(async () => { events.push("fresh"); });
+  assert.deepEqual(events, ["next", "sent", "fresh"]);
+});
 
 function waitForActivityDispatch(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));

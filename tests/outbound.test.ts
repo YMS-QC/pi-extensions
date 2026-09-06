@@ -9,6 +9,8 @@ import { basename, dirname, join } from "node:path";
 import test from "node:test";
 
 import { resetTransportReplyDedup } from "../lib/replies.ts";
+import { TelegramApiCommitUnknownError } from "../lib/telegram-api.ts";
+import { createTelegramVoiceReplySender as createVoiceSenderWithPorts } from "../lib/outbound-voice.ts";
 
 test.beforeEach(() => {
   resetTransportReplyDedup();
@@ -1098,6 +1100,34 @@ test("Voice reply sender uses configured outbound voice handlers when no provide
   assert.match(basename(upload.filePath), /^.+-voice\.ogg$/);
   assert.match(upload.fileName, /^.+-voice\.ogg$/);
 });
+
+for (const source of ["template", "programmatic", "provider"] as const) {
+  test(`Voice ${source} upload uncertainty never advances to another provider`, async () => {
+    const failure = new TelegramApiCommitUnknownError("sendVoice", new Error("Lost acknowledgement"));
+    let uploads = 0;
+    let fallbackSynthesis = 0;
+    const disposeFirst = registerTelegramVoiceSynthesisProvider(async () => "/fixture/first.opus");
+    const disposeNext = registerTelegramVoiceSynthesisProvider(async () => {
+      fallbackSynthesis += 1;
+      return "/fixture/next.opus";
+    });
+    const send = createVoiceSenderWithPorts({
+      execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+      sendMultipart: async () => { uploads += 1; throw failure; },
+    }, {
+      findVoiceHandlers: () => source === "template" ? [{}] : [],
+      generateVoiceFile: async () => "/fixture/template.opus",
+      getProgrammaticVoiceHandlers: () => source === "programmatic" ? [async () => "/fixture/programmatic.opus"] : [],
+    });
+    try {
+      await assert.rejects(send({ chatId: 10, replyToMessageId: 20 }, "One reply"), (error) => error === failure);
+      assert.equal(uploads, 1);
+      assert.equal(fallbackSynthesis, 0);
+    } finally {
+      disposeFirst(); disposeNext();
+    }
+  });
+}
 
 test("Voice reply sender falls back to the next voice synthesis provider", async () => {
   const events: unknown[] = [];
