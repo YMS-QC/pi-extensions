@@ -14,6 +14,7 @@ import {
   type TelegramTarget,
 } from "./target.ts";
 import { getTelegramVoiceSynthesisProviders } from "./voice.ts";
+import { isTelegramApiCommitUnknownError } from "./telegram-api.ts";
 
 export interface TelegramVoiceReplyTurnView {
   chatId: number;
@@ -47,6 +48,7 @@ export interface TelegramVoiceReplySenderDeps {
   ) => Promise<unknown>;
   sendChatAction?: (chatId: number, action: string) => Promise<unknown>;
   sendRecordVoiceAction?: (chatId: number) => Promise<unknown>;
+  isDeliveryActive?: () => boolean;
   getHandlers?: () => unknown[] | undefined;
   cwd?: string;
   tempDir?: string;
@@ -123,9 +125,12 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
       replyMarkup?: unknown;
     },
   ): Promise<void> => {
+    if (deps.isDeliveryActive?.() === false) return;
     const voiceFilePath = await ensureTelegramVoiceFileFormat(filePath);
     assertTelegramInlineKeyboardCallbackData(options?.replyMarkup);
+    if (deps.isDeliveryActive?.() === false) return;
     await sendVoiceChatAction(deps, turn.chatId);
+    if (deps.isDeliveryActive?.() === false) return;
     const replyParameters = buildVoiceReplyParameters(
       turn.chatId,
       options?.replyToPrompt,
@@ -171,6 +176,7 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
   ): Promise<void> => {
     for (const handler of ports.findVoiceHandlers?.(deps.getHandlers?.()) ??
       []) {
+      if (deps.isDeliveryActive?.() === false) return;
       try {
         const filePath = await ports.generateVoiceFile?.(text, {
           lang: options?.lang,
@@ -187,6 +193,7 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
         });
         return;
       } catch (error) {
+        if (isTelegramApiCommitUnknownError(error)) throw error;
         deps.recordRuntimeEvent?.("voice", error, {
           phase: "template-handler-send",
         });
@@ -194,6 +201,7 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
     }
 
     for (const handler of ports.getProgrammaticVoiceHandlers?.() ?? []) {
+      if (deps.isDeliveryActive?.() === false) return;
       try {
         const filePath = await handler(text, {
           lang: options?.lang,
@@ -206,6 +214,7 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
         });
         return;
       } catch (error) {
+        if (isTelegramApiCommitUnknownError(error)) throw error;
         deps.recordRuntimeEvent?.("voice", error, {
           phase: "programmatic-handler-send",
         });
@@ -215,6 +224,7 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
     const providers = getTelegramVoiceSynthesisProviders();
 
     for (const provider of providers) {
+      if (deps.isDeliveryActive?.() === false) return;
       let voiceFilePath: string | undefined;
       let originalFilePath: string | undefined;
 
@@ -252,6 +262,7 @@ export function createTelegramVoiceReplySender<THandler = unknown>(
         });
         return;
       } catch (error) {
+        if (isTelegramApiCommitUnknownError(error)) throw error;
         deps.recordRuntimeEvent?.("voice", error, { phase: "send" });
       } finally {
         if (voiceFilePath && voiceFilePath !== originalFilePath) {

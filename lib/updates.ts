@@ -481,12 +481,7 @@ const TELEGRAM_UPDATE_ADMISSION_BINDING = Symbol(
 
 interface TelegramUpdateAdmissionBinding {
   sourceUpdateId: number;
-  report: (
-    outcome: Extract<
-      TelegramUpdateAdmissionOutcome,
-      { kind: "deferred" | "queued" }
-    >,
-  ) => void;
+  report: (outcome: TelegramUpdateAdmissionOutcome) => void;
 }
 
 export type TelegramQueueAdmissionReceiptLike = TelegramQueueAdmissionReceipt;
@@ -587,6 +582,16 @@ export function collectTelegramAdmissionSourceUpdateIds(
     if (binding) sourceUpdateIds.add(binding.sourceUpdateId);
   }
   return [...sourceUpdateIds].sort((left, right) => left - right);
+}
+
+/** Report source completion; true means reported, not a durable settlement acknowledgement. */
+export function reportTelegramUpdateCompleted(value: unknown): boolean {
+  const binding = getTelegramUpdateAdmissionBinding(value);
+  if (!binding) return false;
+  const execution = getTelegramUpdateExecutionFence(value);
+  if (execution && !execution.isCurrent()) return false;
+  binding.report({ kind: "complete" });
+  return true;
 }
 
 export function reportTelegramUpdateDeferred(value: unknown): boolean {
@@ -1810,10 +1815,7 @@ export interface TelegramUpdateWorkerRuntime<TContext> {
   signal: () => void;
   settleDeferred: (input: {
     updateId: number;
-    outcome: Extract<
-      TelegramUpdateAdmissionOutcome,
-      { kind: "deferred" | "queued" }
-    >;
+    outcome: TelegramUpdateAdmissionOutcome;
     signal: AbortSignal;
   }) => void;
   isQueueReceiptCommitted: (
@@ -3018,6 +3020,13 @@ export function createTelegramUpdateWorkerRuntime<TContext>(
         return;
       }
       const claim = claims.get(input.updateId);
+      if (input.outcome.kind === "complete") {
+        // Expiry may retire only a still-deferred source, never accepted queue work.
+        if (claim !== "deferred") return;
+        const result = commitCompletedBatch(expectedOwner, [input.updateId]);
+        if (!result) transition("idle", input.updateId);
+        return;
+      }
       if (input.outcome.kind === "deferred") {
         if (claim === "queued") return;
         if (claim !== "deferred") {
@@ -3453,10 +3462,7 @@ export interface TelegramUpdateAdmissionHandleDeps<
   ) => Promise<void>;
   registry?: TelegramUpdateHandlerRegistry;
   onLateOutcome?: (
-    outcome: Extract<
-      TelegramUpdateAdmissionOutcome,
-      { kind: "deferred" | "queued" }
-    >,
+    outcome: TelegramUpdateAdmissionOutcome,
     details: {
       updateId: number;
       ctx: TContext;
@@ -3467,24 +3473,15 @@ export interface TelegramUpdateAdmissionHandleDeps<
 }
 
 function mergeTelegramReportedAdmissionOutcome(
-  current:
-    | Extract<
-        TelegramUpdateAdmissionOutcome,
-        { kind: "deferred" | "queued" }
-      >
-    | undefined,
-  next: Extract<
-    TelegramUpdateAdmissionOutcome,
-    { kind: "deferred" | "queued" }
-  >,
+  current: TelegramUpdateAdmissionOutcome | undefined,
+  next: TelegramUpdateAdmissionOutcome,
   updateId: number,
-): Extract<
-  TelegramUpdateAdmissionOutcome,
-  { kind: "deferred" | "queued" }
-> {
+): TelegramUpdateAdmissionOutcome {
   if (!current || current.kind === "deferred") return next;
   if (next.kind === "deferred") return current;
-  if (areTelegramQueueAdmissionReceiptsEqual(current, next)) return current;
+  if (current.kind === "complete" && next.kind === "complete") return current;
+  if (current.kind === "queued" && next.kind === "queued" &&
+      areTelegramQueueAdmissionReceiptsEqual(current, next)) return current;
   throw new TelegramUpdateAdmissionOutcomeError(
     `Telegram update ${updateId} reported conflicting queue outcomes.`,
   );
@@ -3529,12 +3526,7 @@ export function createTelegramUpdateAdmissionHandle<
     execution.assertCurrent();
     if (verdict === "consume") return { kind: "complete" };
     let immediate = true;
-    let outcome:
-      | Extract<
-          TelegramUpdateAdmissionOutcome,
-          { kind: "deferred" | "queued" }
-        >
-      | undefined;
+    let outcome: TelegramUpdateAdmissionOutcome | undefined;
     const boundUpdate = bindTelegramUpdateExecutionFence(
       bindTelegramUpdateAdmissionSource(update, (next) => {
         if (immediate) {

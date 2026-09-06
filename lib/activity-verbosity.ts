@@ -4,7 +4,7 @@
  * Owns persistent bounded thinking and tool disclosures; excludes activity normalization, assistant answer rendering, and transport authority policy
  */
 
-import type { TelegramActivityEvent } from "./activity.ts";
+import type { TelegramActivityEvent, TelegramActivityPublicationRuntime } from "./activity.ts";
 import {
   escapeHtml,
   renderTelegramInlineMarkdownHtml,
@@ -321,6 +321,7 @@ export function createTelegramActivityVerbosityBinding(): TelegramActivityVerbos
 }
 
 export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
+  enqueue?: TelegramActivityPublicationRuntime["enqueue"];
   getActivityMode: () => "quiet" | "thinking" | "tools" | "verbose";
   refreshActivityMode?: () => Promise<void>;
   getNowMs?: () => number;
@@ -380,15 +381,20 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
   };
   const hasAuthority = (): boolean =>
     authority !== undefined && deps.isAuthorityActive(authority);
-  const ensureActivity = (event: TelegramActivityEvent): boolean => {
+  const isCurrent = (acceptedGeneration: number, admittedAuthority: TAuthority | undefined): boolean =>
+    active && generation === acceptedGeneration && admittedAuthority !== undefined && deps.isAuthorityActive(admittedAuthority);
+  const ensureActivity = (
+    event: TelegramActivityEvent,
+    admittedTarget: TelegramTarget | undefined,
+    admittedAuthority: TAuthority,
+  ): boolean => {
     if (deps.getActivityMode() === "quiet") return false;
     if (activityId === event.activityId) return hasAuthority();
     clearActivity();
-    const resolvedTarget = deps.resolveTarget(event);
-    if (!resolvedTarget) return false;
+    if (!admittedTarget) return false;
     activityId = event.activityId;
-    target = { ...resolvedTarget };
-    authority = deps.captureAuthority();
+    target = admittedTarget;
+    authority = admittedAuthority;
     return hasAuthority();
   };
   const closeToolBatch = () => {
@@ -398,10 +404,10 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
     event: TelegramActivityEvent,
     acceptedGeneration: number,
   ) => {
+    const admittedAuthority = authority;
     if (
-      generation !== acceptedGeneration ||
+      !isCurrent(acceptedGeneration, admittedAuthority) ||
       !target ||
-      !hasAuthority() ||
       reasoningBlocked
     ) {
       return;
@@ -440,22 +446,24 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
           parse_mode: "HTML",
           link_preview_options: { is_disabled: true },
         });
+        if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
         reasoningMessage = {
           messageId: sent.message_id,
           target: { ...target },
         };
       }
-      if (generation !== acceptedGeneration) return;
+      if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
       reasoningMessageFrames += 1;
       lastReasoningMessageChars = reasoningChars;
       lastReasoningPublishMs = getNowMs();
     } catch (error) {
+      if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
+      reasoningBlocked = true;
       deps.recordFailure?.(
         canEdit ? "reasoning-edit" : "reasoning-send",
         event,
         error,
       );
-      reasoningBlocked = true;
     }
   };
   const publishTool = async (
@@ -463,11 +471,8 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
     tool: ToolActivity,
     acceptedGeneration: number,
   ) => {
-    if (
-      generation !== acceptedGeneration ||
-      !target ||
-      !hasAuthority()
-    ) {
+    const admittedAuthority = authority;
+    if (!isCurrent(acceptedGeneration, admittedAuthority) || !target) {
       return;
     }
     const canAppend =
@@ -495,6 +500,7 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
                 }),
           });
         } catch (error) {
+          if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
           if (
             toolMessage.format !== "rich" ||
             !isKnownSafeRichActivityRejection(error)
@@ -508,9 +514,10 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
             parse_mode: "HTML",
             link_preview_options: { is_disabled: true },
           });
+          if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
           toolMessage.format = "html";
         }
-        if (generation !== acceptedGeneration) return;
+        if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
         toolMessage.tools = nextTools;
         return;
       }
@@ -528,6 +535,7 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
           rich_message: renderTelegramToolActivityRichMessage([tool]),
         });
       } catch (error) {
+        if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
         if (!isKnownSafeRichActivityRejection(error)) throw error;
         sent = await deps.sendMessage({
           ...body,
@@ -537,7 +545,7 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
         });
         format = "html";
       }
-      if (generation !== acceptedGeneration) return;
+      if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
       toolMessage = {
         messageId: sent.message_id,
         tools: [tool],
@@ -545,25 +553,30 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
         format,
       };
     } catch (error) {
-      deps.recordFailure?.(canAppend ? "tool-edit" : "tool-send", event, error);
+      if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
       closeToolBatch();
+      deps.recordFailure?.(canAppend ? "tool-edit" : "tool-send", event, error);
     }
   };
   const process = async (
     event: TelegramActivityEvent,
     acceptedGeneration: number,
+    admittedTarget: TelegramTarget | undefined,
+    admittedAuthority: TAuthority,
   ) => {
     if (event.type === "agent-start" && deps.refreshActivityMode) {
       try {
         await deps.refreshActivityMode();
       } catch (error) {
-        deps.recordFailure?.("config-refresh", event, error);
+        if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
         clearActivity();
         activityId = event.activityId;
+        deps.recordFailure?.("config-refresh", event, error);
         return;
       }
     }
-    if (!ensureActivity(event)) {
+    if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
+    if (!ensureActivity(event, admittedTarget, admittedAuthority)) {
       if (
         activityId === event.activityId &&
         deps.getActivityMode() === "quiet"
@@ -614,6 +627,7 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
       ) {
         await publishReasoning(event, acceptedGeneration);
       }
+      if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
       reasoningBuffer = "";
       reasoningChars = 0;
       reasoningMessageFrames = 0;
@@ -668,7 +682,7 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
         toolOrder.shift();
         tools.delete(next.id);
         await publishTool(event, next, acceptedGeneration);
-        if (generation !== acceptedGeneration) return;
+        if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
       }
       return;
     }
@@ -680,6 +694,7 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
       ) {
         await publishReasoning(event, acceptedGeneration);
       }
+      if (!isCurrent(acceptedGeneration, admittedAuthority)) return;
       clearActivity();
     }
   };
@@ -687,10 +702,13 @@ export function createTelegramActivityVerbosityRuntime<TAuthority>(deps: {
     accept(event) {
       if (!active) return;
       const acceptedGeneration = generation;
-      tail = tail
-        .then(() => {
-          if (!active || generation !== acceptedGeneration) return;
-          return process(event, acceptedGeneration);
+      const resolvedTarget = deps.resolveTarget(event);
+      const admittedTarget = resolvedTarget ? { ...resolvedTarget } : undefined;
+      const admittedAuthority = deps.captureAuthority();
+      const enqueue = deps.enqueue ?? ((task: () => Promise<void>) => tail.then(task));
+      tail = enqueue(async () => {
+          if (!active || generation !== acceptedGeneration || !deps.isAuthorityActive(admittedAuthority)) return;
+          await process(event, acceptedGeneration, admittedTarget, admittedAuthority);
         })
         .catch((error) => {
           deps.recordFailure?.("tool-send", event, error);

@@ -140,6 +140,10 @@ export interface TelegramPreviewControllerDeps {
 }
 
 export interface TelegramPreviewController {
+  prepareClear: (
+    chatId: number,
+    options?: { target?: TelegramTarget; isDeliveryActive?: () => boolean },
+  ) => () => Promise<void>;
   getState: () => TelegramPreviewRuntimeState | undefined;
   setState: (state: TelegramPreviewRuntimeState | undefined) => void;
   setPendingText: (text: string) => void;
@@ -322,6 +326,17 @@ export function createTelegramPreviewController(
       generation += 1;
       state = undefined;
     },
+    prepareClear: (chatId, options) => {
+      const admittedState = state;
+      const runtime = getRuntimeDeps();
+      return async () => {
+        if (state !== admittedState) return;
+        await clearTelegramPreview(chatId, runtime, {
+          ...options,
+          isDeliveryActive: () => runtime.canSend?.() !== false && options?.isDeliveryActive?.() !== false,
+        });
+      };
+    },
     clear: (chatId, options) =>
       clearTelegramPreview(chatId, getRuntimeDeps(), options),
     flush: (chatId, options) =>
@@ -454,17 +469,18 @@ export function shouldUseTelegramDraftPreview(_options: {
 export async function clearTelegramPreview(
   chatId: number,
   deps: TelegramPreviewRuntimeDeps,
-  options: { awaitFlush?: boolean; target?: TelegramTarget } = {},
+  options: { awaitFlush?: boolean; target?: TelegramTarget; isDeliveryActive?: () => boolean } = {},
 ): Promise<void> {
   const state = deps.getState();
-  if (!state) return;
+  if (!state || options.isDeliveryActive?.() === false) return;
   if (state.flushPromise && options.awaitFlush !== false) {
     state.flushRequested = false;
     await state.flushPromise.catch(() => {});
     if (deps.getState() !== state) return;
   }
+  if (options.isDeliveryActive?.() === false) return;
   deps.setState(undefined);
-  if (state.mode === "draft" && state.draftId !== undefined) {
+  if (state.mode === "draft" && state.draftId !== undefined && deps.canSend?.() !== false) {
     try {
       await deps.sendDraft(chatId, state.draftId, undefined, {
         ...getTelegramTargetThreadParams(options.target ?? { chatId }),

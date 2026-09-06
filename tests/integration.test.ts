@@ -4504,8 +4504,83 @@ test("Extension runtime keeps queued turns blocked until compaction settles", as
   }
 });
 
-test("Extension runtime delivers the final answer before observed auto-compaction notices", async () => {
+test("Extension runtime compaction notices cannot overtake a pending local final delivery", async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();
+  const committed: string[] = [];
+  let finalStarted = false;
+  let releaseFinal!: () => void;
+  const finalGate = new Promise<void>((resolve) => { releaseFinal = resolve; });
+  const { handlers, commands, pi } = createRuntimePiHarness();
+  const restoreFetch = setRuntimeTestFetch(async (input, init) => {
+    const method = getRuntimeTelegramApiMethod(input);
+    if (method === "deleteWebhook") return createRuntimeTelegramApiResponse(true);
+    if (method === "getUpdates") throw new DOMException("stop", "AbortError");
+    if (method === "sendChatAction") return createRuntimeTelegramApiResponse(true);
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      const text = getRuntimeTelegramApiText(parseJsonRequestBody(init));
+      if (text === "Ordered local final") {
+        finalStarted = true;
+        await finalGate;
+      }
+      committed.push(text);
+      return createRuntimeTelegramApiResponse({ message_id: 100 + committed.length });
+    }
+    throw new Error(`Unexpected Telegram API method: ${method}`);
+  });
+  let settled: Promise<unknown> | undefined;
+  const ctx = createRuntimeExtensionContext({ cwd: "/repo/compaction-order" });
+  try {
+    await telegramConfig.write({
+      botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0,
+      assistant: { proactivePush: true },
+    });
+    await writeRuntimeTelegramLocks({});
+    (await getRuntimeTelegramExtension())(pi);
+    await handlers.get("session_start")?.({}, ctx);
+    await commands.get("telegram-connect")?.handler("", ctx);
+    await flushMicrotasks(20);
+    await handlers.get("input")?.({ source: "interactive", text: "local request" }, ctx);
+    await handlers.get("agent_start")?.({}, ctx);
+    const message = {
+      role: "assistant", stopReason: "stop",
+      content: [{ type: "text", text: "Ordered local final" }],
+    };
+    await handlers.get("message_update")?.({
+      message, assistantMessageEvent: {
+        type: "text_end", contentIndex: 0, content: "Ordered local final", partial: message,
+      },
+    }, ctx);
+    await handlers.get("message_update")?.({
+      message, assistantMessageEvent: { type: "done", reason: "stop", message },
+    }, ctx);
+    await handlers.get("message_end")?.({ message }, ctx);
+    await waitForCondition(() => finalStarted);
+    await handlers.get("agent_end")?.({ messages: [message] }, ctx);
+    await handlers.get("session_before_compact")?.({ signal: new AbortController().signal }, ctx);
+    await handlers.get("session_compact")?.({}, ctx);
+    settled = Promise.resolve(handlers.get("agent_settled")?.({}, ctx));
+    await flushMicrotasks(30);
+    assert.deepEqual(committed, []);
+    releaseFinal();
+    await settled;
+    await waitForCondition(() => committed.length === 3);
+    assert.deepEqual(committed, [
+      "Ordered local final", "**🗜 Compaction started.**", "**✅ Compaction completed.**",
+    ]);
+  } finally {
+    releaseFinal();
+    await settled;
+    await commands.get("telegram-disconnect")?.handler("", ctx);
+    await handlers.get("session_shutdown")?.({}, ctx);
+    restoreFetch();
+    await telegramConfig.restore();
+  }
+});
+
+for (const [compactionBeforeAgentEnd, emptyFinal] of [[false, false], [true, false], [true, true]] as const) {
+test(`Extension runtime delivers the final answer before observed auto-compaction notices${compactionBeforeAgentEnd ? " arriving before agent_end" : ""}${emptyFinal ? " without final publication" : ""}`, async () => {
+  const telegramConfig = await createRuntimeTelegramConfigFixture();
+  await writeRuntimeTelegramLocks({});
   const runtimeEvents: string[] = [];
   let firstDispatchResolve: (() => void) | undefined;
   const firstDispatched = new Promise<void>((resolve) => {
@@ -4533,7 +4608,7 @@ test("Extension runtime delivers the final answer before observed auto-compactio
             update_id: 1,
             message: {
               message_id: 41,
-              chat: { id: 99, type: "private" },
+              chat: { id: 77, type: "private" },
               from: { id: 77, is_bot: false, first_name: "Test" },
               text: "first telegram turn",
             },
@@ -4577,7 +4652,7 @@ test("Extension runtime delivers the final answer before observed auto-compactio
           update_id: 2,
           message: {
             message_id: 42,
-            chat: { id: 99, type: "private" },
+            chat: { id: 77, type: "private" },
             from: { id: 77, is_bot: false, first_name: "Test" },
             text: "queued during active turn",
           },
@@ -4623,52 +4698,42 @@ test("Extension runtime delivers the final answer before observed auto-compactio
       true,
     );
     const noticeBaseline = runtimeEvents.length;
+    const finalText = emptyFinal ? "" : "done";
     await handlers.get("message_end")?.(
       {
         message: {
           role: "assistant",
-          content: [{ type: "text", text: "done" }],
+          content: [{ type: "text", text: finalText }],
           stopReason: "stop",
         },
       },
       ctx,
     );
-    await handlers.get("agent_end")?.(
-      {
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "done" }],
-          },
-        ],
-      },
-      ctx,
-    );
+    const endAgent = async () => {
+      await handlers.get("agent_end")?.({
+        messages: [{ role: "assistant", content: [{ type: "text", text: finalText }] }],
+      }, ctx);
+    };
+    if (!compactionBeforeAgentEnd) await endAgent();
     await handlers.get("session_before_compact")?.(
       { signal: new AbortController().signal },
       ctx,
     );
     await handlers.get("session_compact")?.({}, ctx);
-    assert.equal(
-      runtimeEvents
-        .slice(noticeBaseline)
-        .includes("send:**🗜 Compaction started.**"),
-      false,
-    );
-    assert.equal(
-      runtimeEvents
-        .slice(noticeBaseline)
-        .includes("send:**✅ Compaction completed.**"),
-      false,
-    );
+    if (compactionBeforeAgentEnd) await endAgent();
+    if (emptyFinal) {
+      await waitForCondition(() => runtimeEvents.slice(noticeBaseline).includes("send:**✅ Compaction completed.**"));
+    } else if (!runtimeEvents.slice(noticeBaseline).some((event) => event === "send:done" || event === "edit:done")) {
+      assert.equal(runtimeEvents.slice(noticeBaseline).some((event) => event.includes("Compaction")), false);
+    }
     assert.equal(
       runtimeEvents.includes("dispatch:[telegram] queued during active turn"),
       false,
     );
     await handlers.get("agent_settled")?.({}, ctx);
     await waitForCondition(() =>
-      runtimeEvents.includes("send:**✅ Compaction completed.**"),
-    );
+      runtimeEvents.slice(noticeBaseline).includes("send:**✅ Compaction completed.**"),
+    ).catch((error) => { throw new Error(runtimeEvents.join("\n"), { cause: error }); });
     const finalReplyIndex = runtimeEvents.findIndex(
       (event) => event === "send:done" || event === "edit:done",
     );
@@ -4678,8 +4743,8 @@ test("Extension runtime delivers the final answer before observed auto-compactio
     const compactionCompletedIndex = runtimeEvents.lastIndexOf(
       "send:**✅ Compaction completed.**",
     );
-    assert.notEqual(finalReplyIndex, -1);
-    assert.equal(finalReplyIndex < compactionStartedIndex, true);
+    assert.equal(finalReplyIndex === -1, emptyFinal);
+    if (!emptyFinal) assert.equal(finalReplyIndex < compactionStartedIndex, true);
     assert.equal(compactionStartedIndex < compactionCompletedIndex, true);
     await waitForCondition(() =>
       runtimeEvents.includes("dispatch:[telegram] queued during active turn"),
@@ -4690,6 +4755,7 @@ test("Extension runtime delivers the final answer before observed auto-compactio
     await telegramConfig.restore();
   }
 });
+}
 
 test("Extension runtime coalesces media-group updates into one delayed dispatch", async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();

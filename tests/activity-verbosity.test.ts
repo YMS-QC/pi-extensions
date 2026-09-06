@@ -116,6 +116,165 @@ function createHarness(
   };
 }
 
+test("Activity captures authority at admission rather than after queue delay", async () => {
+  const harness = createHarness({ mode: "tools" });
+  harness.runtime.accept(event(1, { type: "agent-start" }));
+  harness.runtime.accept(event(2, { type: "tool-end", toolCallId: "read-1", toolName: "read", result: "old output", isError: false }));
+  harness.replaceAuthority();
+  await harness.runtime.waitForIdle();
+  assert.deepEqual(harness.sends, []);
+  assert.deepEqual(harness.richSends, []);
+  assert.deepEqual(harness.edits, []);
+});
+
+for (const stage of ["refresh", "tool-send", "tool-edit", "reasoning-end", "agent-end"] as const) {
+for (const outcome of ["resolve", "reject"] as const) {
+  test(`Activity replacement survives late ${stage} ${outcome}`, async () => {
+    let release!: () => void;
+    let markStarted!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const pause = async () => {
+      markStarted();
+      await gate;
+      if (outcome === "reject") throw new Error("HTTP 400: Bad Request: fixture rejection");
+    };
+    let refreshes = 0;
+    let nextId = 0;
+    let edits = 0;
+    const effects: Array<Record<string, unknown>> = [];
+    const runtime = createTelegramActivityVerbosityRuntime({
+      getActivityMode: () => "verbose",
+      getNowMs: () => 0,
+      refreshActivityMode: async () => { if (++refreshes === 1 && stage === "refresh") await pause(); },
+      resolveTarget: (input) => input.target,
+      captureAuthority: () => 1,
+      isAuthorityActive: () => true,
+      sendRichMessage: async (body) => {
+        const id = ++nextId;
+        effects.push(body);
+        if (id === 1 && stage === "tool-send") await pause();
+        return { message_id: id };
+      },
+      sendMessage: async (body) => {
+        const id = ++nextId;
+        effects.push(body);
+        if (id === 1 && stage === "reasoning-end") await pause();
+        return { message_id: id };
+      },
+      editMessageText: async (body) => {
+        effects.push(body);
+        if (++edits === 1 && (stage === "tool-edit" || stage === "agent-end")) await pause();
+        return "edited";
+      },
+      recordFailure: () => {},
+    });
+    let sequence = 0;
+    const accept = (id: string, payload: TelegramActivityPayload) => runtime.accept({
+      ...event(++sequence, payload), activityId: id,
+      target: { chatId: id === "old" ? 7 : 8, threadId: id === "old" ? 42 : 43 },
+    });
+    const finishTool = (id: string, toolCallId: string) => accept(id, {
+      type: "tool-end", toolCallId, toolName: "read", result: `${id} result`, isError: false,
+    });
+    let oldIdle: Promise<void> | undefined;
+    try {
+      accept("old", { type: "agent-start" });
+      if (stage !== "refresh") await runtime.waitForIdle();
+      if (stage === "tool-send") finishTool("old", "first");
+      if (stage === "tool-edit") {
+        finishTool("old", "first");
+        await runtime.waitForIdle();
+        finishTool("old", "second");
+      }
+      if (stage === "reasoning-end") accept("old", { type: "reasoning-end", contentIndex: 0, text: "old reasoning" });
+      if (stage === "agent-end") {
+        accept("old", { type: "reasoning-delta", contentIndex: 0, delta: "old reasoning" });
+        await runtime.waitForIdle();
+        accept("old", { type: "reasoning-delta", contentIndex: 0, delta: " more" });
+        accept("old", { type: "agent-end" });
+      }
+      oldIdle = runtime.waitForIdle();
+      await started;
+      runtime.reset();
+      accept("new", { type: "agent-start" });
+      const thinking = stage === "reasoning-end" || stage === "agent-end";
+      if (thinking) {
+        accept("new", { type: "reasoning-delta", contentIndex: 0, delta: "new reasoning" });
+      } else {
+        accept("new", { type: "tool-start", toolCallId: "new-first", toolName: "read", args: { path: "must-survive.txt" } });
+        if (stage !== "refresh") finishTool("new", "new-first");
+      }
+      await runtime.waitForIdle();
+      const beforeRelease = effects.length;
+      release();
+      await oldIdle;
+      if (thinking) {
+        accept("new", { type: "reasoning-delta", contentIndex: 0, delta: " extra" });
+        accept("new", { type: "reasoning-end", contentIndex: 0, text: "new reasoning extra" });
+      } else {
+        finishTool("new", stage === "refresh" ? "new-first" : "new-second");
+      }
+      await runtime.waitForIdle();
+      const later = effects.slice(beforeRelease);
+      assert.equal(later.length, 1);
+      assert.equal(later[0]?.chat_id, 8);
+      assert.doesNotMatch(JSON.stringify(later), /old (?:result|reasoning)/);
+      assert.equal(nextId, stage === "refresh" ? 1 : 2);
+      if (stage !== "refresh") assert.equal(later[0]?.message_id, 2);
+      assert.ok(JSON.stringify(later).includes(thinking ? "new reasoning extra" : "must-survive.txt"));
+    } finally {
+      release();
+      await oldIdle;
+      runtime.stop();
+    }
+  });
+}
+}
+
+for (const operation of ["send", "edit"] as const) {
+  test(`Activity ${operation} rejection cannot fall back after transport authority loss`, async () => {
+    let authority = 1;
+    let release!: () => void;
+    let markStarted!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const rejectLate = async (): Promise<never> => {
+      markStarted(); await gate;
+      throw new Error("HTTP 400: Bad Request: fixture rejection");
+    };
+    let fallbacks = 0;
+    const runtime = createTelegramActivityVerbosityRuntime({
+      getActivityMode: () => "tools",
+      resolveTarget: (input) => input.target,
+      captureAuthority: () => authority,
+      isAuthorityActive: (captured) => captured === authority,
+      sendRichMessage: async () => operation === "send" ? rejectLate() : { message_id: 1 },
+      sendMessage: async () => { fallbacks += 1; return { message_id: 2 }; },
+      editMessageText: async (body) => {
+        if (body.rich_message) return rejectLate();
+        fallbacks += 1; return "edited";
+      },
+    });
+    try {
+      runtime.accept(event(1, { type: "tool-end", toolCallId: "one", toolName: "read", result: "one", isError: false }));
+      if (operation === "edit") {
+        await runtime.waitForIdle();
+        runtime.accept(event(2, { type: "tool-end", toolCallId: "two", toolName: "read", result: "two", isError: false }));
+      }
+      await started;
+      authority += 1;
+      release();
+      await runtime.waitForIdle();
+      assert.equal(fallbacks, 0);
+    } finally {
+      release();
+      await runtime.waitForIdle();
+      runtime.stop();
+    }
+  });
+}
+
 test("quiet activity emits no reasoning or tool messages", async () => {
   const harness = createHarness({ mode: "quiet" });
   harness.runtime.accept(event(1, { type: "agent-start" }));

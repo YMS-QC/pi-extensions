@@ -450,8 +450,10 @@ export function createTelegramCompactionObserverRuntime<TContext>(
   const setTimer = deps.setTimer ?? setTimeout;
   const clearTimer = deps.clearTimer ?? clearTimeout;
   let fallbackTimer: TelegramLifecycleTimer | undefined;
+  let observationGeneration = 0;
   let typingStartedByObserver = false;
   const clearFallbackTimer = (): void => {
+    observationGeneration += 1;
     if (!fallbackTimer) return;
     clearTimer(fallbackTimer);
     fallbackTimer = undefined;
@@ -470,7 +472,10 @@ export function createTelegramCompactionObserverRuntime<TContext>(
         !!deps.startTypingLoop && typingStartResult !== false;
       deps.updateStatus(ctx);
       clearFallbackTimer();
+      const admittedGeneration = observationGeneration;
       fallbackTimer = setTimer(() => {
+        if (observationGeneration !== admittedGeneration) return;
+        observationGeneration += 1;
         fallbackTimer = undefined;
         if (deps.isContextActive && !deps.isContextActive(ctx)) return;
         deps.setCompactionInProgress(false);
@@ -487,8 +492,8 @@ export function createTelegramCompactionObserverRuntime<TContext>(
       unrefTelegramLifecycleTimer(fallbackTimer);
     },
     onSessionCompact: (_event, ctx) => {
-      clearFallbackTimer();
       if (deps.isContextActive && !deps.isContextActive(ctx)) return;
+      clearFallbackTimer();
       deps.setCompactionInProgress(false);
       if (typingStartedByObserver) deps.stopTypingLoop?.();
       typingStartedByObserver = false;
@@ -496,8 +501,8 @@ export function createTelegramCompactionObserverRuntime<TContext>(
       requestDispatch();
     },
     onSessionCompactFailed: (_event, ctx) => {
-      clearFallbackTimer();
       if (deps.isContextActive && !deps.isContextActive(ctx)) return;
+      clearFallbackTimer();
       deps.setCompactionInProgress(false);
       if (typingStartedByObserver) deps.stopTypingLoop?.();
       typingStartedByObserver = false;

@@ -557,6 +557,7 @@ export default function (pi: Pi.ExtensionAPI) {
     activityRuntime,
     activityVerbosityRuntime,
     assistantOutputRuntime,
+    publicationRuntime,
   } = Bindings.createTelegramActivityBindingRuntime({
     generation: deliveryGenerationSeed,
     assistantOutput: {
@@ -1365,6 +1366,7 @@ export default function (pi: Pi.ExtensionAPI) {
     activityRuntime,
     activityVerbosityRuntime,
     assistantOutputRuntime,
+    publicationRuntime,
     configStore,
     abort,
     typing,

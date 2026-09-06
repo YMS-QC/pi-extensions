@@ -45,6 +45,7 @@ import {
   normalizeTelegramReactionEmoji,
   registerTelegramUpdateHandler,
   reportTelegramQueueAdmission,
+  reportTelegramUpdateCompleted,
   reportTelegramUpdateDeferred,
   TELEGRAM_INTERNAL_AGENT_MESSAGE,
   TELEGRAM_PRIORITY_REACTION_EMOJIS,
@@ -2753,6 +2754,56 @@ test("Update execution plan fences pairing, forwarding, replies, and handlers", 
   }
 });
 
+test("Source-bound expiry settles a deferred source but cannot erase a later queue receipt", async () => {
+  const storage = createTestUpdateWorkerJournal([
+    { update_id: 71, message: { message_id: 11, chat: { id: 5 } } },
+    { update_id: 72, message: { message_id: 12, chat: { id: 5 } } },
+  ]);
+  const messages = new Map<number, unknown>();
+  const worker = createTelegramUpdateAdmissionWorkerRuntime({
+    journal: storage.journal,
+    hasAuthority: () => true,
+    registry: { version: 1, add: () => () => {}, dispatch: async () => "pass" },
+    async defaultHandle(update) {
+      messages.set(update.update_id, update.message);
+      reportTelegramUpdateDeferred(update.message);
+    },
+  });
+  try {
+    worker.start(TEST_CONTEXT);
+    await worker.waitForDrain();
+    assert.equal(reportTelegramUpdateCompleted({}), false);
+    assert.equal(reportTelegramUpdateCompleted(messages.get(71)), true);
+    reportTelegramQueueAdmission([messages.get(72)], [{
+      queueKind: "prompt", receiptId: "accepted-72", sourceUpdateIds: [72],
+    }]);
+    assert.equal(reportTelegramUpdateCompleted(messages.get(72)), true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(storage.getUpdateIds(), [72]);
+    assert.deepEqual(storage.getRemovals(), [[71]]);
+    assert.equal(worker.getState().queuedClaimCount, 1);
+    await worker.stop();
+    assert.equal(reportTelegramUpdateCompleted(messages.get(72)), false);
+  } finally {
+    await worker.stop();
+  }
+});
+
+test("Admission rejects competing terminal and queue outcomes before initial settlement", async () => {
+  const handle = createTelegramUpdateAdmissionHandle({
+    registry: { version: 1, add: () => () => {}, dispatch: async () => "pass" },
+    async defaultHandle(update) {
+      reportTelegramUpdateDeferred(update.message);
+      reportTelegramUpdateCompleted(update.message);
+      reportTelegramQueueAdmission([update.message], [{
+        queueKind: "prompt", receiptId: "conflicting", sourceUpdateIds: [71],
+      }]);
+    },
+  });
+  await assert.rejects(handle({ update_id: 71, message: { chat: { id: 5, type: "private" } } },
+    TEST_CONTEXT, new AbortController().signal), /conflicting queue outcomes/);
+});
+
 test("Admission handle returns deferred immediately and owns late queue settlement", async () => {
   let boundMessage: unknown;
   const lateOutcomes: unknown[] = [];
@@ -4808,6 +4859,98 @@ test("Queue settlement accepts current session context rotation after transport 
   assert.equal(worker.getState().queuedClaimCount, 0);
   assert.equal(worker.getState().lastCompletedUpdateId, 3);
   await worker.stop();
+});
+
+test("Deferred terminal settlement removes only the exact unqueued source and survives restart", async () => {
+  const storage = createTestUpdateWorkerJournal([1, 2, 3]);
+  let signal!: AbortSignal;
+  const worker = createTelegramUpdateWorkerRuntime({
+    journal: storage.journal,
+    hasAuthority: () => true,
+    executeUpdate(update, _ctx, currentSignal) {
+      signal = currentSignal;
+      return update.update_id === 2
+        ? { kind: "queued", queueKind: "prompt", receiptId: "accepted-2", sourceUpdateIds: [2] }
+        : { kind: "deferred" };
+    },
+  });
+  try {
+    worker.start(TEST_CONTEXT);
+    await worker.waitForDrain();
+    worker.settleDeferred({ updateId: 1, signal, outcome: { kind: "complete" } });
+    worker.settleDeferred({ updateId: 1, signal, outcome: { kind: "complete" } });
+    worker.settleDeferred({ updateId: 2, signal, outcome: { kind: "complete" } });
+    worker.settleDeferred({ updateId: 99, signal, outcome: { kind: "complete" } });
+    assert.deepEqual(storage.getUpdateIds(), [2, 3]);
+    assert.deepEqual(storage.getRemovals(), [[1]]);
+    assert.equal(worker.getState().deferredClaimCount, 1);
+    await worker.stop();
+    worker.start(TEST_CONTEXT);
+    await worker.waitForDrain();
+    assert.deepEqual(storage.getUpdateIds(), [2, 3]);
+  } finally {
+    await worker.stop();
+  }
+});
+
+test("Deferred terminal settlement cannot remove a source after authority loss", async () => {
+  const storage = createTestUpdateWorkerJournal([1]);
+  let signal!: AbortSignal;
+  let owned = true;
+  const worker = createTelegramUpdateWorkerRuntime({
+    journal: storage.journal,
+    hasAuthority: () => owned,
+    executeUpdate(_update, _ctx, currentSignal) {
+      signal = currentSignal;
+      return { kind: "deferred" };
+    },
+  });
+  try {
+    worker.start(TEST_CONTEXT);
+    await worker.waitForDrain();
+    owned = false;
+    worker.settleDeferred({ updateId: 1, signal, outcome: { kind: "complete" } });
+    assert.deepEqual(storage.getUpdateIds(), [1]);
+    assert.deepEqual(storage.getRemovals(), []);
+  } finally {
+    await worker.stop();
+  }
+});
+
+test("Deferred terminal settlement rejects stale generations and retains journal-write failures", async () => {
+  const storage = createTestUpdateWorkerJournal([1]);
+  let signal!: AbortSignal;
+  const worker = createTelegramUpdateWorkerRuntime({
+    journal: storage.journal,
+    hasAuthority: () => true,
+    executeUpdate(_update, _ctx, currentSignal) {
+      signal = currentSignal;
+      return { kind: "deferred" };
+    },
+  });
+  try {
+    worker.start(TEST_CONTEXT);
+    await worker.waitForDrain();
+    const oldSignal = signal;
+    await worker.stop();
+    worker.start(TEST_CONTEXT);
+    await worker.waitForDrain();
+    worker.settleDeferred({ updateId: 1, signal: oldSignal, outcome: { kind: "complete" } });
+    worker.settleDeferred({ updateId: 1, signal: new AbortController().signal, outcome: { kind: "complete" } });
+    assert.deepEqual(storage.getUpdateIds(), [1]);
+    const remove = storage.journal.removeCompleted;
+    storage.journal.removeCompleted = () => { throw new Error("fixture journal write failed"); };
+    worker.settleDeferred({ updateId: 1, signal, outcome: { kind: "complete" } });
+    assert.deepEqual(storage.getUpdateIds(), [1]);
+    assert.equal(worker.getState().deferredClaimCount, 1);
+    storage.journal.removeCompleted = remove;
+    worker.signal();
+    await worker.waitForDrain();
+    worker.settleDeferred({ updateId: 1, signal, outcome: { kind: "complete" } });
+    assert.deepEqual(storage.getUpdateIds(), []);
+  } finally {
+    await worker.stop();
+  }
 });
 
 test("Explicit discard commits an exact grouped replay boundary", async () => {
