@@ -11,6 +11,7 @@ All notable changes to this project are documented in this file.
 ## Bug fixes
 
 - **OpenCode classifier routing** — Add OpenCode session headers to every classifier completion path. Preserve Pi's header precedence and exact host matching. (#35)
+- **OMP 18 project trust compatibility** — Treat runtimes without `isProjectTrusted()` as untrusted. Prevent startup and configuration commands from throwing. Thanks, @comigor! (#34)
 
 ## [1.15.0] - 2026-08-28
 

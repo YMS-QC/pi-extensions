@@ -107,6 +107,14 @@ export function modelVisibleConfigDiagnostics(
   );
 }
 
+function projectIsTrusted(
+  ctx: { isProjectTrusted?: () => boolean },
+): boolean {
+  return typeof ctx.isProjectTrusted === "function"
+    ? ctx.isProjectTrusted()
+    : false;
+}
+
 export type PiAutomodeOptions = {
   /** Override config loading in tests. Runtime code uses Pi-owned disk settings. */
   loadConfig?: (cwd: string, projectTrusted: boolean) => EffectiveConfig;
@@ -393,7 +401,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
     pi.on("session_start", (_event, ctx) => {
       loadResult = loadConfigWithDiagnostics(
         ctx.cwd,
-        ctx.isProjectTrusted(),
+        projectIsTrusted(ctx),
       );
       config = loadResult.config;
       configDiagnostics = loadResult.diagnostics;
@@ -802,7 +810,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
       if (command === "reload") {
         loadResult = loadConfigWithDiagnostics(
           ctx.cwd,
-          ctx.isProjectTrusted(),
+          projectIsTrusted(ctx),
         );
         config = loadResult.config;
         configDiagnostics = loadResult.diagnostics;
@@ -909,7 +917,7 @@ export function createPiAutomode(options: PiAutomodeOptions = {}) {
         }
         loadResult = loadConfigWithDiagnostics(
           ctx.cwd,
-          ctx.isProjectTrusted(),
+          projectIsTrusted(ctx),
         );
         config = loadResult.config;
         configDiagnostics = loadResult.diagnostics;
