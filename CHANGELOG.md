@@ -8,6 +8,10 @@ All notable changes to this project are documented in this file.
 
 - **[Bounded existing-file authorization](docs/defaults.md#soft_deny)** — Allow user authorization for pre-existing local-file changes that names task, worktree, path scope, and allowed operation. (#32)
 
+## Bug fixes
+
+- **OpenCode classifier routing** — Add OpenCode session headers to every classifier completion path. Preserve Pi's header precedence and exact host matching. (#35)
+
 ## [1.15.0] - 2026-08-28
 
 ## Bug fixes

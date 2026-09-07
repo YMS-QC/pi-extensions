@@ -218,6 +218,41 @@ export type ClassifierCompletionPlan = {
   reasoningLevel?: Exclude<EffectiveClassifierReasoningLevel, "off">;
 };
 
+const OPENCODE_HOST = "opencode.ai";
+
+function matchesHost(baseUrl: string | undefined, expectedHost: string): boolean {
+  if (!baseUrl) return false;
+  try {
+    return new URL(baseUrl).hostname === expectedHost;
+  } catch {
+    return false;
+  }
+}
+
+/** Mirror Pi's per-session OpenCode routing headers for standalone classifier calls. */
+function withSessionHeaders(
+  model: Model<any>,
+  options: Omit<Parameters<ClassifierCompletionFn>[2], "signal">,
+): Omit<Parameters<ClassifierCompletionFn>[2], "signal"> {
+  const sessionId = options.sessionId;
+  if (
+    !sessionId ||
+    (model.provider !== "opencode" &&
+      model.provider !== "opencode-go" &&
+      !matchesHost(model.baseUrl, OPENCODE_HOST))
+  ) {
+    return options;
+  }
+  return {
+    ...options,
+    headers: {
+      "x-opencode-session": sessionId,
+      "x-opencode-client": "pi",
+      ...options.headers,
+    },
+  };
+}
+
 async function completeClassifierAttempt(
   completeFn: ClassifierCompletionFn,
   model: Model<any>,
@@ -225,9 +260,10 @@ async function completeClassifierAttempt(
   parentSignal: AbortSignal | undefined,
   options: Omit<Parameters<ClassifierCompletionFn>[2], "signal">,
 ): Promise<AssistantMessage> {
+  const requestOptions = withSessionHeaders(model, options);
   if (options.timeoutMs === undefined) {
     return completeFn(model, prompt, {
-      ...options,
+      ...requestOptions,
       ...(parentSignal === undefined ? {} : { signal: parentSignal }),
     });
   }
@@ -255,7 +291,7 @@ async function completeClassifierAttempt(
   try {
     return await Promise.race([
       completeFn(model, prompt, {
-        ...options,
+        ...requestOptions,
         signal: controller.signal,
       }),
       aborted,
