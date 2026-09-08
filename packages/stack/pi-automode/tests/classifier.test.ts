@@ -165,6 +165,7 @@ function fakeComplete(responses: AssistantMessage[]) {
 		timeoutMs?: number;
 		sessionId?: string;
 		cacheRetention?: string;
+		headers?: Record<string, string>;
 		messages: unknown;
 		systemPrompt: string;
 	}> = [];
@@ -179,6 +180,7 @@ function fakeComplete(responses: AssistantMessage[]) {
 			timeoutMs?: number;
 			sessionId?: string;
 			cacheRetention?: string;
+			headers?: Record<string, string>;
 		},
 	): Promise<AssistantMessage> => {
 		calls.push({
@@ -194,6 +196,7 @@ function fakeComplete(responses: AssistantMessage[]) {
 				: {}),
 			sessionId: callOptions.sessionId,
 			cacheRetention: callOptions.cacheRetention,
+			headers: callOptions.headers,
 			messages: options.messages,
 			systemPrompt: options.systemPrompt,
 		});
@@ -302,9 +305,9 @@ test("current model registries do not load compat completion functions", async (
 	assert.equal(loadCalls, 0);
 });
 
-test("default classifier dispatches runtime-only models through the model registry", async () => {
+test("default classifier sends OpenCode session headers through raw registry completion", async () => {
 	const model = {
-		provider: "runtime-provider",
+		provider: "opencode-go",
 		id: "runtime-model",
 		api: "runtime-only-api",
 		reasoning: false,
@@ -336,11 +339,13 @@ test("default classifier dispatches runtime-only models through the model regist
 	assert.equal(calls.length, 1);
 	assert.equal(calls[0]?.model, model);
 	assert.equal(calls[0]?.options.apiKey, "runtime-key");
+	assert.match(calls[0]?.options.headers["x-opencode-session"], /^pi-automode-[a-f0-9]{32}$/);
+	assert.equal(calls[0]?.options.headers["x-opencode-client"], "pi");
 });
 
-test("runtime provider simple completion preserves reasoning and header-only auth", async () => {
+test("runtime provider simple completion preserves reasoning and adds OpenCode session headers", async () => {
 	const model = {
-		provider: "runtime-provider",
+		provider: "opencode",
 		id: "runtime-reasoner",
 		api: "runtime-only-api",
 		baseUrl: "https://original.invalid",
@@ -367,7 +372,11 @@ test("runtime provider simple completion preserves reasoning and header-only aut
 			getApiKeyAndHeaders: async () => authCalls++ === 0
 				? {
 					ok: true,
-					headers: { "x-runtime-auth": "secret" },
+					headers: {
+						"x-runtime-auth": "secret",
+						"x-opencode-client": "custom-client",
+						"x-opencode-session": "custom-session",
+					},
 					baseUrl: "https://resolved.invalid",
 					env: { RUNTIME_TOKEN: "secret" },
 				}
@@ -402,7 +411,9 @@ test("runtime provider simple completion preserves reasoning and header-only aut
 	assert.equal(simpleCalls.length, 2);
 	assert.equal(simpleCalls[0]?.model.baseUrl, "https://resolved.invalid");
 	assert.equal(simpleCalls[0]?.options.apiKey, undefined);
-	assert.deepEqual(simpleCalls[0]?.options.headers, { "x-runtime-auth": "secret" });
+	assert.equal(simpleCalls[0]?.options.headers["x-runtime-auth"], "secret");
+	assert.equal(simpleCalls[0]?.options.headers["x-opencode-client"], "custom-client");
+	assert.equal(simpleCalls[0]?.options.headers["x-opencode-session"], "custom-session");
 	assert.deepEqual(simpleCalls[0]?.options.env, { RUNTIME_TOKEN: "secret" });
 	assert.ok(simpleCalls[0]?.options.signal instanceof AbortSignal);
 	assert.notEqual(simpleCalls[0]?.options.signal, signal);
@@ -411,6 +422,25 @@ test("runtime provider simple completion preserves reasoning and header-only aut
 	assert.equal(simpleCalls[0]?.options.cacheRetention, "short");
 	assert.equal(simpleCalls[0]?.options.reasoning, "high");
 	assert.equal(simpleCalls[1]?.options.apiKey, "runtime-key");
+});
+
+test("classifier sends session headers only to the exact OpenCode host", async () => {
+	const { fn, calls } = fakeComplete([assistantWith(VALID_ALLOW), assistantWith(VALID_ALLOW)]);
+	for (const baseUrl of ["https://opencode.ai/v1", "https://api.opencode.ai/v1"]) {
+		await classifyWithRetry(
+			fn,
+			{ model: { provider: "custom", id: "x", baseUrl } as any },
+			{ systemPrompt: "s", messages: [] },
+			undefined,
+			{ sessionId: "pi-automode:test-session" },
+		);
+	}
+
+	assert.deepEqual(calls[0]?.headers, {
+		"x-opencode-session": "pi-automode:test-session",
+		"x-opencode-client": "pi",
+	});
+	assert.equal(calls[1]?.headers, undefined);
 });
 
 test("classifier cache session ids are stable, classifier-specific, and scoped to the Pi session", () => {

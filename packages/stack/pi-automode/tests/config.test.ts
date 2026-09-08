@@ -637,6 +637,31 @@ test("extension gates initial and reloaded project config on current trust", asy
 	assert.equal(trustedOutput.details.config.enabled, false);
 });
 
+test("missing project trust API falls back to untrusted for OMP compatibility", async () => {
+	const fake = createFakePi();
+	const loads: boolean[] = [];
+	let saved: string | undefined;
+	createPiAutomode({
+		loadConfig: (_cwd, projectTrusted) => {
+			loads.push(projectTrusted);
+			return baseConfig(saved ? { classifierModel: saved } : {});
+		},
+		saveClassifierModel: (classifierModel) => {
+			saved = classifierModel;
+		},
+	})(fake.pi);
+	const ctx = createFakeCtx(fake.entries);
+	delete (ctx as Partial<typeof ctx>).isProjectTrusted;
+
+	await fake.emit("session_start", { type: "session_start" }, ctx);
+	await fake.commands.get("automode")?.handler("reload", ctx);
+	await fake.commands.get("automode")?.handler("model test/classifier", ctx);
+
+	assert.deepEqual(loads, [false, false, false, false]);
+	assert.equal(saved, "test/classifier");
+	assert.match(ctx.notifications.at(-1)?.message ?? "", /saved globally: test\/classifier/);
+});
+
 test("project shared Pi settings can add deny and ask permissions but cannot weaken autoMode", () => {
 	const config = buildEffectiveConfigFromSources({
 		projectSharedSettings: [
