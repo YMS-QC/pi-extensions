@@ -169,3 +169,36 @@ A pattern can contain at most 4,096 UTF-16 code units. Bash analysis accepts at 
 For other allow matching, an input can contain at most 1,048,576 UTF-16 code units. A longer input returns no match. Deny and ask patterns match the same oversized input so that they fail closed.
 
 `write` and `edit` calls whose resolved target is a protected path are never covered by `permissions.allow`. This includes protected targets reached through symlink aliases.
+
+## Custom models (like OpenRouter's presets)
+
+Pi-automode can only select models that Pi exposes through its model registry. Add unlisted models to `~/.pi/agent/models.json`.
+
+For example, register an OpenRouter preset in the built-in `openrouter` provider:
+
+```json
+{
+  "providers": {
+    "openrouter": {
+      "models": [
+        {
+          "id": "@preset/nvidia-nemotron-3-nano-30b-a3b-fast",
+          "name": "NVIDIA: Nemotron 3 Nano 30B A3B Fast (Preset)",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 262144,
+          "maxTokens": 235929,
+          "cost": {
+            "input": 0.05,
+            "output": 0.2,
+            "cacheRead": 0.03,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Restart Pi (or run `/reload`), then select the model with `/automode model openrouter/@preset/nvidia-nemotron-3-nano-30b-a3b-fast`.
