@@ -13,7 +13,7 @@ on:
         type: boolean
         default: false
       only:
-        description: "只处理这些包（逗号分隔，如 pi-telegram,pi-automode；留空=全部）"
+        description: "只处理这些包（逗号分隔，如 pi-automode,pi-hermes-memory；留空=全部）"
         type: string
         default: ""
 
@@ -63,10 +63,8 @@ jobs:
               git remote add "$1" "$2"
             fi
           }
-          add_or_set up-telegram https://github.com/llblab/pi-telegram.git
           add_or_set up-automode https://github.com/czottmann/pi-automode.git
           add_or_set up-hermes https://github.com/chandra447/pi-hermes-memory.git
-          git fetch --tags --force up-telegram main
           git fetch --no-tags up-automode main
           git fetch --no-tags up-hermes main
 

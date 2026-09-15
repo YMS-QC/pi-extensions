@@ -24,15 +24,6 @@ import path from "node:path";
 
 const VENDORS = [
 	{
-		name: "pi-telegram",
-		remote: "up-telegram",
-		url: "https://github.com/llblab/pi-telegram",
-		branch: "main",
-		prefix: "packages/stack/pi-telegram",
-		// 发布纪律好：每个 main 合并点都有正式 tag；跟踪最新可达 tag，避开未发版 WIP
-		track: "tag",
-	},
-	{
 		name: "pi-automode",
 		remote: "up-automode",
 		url: "https://github.com/czottmann/pi-automode",

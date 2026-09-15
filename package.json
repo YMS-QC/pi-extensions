@@ -39,12 +39,8 @@
 	},
 	"pi": {
 		"extensions": [
-			"./packages/stack/pi-telegram/index.ts",
 			"./packages/stack/pi-automode/extensions/auto-mode.ts",
 			"./packages/stack/pi-hermes-memory/src/index.ts"
-		],
-		"skills": [
-			"./packages/stack/pi-telegram/skills"
 		]
 	}
 }

@@ -28,7 +28,6 @@ const installOnly = process.argv.includes("--install-only");
 
 // 各包要跑的脚本（用上游自己的定义，名字不同的在这里映射；未知包默认 typecheck+test）
 const SCRIPTS_BY_PACKAGE = {
-	"pi-telegram": ["typecheck", "test"],
 	"pi-automode": ["typecheck", "test"],
 	// hermes 的 check = ensure-dev 守卫 + tsc；test = ensure-dev + run-all.sh
 	"pi-hermes-memory": ["check", "test"],
