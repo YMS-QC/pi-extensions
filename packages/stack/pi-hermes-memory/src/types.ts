@@ -18,6 +18,8 @@ export interface SessionSearchConfig {
 }
 
 export interface MemoryConfig {
+  /** Defer policy-only memory initialization until first use. Default: false */
+  lazyInitialization?: boolean;
   /** Prompt memory mode. Default: policy-only */
   memoryMode: "policy-only" | "legacy-inject";
   /** Policy prompt style used when memoryMode is policy-only. Default: full */
@@ -46,6 +48,9 @@ export interface MemoryConfig {
   flushMinTurns: number;
   /** Recent conversation messages included in session flush. 0 = all. Default: 0 */
   flushRecentMessages?: number;
+  /** Ceiling for the compact-path flush (direct + subprocess). Default: 60000 */
+  flushCompactTimeoutMs?: number;
+
   /** Override extension storage directory. Default: ~/.pi/agent/pi-hermes-memory */
   memoryDir?: string;
   /** Directory for project-scoped memory (relative to ~/.pi/agent). Default: "projects-memory" */

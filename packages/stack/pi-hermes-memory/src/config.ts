@@ -12,6 +12,7 @@ import {
   DEFAULT_REVIEW_RECENT_MESSAGES,
   DEFAULT_FLUSH_RECENT_MESSAGES,
   DEFAULT_CONSOLIDATION_TIMEOUT_MS,
+  DEFAULT_FLUSH_COMPACT_TIMEOUT_MS,
   DEFAULT_OVERFLOW_GRACE_MS,
   DEFAULT_FAILURE_INJECTION_MAX_AGE_DAYS,
   DEFAULT_FAILURE_INJECTION_MAX_ENTRIES,
@@ -41,6 +42,7 @@ function isThinkingLevel(value: unknown): value is ThinkingLevel {
 }
 
 const DEFAULT_CONFIG: MemoryConfig = {
+  lazyInitialization: false,
   memoryMode: "policy-only",
   memoryPolicyStyle: "full",
   memoryCharLimit: DEFAULT_MEMORY_CHAR_LIMIT,
@@ -54,6 +56,7 @@ const DEFAULT_CONFIG: MemoryConfig = {
   flushOnShutdown: true,
   flushMinTurns: DEFAULT_FLUSH_MIN_TURNS,
   flushRecentMessages: DEFAULT_FLUSH_RECENT_MESSAGES,
+  flushCompactTimeoutMs: DEFAULT_FLUSH_COMPACT_TIMEOUT_MS,
   memoryOverflowStrategy: "auto-consolidate",
   overflowGraceMs: DEFAULT_OVERFLOW_GRACE_MS,
   autoConsolidate: true,
@@ -91,6 +94,7 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
       );
       let hasLegacyAutoConsolidate = false;
       let hasMemoryOverflowStrategy = false;
+      if (typeof parsed.lazyInitialization === "boolean") config.lazyInitialization = parsed.lazyInitialization;
       if (parsed.memoryMode === "policy-only" || parsed.memoryMode === "legacy-inject") config.memoryMode = parsed.memoryMode;
       if (
         parsed.memoryPolicyStyle === "full" ||
@@ -109,6 +113,16 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
       if (typeof parsed.flushOnShutdown === "boolean") config.flushOnShutdown = parsed.flushOnShutdown;
       if (typeof parsed.flushMinTurns === "number") config.flushMinTurns = parsed.flushMinTurns;
       if (isNonNegativeNumber(parsed.flushRecentMessages)) config.flushRecentMessages = parsed.flushRecentMessages;
+      if (typeof parsed.flushCompactTimeoutMs === "number" && Number.isFinite(parsed.flushCompactTimeoutMs)) {
+        config.flushCompactTimeoutMs = parsed.flushCompactTimeoutMs;
+        // Zero and below is the documented disable, not a too-low timeout.
+        if (parsed.flushCompactTimeoutMs > 0 && parsed.flushCompactTimeoutMs < DEFAULT_FLUSH_COMPACT_TIMEOUT_MS) {
+          console.warn(
+            `⚠️ flushCompactTimeoutMs is set to ${parsed.flushCompactTimeoutMs}ms, below the ${DEFAULT_FLUSH_COMPACT_TIMEOUT_MS}ms default.`
+            + " Compact flush is one LLM turn over the conversation; local models are routinely cut off below this.",
+          );
+        }
+      }
       if (typeof parsed.autoConsolidate === "boolean") {
         config.autoConsolidate = parsed.autoConsolidate;
         hasLegacyAutoConsolidate = true;

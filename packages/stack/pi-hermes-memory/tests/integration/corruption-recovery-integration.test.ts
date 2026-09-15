@@ -69,6 +69,8 @@ describe('Corruption recovery during markdown sync', () => {
 
       // 5. The entry must actually be persisted in the rebuilt database —
       // a swallowed zero-count success would leave the memory in markdown only.
+      // The rebuild strips copied markdown-scope fingerprints (copyRecoverableRows),
+      // so the retry on the new handle re-mirrors instead of trusting them.
       assert.ok(second.inserted >= 1, `expected the entry to persist after recovery, got ${JSON.stringify(second)}`);
       const rows = dbManager.getDb()
         .prepare('SELECT content FROM memories WHERE target = ? ORDER BY id ASC')
@@ -81,6 +83,25 @@ describe('Corruption recovery during markdown sync', () => {
       // 6. The original path must now hold a fresh, healthy database.
       const header = fs.readFileSync(dbFile).subarray(0, 16).toString('utf-8');
       assert.equal(header, 'SQLite format 3\x00', 'a fresh SQLite database must exist at the original path');
+
+      // 7. Fingerprint on the rebuilt handle must skip a third identical reconcile.
+      const recoveredDb = dbManager.getDb() as { prepare: (sql: string) => unknown };
+      const originalPrepare = recoveredDb.prepare.bind(recoveredDb);
+      recoveredDb.prepare = (sql: string) => {
+        const normalized = sql.replace(/\s+/g, ' ').trim();
+        if (/^INSERT(?: OR REPLACE)? INTO memories\b/i.test(normalized) || /^UPDATE memories\b/i.test(normalized)) {
+          throw new Error(`unexpected memories write after recovery skip: ${normalized}`);
+        }
+        return originalPrepare(sql);
+      };
+      try {
+        const third = reconcileMarkdownMemoryScope(dbManager, ['second entry after corruption'], 'memory', null);
+        assert.equal(third.inserted, 0);
+        assert.equal(third.existing, 1);
+        assert.equal(third.removed, 0);
+      } finally {
+        recoveredDb.prepare = originalPrepare;
+      }
     } finally {
       try { dbManager.close(); } catch { /* best effort */ }
       // Best-effort: on Windows the shared AtomicLockCoordinator keeps
