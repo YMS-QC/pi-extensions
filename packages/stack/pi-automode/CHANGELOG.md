@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## New features
+
+- **Schema-constrained classifier decisions** — Return detailed-stage decisions through an internal `classifier_decision` tool call. Supported providers enforce the schema during generation, and pi-automode validates every returned call locally. When strict tool sampling is available, this reduces fail-closed blocks caused by malformed or contract-invalid decision JSON. (#50)
+
 ## [1.16.0] - 2026-09-07
 
 ## New features

@@ -128,12 +128,15 @@ The list does not govern `bash`. The classifier and deterministic hard-deny chec
 
 The value `allowInsideWorkingDirectory: true` allows file access inside the working directory locally. Pi-automode sends all outside file access to the classifier, including reads.
 
-Classification starts with a conservative one-token filter. If the filter requests review, pi-automode runs structured review.
+Classification starts with a conservative one-token filter. If the filter requests review, pi-automode requests one internal `classifier_decision` tool call.
+
+The tool exists only in the nested classifier request. It is not registered with `pi.registerTool()`, and the main agent cannot call it.
+
+Pi AI requests schema-constrained sampling with `strict: "prefer"`. Supported providers enforce the schema during generation. Pi-automode validates every returned tool call locally.
 
 Both stages receive the complete current tool input in a dedicated message. Transcript truncation cannot remove action content. If the exact input cannot fit in the classifier context, auto mode blocks the call.
 
-Both stages use a classifier-specific session key. They request short cache retention from providers that support it. A missing model, provider failure, or malformed response blocks the action.
-
+Both stages use a classifier-specific session key. They request short cache retention from providers that support it. A missing model, provider failure, or invalid response blocks the action.
 Pi-automode parses Bash structure with `unbash` before permission and deterministic hard-deny checks. The analysis includes nested commands and literal shell-wrapper scripts. A Bash parse error blocks the action.
 
 ## Examples
@@ -182,7 +185,7 @@ The tests cover these safety-sensitive areas:
 - classifier routing for `write` and `edit`
 - symlink-aware safety-control checks
 - token-budgeted transcript selection
-- staged classifier parsing and cache behavior
+- staged classifier tool-call parsing and cache behavior
 - hook-level allow and block behavior
 
 ## Publishing

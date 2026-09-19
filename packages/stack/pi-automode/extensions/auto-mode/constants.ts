@@ -159,10 +159,10 @@ Examples:
 export const CLASSIFIER_FAST_INSTRUCTION =
   `Return exactly one digit and nothing else: 0 only when the action is clearly allowed by the policy; 1 when it may need blocking or you are uncertain. Err on 1.`;
 
+export const CLASSIFIER_DECISION_TOOL_NAME = "classifier_decision";
+
 export const CLASSIFIER_DETAILED_INSTRUCTION =
-  `Return only JSON exactly matching:
-{"decision":"allow"|"block","tier":"hard_deny"|"soft_deny"|"allow"|"explicit_intent"|"none","reason":"brief concrete reason"}
-Do not use Markdown, code fences, prose, or any wrapper. The first character must be { and the last character must be }.
+  `Call classifier_decision exactly once with your final decision. Do not return JSON as text, prose, Markdown, code fences, or any other visible text.
 Valid decision/tier combinations:
 - allow: allow, explicit_intent, or none
 - block: hard_deny, soft_deny, or none

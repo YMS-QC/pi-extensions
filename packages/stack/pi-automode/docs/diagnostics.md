@@ -38,7 +38,7 @@ Pi sends tool output to the current model. The output has deliberate privacy lim
 
 - `status` does not include the last decision reason.
 - `denials` does not include denial reasons or action payloads.
-- `config` removes the parser detail from invalid JSON diagnostics.
+- `config` removes configuration-parser details from invalid JSON diagnostics.
 
 The `config` view returns effective rule text. Do not put credentials, tokens, private keys, signed URLs, or other secrets in pi-automode rules or configuration.
 
@@ -71,6 +71,12 @@ For in-memory sessions, pi-automode uses this default location:
 This includes `--no-session` runs and non-persisted subagents. The path does not use the launching process working directory.
 
 See [Observability logging](observability-logging.md) for log configuration and entry schemas.
+
+## Classifier protocol failures
+
+When classifier I/O logging is active, a detailed-stage tool call appears in `attempts[].response.toolCalls`. The field contains each tool name and argument object.
+
+The field does not contain provider call IDs or hidden reasoning. Use it to distinguish a missing tool call from invalid tool arguments.
 
 ## Diagnosis workflow
 

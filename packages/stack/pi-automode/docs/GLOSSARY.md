@@ -18,7 +18,7 @@ The enforcement flow is the ordered pipeline that runs before each agent tool ca
 
 **Fast stage** — The first classifier stage. It returns `0` for a clearly allowed action or `1` for an action that can require review.
 
-**Detailed stage** — The second classifier stage. It runs after a fast-stage review result and returns a structured allow or block decision.
+**Detailed stage** — The second classifier stage. It runs after a fast-stage review result. It returns one schema-validated `classifier_decision` tool call.
 
 ## Classifier policy and rules
 

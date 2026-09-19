@@ -134,7 +134,8 @@ The entry follows all related classifier-usage `message` entries. It precedes th
 Each `attempts[]` entry is `{ stage, attempt, response?, parsed?, error?, durationMs }`:
 
 - `stage` — `fast` for the one-token filter or `detailed` for structured review.
-- `response` — `{ stopReason, text, model, timestamp, usage, errorMessage? }`, the raw model output and provider-reported usage for that call, including provider-reported errors and aborted requests.
+- `response` — `{ stopReason, text, toolCalls?, model, timestamp, usage, errorMessage? }`, including provider-reported errors and aborted requests.
+- `response.toolCalls` — each classifier tool name and parsed argument object. This field excludes provider call IDs and hidden reasoning.
 - `parsed` — the decision parsed from the response, or absent after a parse failure.
 - `error` — present after a network or authentication error. In this case, `response` is absent.
 

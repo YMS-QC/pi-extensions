@@ -35,53 +35,8 @@ test("classifier policy scopes bounded authorization to existing local files", (
 	assert.match(CLASSIFIER_SYSTEM_PROMPT, /target lies outside authorized scope/);
 });
 
-test("classifier JSON parser accepts valid decisions and rejects invalid output", () => {
-	const message = {
-		role: "assistant",
-		content: [{ type: "text", text: '{"decision":"block","tier":"hard_deny","reason":"secret exfiltration"}' }],
-		api: "test",
-		provider: "test",
-		model: "test",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-		stopReason: "stop",
-		timestamp: Date.now(),
-	} satisfies AssistantMessage;
-
-	assert.deepEqual(parseClassifierDecision(message), {
-		decision: "block",
-		tier: "hard_deny",
-		reason: "secret exfiltration",
-	});
-
-	assert.equal(
-		parseClassifierDecision({ ...message, content: [{ type: "text", text: "ALLOW because I said so" }] }),
-		undefined,
-	);
-	assert.equal(
-		parseClassifierDecision({ ...message, content: [{ type: "text", text: '{"decision":"allow","tier":"invented","reason":"no"}' }] }),
-		undefined,
-	);
-	assert.equal(
-		parseClassifierDecision({ ...message, content: [{ type: "text", text: '```json\n{"decision":"allow","tier":"allow","reason":"wrapped"}\n```' }] }),
-		undefined,
-	);
-	assert.equal(
-		parseClassifierDecision({ ...message, content: [{ type: "text", text: '{"decision":"allow","reason":"missing tier"}' }] }),
-		undefined,
-	);
-	assert.equal(
-		parseClassifierDecision({ ...message, content: [{ type: "text", text: '{"decision":"allow","tier":"allow","reason":"extra","other":true}' }] }),
-		undefined,
-	);
-	assert.equal(
-		parseClassifierDecision({ ...message, content: [{ type: "text", text: '{"decision":"allow","tier":"hard_deny","reason":"contradictory"}' }] }),
-		undefined,
-	);
-	assert.equal(
-		parseClassifierDecision({ ...message, content: [{ type: "text", text: '{"decision":"block","decision":"allow","tier":"allow","reason":"duplicate"}' }] }),
-		undefined,
-	);
-});
+const VALID_ALLOW = { decision: "allow", tier: "allow", reason: "read-only" };
+const GARBAGE = "and I'm ready to go. I'll start by listing the ability to ability to ability to";
 
 function assistantWith(text: string, stopReason = "stop"): AssistantMessage {
 	return {
@@ -95,6 +50,70 @@ function assistantWith(text: string, stopReason = "stop"): AssistantMessage {
 		timestamp: Date.now(),
 	} satisfies AssistantMessage;
 }
+
+function assistantWithDecision(
+	arguments_: Record<string, unknown> = VALID_ALLOW,
+	options: {
+		name?: string;
+		stopReason?: string;
+		text?: string;
+		thinking?: boolean;
+	} = {},
+): AssistantMessage {
+	const content: AssistantMessage["content"] = [];
+	if (options.thinking) content.push({ type: "thinking", thinking: "Reviewing policy." });
+	if (options.text !== undefined) content.push({ type: "text", text: options.text });
+	content.push({
+		type: "toolCall",
+		id: "classifier-decision-1",
+		name: options.name ?? "classifier_decision",
+		arguments: arguments_,
+	});
+	return {
+		...assistantWith("", options.stopReason ?? "toolUse"),
+		content,
+	};
+}
+
+test("classifier tool-call parser accepts exact decisions and rejects invalid output", () => {
+	const message = assistantWithDecision({
+		decision: "block",
+		tier: "hard_deny",
+		reason: "secret exfiltration",
+	}, { thinking: true });
+
+	assert.deepEqual(parseClassifierDecision(message), {
+		decision: "block",
+		tier: "hard_deny",
+		reason: "secret exfiltration",
+	});
+
+	for (const invalid of [
+		assistantWith(JSON.stringify(VALID_ALLOW)),
+		assistantWithDecision(VALID_ALLOW, { text: "The action is safe." }),
+		assistantWithDecision(VALID_ALLOW, { name: "other_tool" }),
+		assistantWithDecision({ decision: "allow", reason: "missing tier" }),
+		assistantWithDecision({ ...VALID_ALLOW, other: true }),
+		assistantWithDecision({ decision: "none", tier: "none", reason: "invalid decision" }),
+		assistantWithDecision({ decision: "allow", tier: "invented", reason: "invalid tier" }),
+		assistantWithDecision({ decision: "allow", tier: "hard_deny", reason: "contradictory" }),
+		assistantWithDecision({ decision: "allow", tier: "allow", reason: "   " }),
+		assistantWithDecision({ decision: "allow", tier: "allow", reason: 123 }),
+		assistantWithDecision([] as never),
+		assistantWithDecision(null as never),
+	]) {
+		assert.equal(parseClassifierDecision(invalid), undefined);
+	}
+
+	const multiple = assistantWithDecision();
+	multiple.content.push({
+		type: "toolCall",
+		id: "classifier-decision-2",
+		name: "classifier_decision",
+		arguments: VALID_ALLOW,
+	});
+	assert.equal(parseClassifierDecision(multiple), undefined);
+});
 
 test("classifier transcript keeps user intent and tool calls but strips assistant prose and tool results", () => {
 	const entries = [
@@ -154,8 +173,6 @@ test("classifier transcript preserves first and latest user turns within token b
 	assert.match(transcript, /<truncated approx_tokens="\d+" \/>/);
 });
 
-const VALID_ALLOW = '{"decision":"allow","tier":"allow","reason":"read-only"}';
-const GARBAGE = "and I'm ready to go. I'll start by listing the ability to ability to ability to";
 
 function fakeComplete(responses: AssistantMessage[]) {
 	const calls: Array<{
@@ -167,12 +184,13 @@ function fakeComplete(responses: AssistantMessage[]) {
 		cacheRetention?: string;
 		headers?: Record<string, string>;
 		messages: unknown;
+		tools?: unknown;
 		systemPrompt: string;
 	}> = [];
 	let i = 0;
 	const fn = async (
 		_model: unknown,
-		options: { systemPrompt: string; messages: unknown },
+		options: { systemPrompt: string; messages: unknown; tools?: unknown },
 		callOptions: {
 			maxTokens: number;
 			temperature?: number;
@@ -198,6 +216,7 @@ function fakeComplete(responses: AssistantMessage[]) {
 			cacheRetention: callOptions.cacheRetention,
 			headers: callOptions.headers,
 			messages: options.messages,
+			tools: options.tools,
 			systemPrompt: options.systemPrompt,
 		});
 		const res = responses[i];
@@ -255,9 +274,9 @@ test("classifier completion plan preserves server default and clamps explicit le
 	});
 });
 
-test("legacy model registries lazy-load and cache compat completion functions", async () => {
-	const rawCalls: unknown[] = [];
-	const simpleCalls: unknown[] = [];
+test("legacy model registries preserve classifier tools through compat completion functions", async () => {
+	const rawCalls: unknown[][] = [];
+	const simpleCalls: unknown[][] = [];
 	let loadCalls = 0;
 	const legacyRaw = async (...args: unknown[]) => {
 		rawCalls.push(args);
@@ -274,22 +293,34 @@ test("legacy model registries lazy-load and cache compat completion functions", 
 			simpleComplete: legacySimple as never,
 		};
 	});
+	const tools = [{ name: "classifier_decision" }] as never;
+	const context = { systemPrompt: "", messages: [], tools };
 
 	assert.equal(loadCalls, 0);
-	await completions.rawComplete({} as never, { systemPrompt: "", messages: [] }, { maxTokens: 1 });
-	await completions.simpleComplete({} as never, { systemPrompt: "", messages: [] }, { maxTokens: 1 });
+	await completions.rawComplete({} as never, context, { maxTokens: 1 });
+	await completions.simpleComplete({} as never, context, { maxTokens: 1 });
 	assert.equal(loadCalls, 1);
 	assert.equal(rawCalls.length, 1);
 	assert.equal(simpleCalls.length, 1);
+	assert.equal((rawCalls[0]?.[1] as { tools?: unknown }).tools, tools);
+	assert.equal((simpleCalls[0]?.[1] as { tools?: unknown }).tools, tools);
 });
 
-test("current model registries do not load compat completion functions", async () => {
+test("current model registries preserve classifier tools without loading compat functions", async () => {
 	let loadCalls = 0;
+	const rawContexts: unknown[] = [];
+	const simpleContexts: unknown[] = [];
 	const provider = {
-		streamSimple: () => ({ result: async () => assistantWith("simple") }),
+		streamSimple: (_model: unknown, context: unknown) => {
+			simpleContexts.push(context);
+			return { result: async () => assistantWith("simple") };
+		},
 	};
 	const registry = {
-		complete: async () => assistantWith("raw"),
+		complete: async (_model: unknown, context: unknown) => {
+			rawContexts.push(context);
+			return assistantWith("raw");
+		},
 		getProvider: () => provider,
 	};
 	const completions = createRegistryCompletionFns(registry, async () => {
@@ -299,10 +330,14 @@ test("current model registries do not load compat completion functions", async (
 			simpleComplete: async () => assistantWith("fallback"),
 		};
 	});
+	const tools = [{ name: "classifier_decision" }] as never;
+	const context = { systemPrompt: "", messages: [], tools };
 
-	assert.equal((await completions.rawComplete({} as never, { systemPrompt: "", messages: [] }, { maxTokens: 1 })).content[0]?.type, "text");
-	assert.equal((await completions.simpleComplete({ provider: "test" } as never, { systemPrompt: "", messages: [] }, { maxTokens: 1 })).content[0]?.type, "text");
+	assert.equal((await completions.rawComplete({} as never, context, { maxTokens: 1 })).content[0]?.type, "text");
+	assert.equal((await completions.simpleComplete({ provider: "test" } as never, context, { maxTokens: 1 })).content[0]?.type, "text");
 	assert.equal(loadCalls, 0);
+	assert.equal((rawContexts[0] as { tools?: unknown }).tools, tools);
+	assert.equal((simpleContexts[0] as { tools?: unknown }).tools, tools);
 });
 
 test("default classifier sends OpenCode session headers through raw registry completion", async () => {
@@ -425,7 +460,7 @@ test("runtime provider simple completion preserves reasoning and adds OpenCode s
 });
 
 test("classifier sends session headers only to the exact OpenCode host", async () => {
-	const { fn, calls } = fakeComplete([assistantWith(VALID_ALLOW), assistantWith(VALID_ALLOW)]);
+	const { fn, calls } = fakeComplete([assistantWithDecision(), assistantWithDecision()]);
 	for (const baseUrl of ["https://opencode.ai/v1", "https://api.opencode.ai/v1"]) {
 		await classifyWithRetry(
 			fn,
@@ -646,7 +681,7 @@ test("classifyInStages sends the exact action as a dedicated cached message", as
 	});
 	const { fn, calls } = fakeComplete([
 		assistantWith("1"),
-		assistantWith(VALID_ALLOW),
+		assistantWithDecision(),
 	]);
 	const decision = await classifyInStages(
 		fn,
@@ -683,11 +718,11 @@ test("classifyInStages allows after the fast stage and uses classifier cache aff
 	assert.equal(attempts[0]?.stage, "fast");
 });
 
-test("classifyInStages runs detailed review and retries with the same cached prefix when requested", async () => {
+test("classifyInStages runs detailed tool review and retries with the same cached prefix", async () => {
 	const { fn, calls } = fakeComplete([
 		assistantWith(" 1\n"),
 		assistantWith(GARBAGE),
-		assistantWith(VALID_ALLOW),
+		assistantWithDecision(),
 	]);
 	const attempts: ClassifierIoAttempt[] = [];
 	const decision = await classifyInStages(
@@ -702,6 +737,31 @@ test("classifyInStages runs detailed review and retries with the same cached pre
 	assert.equal(calls.length, 3);
 	assert.equal(calls[0]?.systemPrompt, calls[1]?.systemPrompt);
 	assert.deepEqual((calls[0]?.messages as unknown[]).slice(0, 2), (calls[1]?.messages as unknown[]).slice(0, 2));
+	assert.equal(calls[0]?.tools, undefined);
+	const detailedTools = calls[1]?.tools as Array<{
+		name: string;
+		parameters: {
+			additionalProperties?: boolean;
+			required?: string[];
+			properties?: Record<string, { enum?: string[]; minLength?: number }>;
+		};
+		constrainedSampling?: unknown;
+	}>;
+	assert.equal(detailedTools.length, 1);
+	assert.equal(detailedTools[0]?.name, "classifier_decision");
+	assert.deepEqual(detailedTools[0]?.parameters.required, ["decision", "tier", "reason"]);
+	assert.equal(detailedTools[0]?.parameters.additionalProperties, false);
+	assert.deepEqual(detailedTools[0]?.parameters.properties?.decision?.enum, ["allow", "block"]);
+	assert.deepEqual(detailedTools[0]?.parameters.properties?.tier?.enum, [
+		"hard_deny",
+		"soft_deny",
+		"allow",
+		"explicit_intent",
+		"none",
+	]);
+	assert.equal(detailedTools[0]?.parameters.properties?.reason?.minLength, 1);
+	assert.deepEqual(detailedTools[0]?.constrainedSampling, { type: "json_schema", strict: "prefer" });
+	assert.equal(calls[1]?.tools, calls[2]?.tools);
 	assert.deepEqual(calls.map((call) => call.sessionId), [
 		"pi-automode:test-session",
 		"pi-automode:test-session",
@@ -709,19 +769,23 @@ test("classifyInStages runs detailed review and retries with the same cached pre
 	]);
 	assert.deepEqual(calls.map((call) => call.cacheRetention), ["short", "short", "short"]);
 	assert.equal(calls.every((call) => !Object.hasOwn(call, "temperature")), true);
+	assert.match(CLASSIFIER_DETAILED_INSTRUCTION, /Call classifier_decision exactly once/);
+	assert.match(CLASSIFIER_DETAILED_INSTRUCTION, /Do not return JSON as text/);
 	assert.match(CLASSIFIER_DETAILED_INSTRUCTION, /allow: allow, explicit_intent, or none/);
 	assert.match(CLASSIFIER_DETAILED_INSTRUCTION, /block: hard_deny, soft_deny, or none/);
-	assert.match(CLASSIFIER_DETAILED_INSTRUCTION, /Do not use Markdown, code fences, prose, or any wrapper/);
-	assert.match(CLASSIFIER_DETAILED_INSTRUCTION, /first character must be \{ and the last character must be \}/);
 	assert.match(JSON.stringify(calls[1]?.messages), /never soft_deny/);
 	assert.deepEqual(attempts.map((attempt) => attempt.stage), ["fast", "detailed", "detailed"]);
 	assert.equal(attempts[0]?.response?.text, " 1\n");
+	assert.deepEqual(attempts[2]?.response?.toolCalls, [{
+		name: "classifier_decision",
+		arguments: VALID_ALLOW,
+	}]);
 });
 
 test("classifyInStages forwards one reasoning level to fast and detailed calls", async () => {
 	const { fn, calls } = fakeComplete([
 		assistantWith("1"),
-		assistantWith(VALID_ALLOW),
+		assistantWithDecision(),
 	]);
 	const decision = await classifyInStages(
 		fn,
@@ -738,7 +802,7 @@ test("classifyInStages forwards one reasoning level to fast and detailed calls",
 test("classifyInStages forwards the timeout to fast and detailed calls", async () => {
 	const { fn, calls } = fakeComplete([
 		assistantWith("1"),
-		assistantWith(VALID_ALLOW),
+		assistantWithDecision(),
 	]);
 	const decision = await classifyInStages(
 		fn,
@@ -822,7 +886,7 @@ test("classifyInStages preserves parent cancellation with a classifier deadline"
 test("classifyWithRetry forwards the timeout to every detailed attempt", async () => {
 	const { fn, calls } = fakeComplete([
 		assistantWith(GARBAGE),
-		assistantWith(VALID_ALLOW),
+		assistantWithDecision(),
 	]);
 	const attempts: ClassifierIoAttempt[] = [];
 	const decision = await classifyWithRetry(
@@ -844,7 +908,7 @@ test("classifyWithRetry forwards the timeout to every detailed attempt", async (
 });
 
 test("classifyWithRetry omits the timeout when not configured", async () => {
-	const { fn, calls } = fakeComplete([assistantWith(VALID_ALLOW)]);
+	const { fn, calls } = fakeComplete([assistantWithDecision()]);
 	const decision = await classifyWithRetry(
 		fn,
 		{ model: { provider: "test", id: "x" } },
@@ -935,8 +999,8 @@ test("classifyInStages fails closed on non-stop fast-stage allows", async () => 
 	}
 });
 
-test("classifyWithRetry returns a valid decision on the first attempt without retrying", async () => {
-	const { fn, calls } = fakeComplete([assistantWith(VALID_ALLOW)]);
+test("classifyWithRetry returns a valid decision tool call on the first attempt", async () => {
+	const { fn, calls } = fakeComplete([assistantWithDecision()]);
 	const decision = await classifyWithRetry(
 		fn,
 		{ model: { provider: "test", id: "x" } },
@@ -949,7 +1013,7 @@ test("classifyWithRetry returns a valid decision on the first attempt without re
 });
 
 test("classifyWithRetry forwards an explicitly configured temperature", async () => {
-	const { fn, calls } = fakeComplete([assistantWith(VALID_ALLOW)]);
+	const { fn, calls } = fakeComplete([assistantWithDecision()]);
 	const decision = await classifyWithRetry(
 		fn,
 		{ model: { provider: "test", id: "x" } },
@@ -962,8 +1026,11 @@ test("classifyWithRetry forwards an explicitly configured temperature", async ()
 	assert.equal(calls[0]?.temperature, 0);
 });
 
-test("classifyWithRetry recovers when the first response is garbage and the second is valid", async () => {
-	const { fn, calls } = fakeComplete([assistantWith(GARBAGE), assistantWith(VALID_ALLOW)]);
+test("classifyWithRetry rejects assistant JSON text and accepts a later decision tool call", async () => {
+	const { fn, calls } = fakeComplete([
+		assistantWith(JSON.stringify(VALID_ALLOW)),
+		assistantWithDecision(),
+	]);
 	const decision = await classifyWithRetry(
 		fn,
 		{ model: { provider: "test", id: "x" } },
@@ -974,10 +1041,25 @@ test("classifyWithRetry recovers when the first response is garbage and the seco
 	assert.equal(calls.length, 2);
 });
 
-test("classifyWithRetry recovers from a truncated (stopReason length) response on retry", async () => {
+test("classifyWithRetry recovers when the first decision tool call is invalid", async () => {
+	const { fn, calls } = fakeComplete([
+		assistantWithDecision({ ...VALID_ALLOW, unexpected: true }),
+		assistantWithDecision(),
+	]);
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+	);
+	assert.equal(decision.decision, "allow");
+	assert.equal(calls.length, 2);
+});
+
+test("classifyWithRetry recovers from a truncated response on retry", async () => {
 	const { fn, calls } = fakeComplete([
 		assistantWith(GARBAGE, "length"),
-		assistantWith(VALID_ALLOW),
+		assistantWithDecision(),
 	]);
 	const decision = await classifyWithRetry(
 		fn,
@@ -989,10 +1071,10 @@ test("classifyWithRetry recovers from a truncated (stopReason length) response o
 	assert.equal(calls.length, 2);
 });
 
-test("classifyWithRetry retries an allow-shaped truncated response", async () => {
+test("classifyWithRetry retries a valid decision tool call truncated by the provider", async () => {
 	const { fn, calls } = fakeComplete([
-		assistantWith(VALID_ALLOW, "length"),
-		assistantWith(VALID_ALLOW),
+		assistantWithDecision(VALID_ALLOW, { stopReason: "length" }),
+		assistantWithDecision(),
 	]);
 	const decision = await classifyWithRetry(
 		fn,
@@ -1005,10 +1087,10 @@ test("classifyWithRetry retries an allow-shaped truncated response", async () =>
 	assert.equal(calls.length, 2);
 });
 
-test("classifyWithRetry fails closed on a tool-use response with valid allow JSON", async () => {
+test("classifyWithRetry does not authorize a valid tool call with stopReason stop", async () => {
 	const { fn, calls } = fakeComplete([
-		assistantWith(VALID_ALLOW, "toolUse"),
-		assistantWith(VALID_ALLOW),
+		assistantWithDecision(VALID_ALLOW, { stopReason: "stop" }),
+		assistantWithDecision(),
 	]);
 	const decision = await classifyWithRetry(
 		fn,
@@ -1017,12 +1099,27 @@ test("classifyWithRetry fails closed on a tool-use response with valid allow JSO
 		undefined,
 	);
 
-	assert.equal(decision.decision, "block");
-	assert.match(decision.reason, /did not stop cleanly/);
-	assert.equal(calls.length, 1);
+	assert.equal(decision.decision, "allow");
+	assert.equal(calls.length, 2);
 });
 
-test("classifyWithRetry fails closed when every attempt returns unparseable output", async () => {
+test("classifyWithRetry rejects JSON text even with stopReason toolUse", async () => {
+	const { fn, calls } = fakeComplete([
+		assistantWith(JSON.stringify(VALID_ALLOW), "toolUse"),
+		assistantWithDecision(),
+	]);
+	const decision = await classifyWithRetry(
+		fn,
+		{ model: { provider: "test", id: "x" } },
+		{ systemPrompt: "s", messages: [] },
+		undefined,
+	);
+
+	assert.equal(decision.decision, "allow");
+	assert.equal(calls.length, 2);
+});
+
+test("classifyWithRetry fails closed when every attempt lacks a valid decision tool call", async () => {
 	const { fn, calls } = fakeComplete([assistantWith(GARBAGE, "length"), assistantWith(GARBAGE)]);
 	const decision = await classifyWithRetry(
 		fn,
@@ -1057,7 +1154,7 @@ test("classifyWithRetry surfaces provider-reported errors without retrying", asy
 		...assistantWith("", "error"),
 		errorMessage: "Unsupported parameter: temperature",
 	};
-	const { fn, calls } = fakeComplete([response, assistantWith(VALID_ALLOW)]);
+	const { fn, calls } = fakeComplete([response, assistantWithDecision()]);
 	const attempts: ClassifierIoAttempt[] = [];
 	const decision = await classifyWithRetry(
 		fn,
@@ -1073,12 +1170,12 @@ test("classifyWithRetry surfaces provider-reported errors without retrying", asy
 	assert.equal(attempts[0]?.response?.errorMessage, "Unsupported parameter: temperature");
 });
 
-test("classifyWithRetry fails closed on an empty provider error with valid allow JSON", async () => {
+test("classifyWithRetry fails closed on an empty provider error with a valid decision tool call", async () => {
 	const response = {
-		...assistantWith(VALID_ALLOW, "error"),
+		...assistantWithDecision(VALID_ALLOW, { stopReason: "error" }),
 		errorMessage: "",
 	};
-	const { fn, calls } = fakeComplete([response, assistantWith(VALID_ALLOW)]);
+	const { fn, calls } = fakeComplete([response, assistantWithDecision()]);
 	const attempts: ClassifierIoAttempt[] = [];
 	const decision = await classifyWithRetry(
 		fn,
@@ -1095,12 +1192,12 @@ test("classifyWithRetry fails closed on an empty provider error with valid allow
 	assert.equal(attempts[0]?.response?.errorMessage, "");
 });
 
-test("classifyWithRetry fails closed on an aborted detailed-stage allow", async () => {
+test("classifyWithRetry fails closed on an aborted detailed-stage decision tool call", async () => {
 	const response = {
-		...assistantWith(VALID_ALLOW, "aborted"),
+		...assistantWithDecision(VALID_ALLOW, { stopReason: "aborted" }),
 		errorMessage: "Request was aborted",
 	};
-	const { fn, calls } = fakeComplete([response, assistantWith(VALID_ALLOW)]);
+	const { fn, calls } = fakeComplete([response, assistantWithDecision()]);
 	const attempts: ClassifierIoAttempt[] = [];
 	const decision = await classifyWithRetry(
 		fn,
@@ -1116,13 +1213,12 @@ test("classifyWithRetry fails closed on an aborted detailed-stage allow", async 
 	assert.equal(attempts[0]?.response?.errorMessage, "Request was aborted");
 });
 
-test("classifyWithRetry reports each attempt's usage via onAttempt", async () => {
+test("classifyWithRetry reports text and tool calls via onAttempt", async () => {
 	const first = assistantWith(GARBAGE);
 	first.model = "glm-5.2";
 	first.timestamp = Date.parse("2026-07-10T12:00:00.000Z");
 	first.usage = { input: 11, output: 12, cacheRead: 13, cacheWrite: 14, totalTokens: 50, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-	const rawValidAllow = ` ${VALID_ALLOW}\n`;
-	const { fn } = fakeComplete([first, assistantWith(rawValidAllow)]);
+	const { fn } = fakeComplete([first, assistantWithDecision()]);
 	const attempts: ClassifierIoAttempt[] = [];
 	const decision = await classifyWithRetry(
 		fn,
@@ -1142,7 +1238,11 @@ test("classifyWithRetry reports each attempt's usage via onAttempt", async () =>
 		usage: { input: 11, output: 12, cacheRead: 13, cacheWrite: 14, totalTokens: 50, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 	});
 	assert.equal(attempts[1]?.parsed?.decision, "allow");
-	assert.equal(attempts[1]?.response?.text, rawValidAllow);
+	assert.equal(attempts[1]?.response?.text, "");
+	assert.deepEqual(attempts[1]?.response?.toolCalls, [{
+		name: "classifier_decision",
+		arguments: VALID_ALLOW,
+	}]);
 });
 
 test("classifyWithRetry reports a thrown attempt via onAttempt and fails closed", async () => {

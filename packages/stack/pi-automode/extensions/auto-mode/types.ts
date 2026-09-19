@@ -180,6 +180,10 @@ export type ClassifierIoAttempt = {
   response?: {
     stopReason?: string;
     text: string;
+    toolCalls?: Array<{
+      name: string;
+      arguments: Record<string, unknown>;
+    }>;
     model: string;
     timestamp: number;
     usage: AssistantMessage["usage"];
