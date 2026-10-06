@@ -121,14 +121,17 @@ const TARGETS: Record<string, Target> = {
 		},
 	},
 	// automode 分类器: 写配置 + 提示 reload
+	// ADR-002 后 automode 全局配置在 extensions/pi-automode/config.json; legacy automode.json 已不生效
 	automode: {
 		label: "pi-automode 分类器 (/automode reload 生效)",
 		resolve: (p) => p.aux,
 		apply: async (modelId) => {
-			const changed = patchJson(join(AGENT, "automode.json"), (o) => {
+			const changed = patchJson(join(AGENT, "extensions/pi-automode/config.json"), (o) => {
 				o.autoMode = { ...(o.autoMode as object), classifierModel: modelId };
 			});
-			return changed ? "automode.json 已更新, 跑 /automode reload" : "automode.json 无变化";
+			return changed
+				? "pi-automode config.json 已更新, 跑 /automode reload"
+				: "pi-automode config.json 无变化(确认文件存在)";
 		},
 	},
 	// hermes 后台 LLM: 写配置 + 提示 reload
