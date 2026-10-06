@@ -24,15 +24,6 @@ import path from "node:path";
 
 const VENDORS = [
 	{
-		name: "pi-automode",
-		remote: "up-automode",
-		url: "https://github.com/czottmann/pi-automode",
-		branch: "main",
-		prefix: "packages/stack/pi-automode",
-		// tag 停在 v1.9.0 但 package.json 已 1.11.0，tag 失修；main 即稳定线
-		track: "main",
-	},
-	{
 		name: "pi-hermes-memory",
 		remote: "up-hermes",
 		url: "https://github.com/chandra447/pi-hermes-memory",

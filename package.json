@@ -39,7 +39,6 @@
 	},
 	"pi": {
 		"extensions": [
-			"./packages/stack/pi-automode/extensions/auto-mode.ts",
 			"./packages/stack/pi-hermes-memory/src/index.ts"
 		]
 	}

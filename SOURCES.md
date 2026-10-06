@@ -7,7 +7,6 @@
 
 | 子包 | 上游仓库 | vendor 基线 | 本仓补丁（原 fork 仓 commit，已随 subtree 并入历史） |
 |---|---|---|---|
-| `pi-automode` | github.com/czottmann/pi-automode | 1.15.0 (92615bb) | `7b3516f` 通知级别配置；`a682faf` bash 只读快路径；`78f3139` 决策 LRU 缓存 |
 | `pi-hermes-memory` | github.com/chandra447/pi-hermes-memory | main d5e2d138 (0.9.10) | `69b3f92` PI_HERMES_* 环境变量覆盖 + /memory-reload 热切换 LLM 模型 |
 
 同步命令：`git subtree pull --prefix=packages/stack/<子包> <上游URL> main`（update-vendors.sh 已封装）。
@@ -20,7 +19,6 @@ v0.47~v0.49 tag；automode tag 停在 v1.9.0 但 package.json 已 1.11.0）。�
 
 | 包 | 策略 | 理由 |
 |---|---|---|
-| pi-automode | main 分支头 | tag 失修，main 即稳定线 |
 | pi-hermes-memory | main 分支头 | tag 滞后于 main 修复，跟 main 才拿得到修复 |
 
 ### 依赖管理（重要）
@@ -66,6 +64,7 @@ GLM 等）只需设 repo variables `VENDOR_SYNC_LLM_BASE_URL` / `VENDOR_SYNC_LLM
 - 本仓最初 fork 自 narumiruna/pi-extensions（2026-08），其 27 个上游包因不使用已从树中移除（历史仍在），upstream 关联已解除
 - 三方包补丁原先维护在独立 fork 仓（YMS-QC/pi-telegram 等），2026-08-17 起并入本仓 vendor 模式
 - `pi-telegram` 于 2026-09-15 移除出 vendor 树：唯一补丁 stale-ctx 崩溃修复已被上游 v0.45.x 等效吸收（changelog: catch synchronous stale-context ownership failures, preventing uncaught process exits），不再自行维护；如需使用直接安装 github.com/llblab/pi-telegram
+- `pi-automode` 于 2026-10-06 移除出 vendor 树：改用官方 npm 包 `@czottmann/pi-automode`（1.17.0 含 Pi ≥0.86 分类器兼容修复，vendored 1.16.0 在 Pi 1.0.x 下分类器 fails-closed 误拒只读命令）。本地三补丁（通知分级 notifications / bashFastPath 白名单 / decisionCache）随之废弃，需要时从 git 历史找回；配置路径 ~/.pi/agent/extensions/pi-automode/config.json 官方包沿用不变
 
 ## memory/ — 原则/知识/记忆快照（非 vendor，自有内容）
 

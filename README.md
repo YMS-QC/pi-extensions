@@ -6,7 +6,7 @@
 
 ```
 packages/stack/     收纳的第三方扩展（已打补丁，pi 直接装载本区）
-  pi-automode/ pi-hermes-memory/
+  pi-hermes-memory/
 packages/           自有资产（agents / config / model-config）
 memory/             原则/知识/记忆快照（AGENTS.md 原则、MEMORY.md 环境知识、
                     USER.md+failures.md 记忆、projects/ 项目知识、skills/ 技能）

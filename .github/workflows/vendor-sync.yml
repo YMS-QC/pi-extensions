@@ -63,9 +63,7 @@ jobs:
               git remote add "$1" "$2"
             fi
           }
-          add_or_set up-automode https://github.com/czottmann/pi-automode.git
           add_or_set up-hermes https://github.com/chandra447/pi-hermes-memory.git
-          git fetch --no-tags up-automode main
           git fetch --no-tags up-hermes main
 
       - name: Analyze upstream changes (LLM review)
