@@ -228,6 +228,85 @@ describe("MemoryStore", { concurrency: 1 }, () => {
       assert.equal(projectStore.getRawEntriesForSync("memory").length, 1);
     });
 
+    it("reports count-only usage in policy-only mode", async () => {
+      const config = makeConfig({
+        memoryMode: "policy-only",
+        memoryCharLimit: 50,
+      });
+      const store = new MemoryStore(config);
+      const projectStore = new MemoryStore({
+        ...config,
+        memoryDir: path.join(MEMORY_DIR, "project"),
+      });
+      await store.loadFromDisk();
+      await projectStore.loadFromDisk();
+
+      const result = await store.add("memory", `${TEST_MARKER} policy-only over-cap ${"x".repeat(100)}`);
+      const projectResult = await projectStore.add("memory", `${TEST_MARKER} policy-only project over-cap ${"x".repeat(100)}`);
+      await settle();
+
+      assert.equal(result.success, true, result.error);
+      assert.match(result.usage ?? "", /^\d+ chars$/);
+      assert.ok(!(result.usage ?? "").includes("%"), "policy-only usage should not report a percentage");
+
+      assert.equal(projectResult.success, true, projectResult.error);
+      assert.match(projectResult.usage ?? "", /^\d+ chars$/);
+    });
+
+    it("keeps the percentage usage when the cap is enforced", async () => {
+      const store = new MemoryStore(makeConfig({ memoryCharLimit: 5000 }));
+      await store.loadFromDisk();
+
+      const result = await store.add("memory", `${TEST_MARKER} enforced`);
+      await settle();
+
+      assert.equal(result.success, true, result.error);
+      assert.match(result.usage ?? "", /^\d+% — \d+\/5000 chars$/);
+    });
+
+    it("renders count-only block headers in policy-only mode", async () => {
+      const config = makeConfig({
+        memoryMode: "policy-only",
+        memoryCharLimit: 50,
+      });
+      const projectDir = path.join(MEMORY_DIR, "project");
+      const projectMemoryPath = path.join(projectDir, MEMORY_FILE);
+      await writeRaw(memoryPath, `${TEST_MARKER} policy-only block ${"x".repeat(100)}`);
+      await writeRaw(userPath, `${TEST_MARKER} policy-only user block`);
+      await writeRaw(projectMemoryPath, `${TEST_MARKER} policy-only project block ${"x".repeat(100)}`);
+
+      // Snapshot-backed rendering: the block reflects what was on disk at load.
+      const store = new MemoryStore(config);
+      const projectStore = new MemoryStore({ ...config, memoryDir: projectDir });
+      await store.loadFromDisk();
+      await projectStore.loadFromDisk();
+
+      const block = store.formatForSystemPrompt();
+      assert.match(block, /MEMORY \(your personal notes\) \[\d+ chars\]/);
+      assert.match(block, /USER PROFILE \(who the user is\) \[\d+ chars\]/);
+      assert.ok(!block.includes("%"), "policy-only block headers should not render a percentage");
+
+      const projectBlock = projectStore.formatProjectBlock("demo-project");
+      assert.match(projectBlock, /PROJECT MEMORY: demo-project \[\d+ chars\]/);
+      assert.ok(!projectBlock.includes("%"), "policy-only project header should not render a percentage");
+
+      await removeFile(memoryPath);
+      await removeFile(userPath);
+      await removeFile(projectMemoryPath);
+    });
+
+    it("keeps percentage block headers when the cap is enforced", async () => {
+      await writeRaw(memoryPath, `${TEST_MARKER} enforced block`);
+      await writeRaw(userPath, "");
+      const store = new MemoryStore(makeConfig({ memoryCharLimit: 5000 }));
+      await store.loadFromDisk();
+
+      const block = store.formatForSystemPrompt();
+      assert.match(block, /MEMORY \(your personal notes\) \[\d+% — \d+\/5000 chars\]/);
+
+      await removeFile(memoryPath);
+    });
+
 
     it("rejects without consolidation when memoryOverflowStrategy is reject", async () => {
       let consolidatorCalled = false;

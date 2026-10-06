@@ -49,6 +49,22 @@ describe("loadConfig", () => {
     assert.strictEqual(config.quickCheckOnOpen, true);
   });
 
+  it("honors consolidationChunkChars", () => {
+    fs.mkdirSync(path.dirname(TEST_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(TEST_CONFIG_PATH, JSON.stringify({ consolidationChunkChars: 6000 }));
+    assert.strictEqual(loadConfig(TEST_CONFIG_PATH).consolidationChunkChars, 6000);
+  });
+
+  it("ignores out-of-range consolidationChunkChars values", () => {
+    fs.mkdirSync(path.dirname(TEST_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(TEST_CONFIG_PATH, JSON.stringify({ consolidationChunkChars: 100 }));
+    assert.strictEqual(
+      loadConfig(TEST_CONFIG_PATH).consolidationChunkChars,
+      4000,
+      "below the 500-char floor falls back to the default",
+    );
+  });
+
   it("honors a configured consolidationTimeoutMs, warning only when it is below the default", () => {
     fs.mkdirSync(path.dirname(TEST_CONFIG_PATH), { recursive: true });
     const warnings: string[] = [];
@@ -531,5 +547,38 @@ describe("loadConfig", () => {
     assert.strictEqual(config.correctionWeakPatterns, undefined);
     assert.strictEqual(config.correctionNegativePatterns, undefined);
     assert.strictEqual(config.correctionDirectiveWords, undefined);
+  });
+
+  it("defaults usage-hit tracking and consolidation usage signals to enabled", () => {
+    fs.mkdirSync(path.dirname(TEST_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(TEST_CONFIG_PATH, JSON.stringify({}));
+
+    const config = loadConfig(TEST_CONFIG_PATH);
+    assert.strictEqual(config.usageHitTrackingEnabled, true);
+    assert.strictEqual(config.consolidationUsageSignals, true);
+  });
+
+  it("accepts usageHitTrackingEnabled and consolidationUsageSignals kill-switches", () => {
+    fs.mkdirSync(path.dirname(TEST_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(TEST_CONFIG_PATH, JSON.stringify({
+      usageHitTrackingEnabled: false,
+      consolidationUsageSignals: false,
+    }));
+
+    const config = loadConfig(TEST_CONFIG_PATH);
+    assert.strictEqual(config.usageHitTrackingEnabled, false);
+    assert.strictEqual(config.consolidationUsageSignals, false);
+  });
+
+  it("ignores non-boolean usage tracking values", () => {
+    fs.mkdirSync(path.dirname(TEST_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(TEST_CONFIG_PATH, JSON.stringify({
+      usageHitTrackingEnabled: "yes",
+      consolidationUsageSignals: 1,
+    }));
+
+    const config = loadConfig(TEST_CONFIG_PATH);
+    assert.strictEqual(config.usageHitTrackingEnabled, true);
+    assert.strictEqual(config.consolidationUsageSignals, true);
   });
 });
