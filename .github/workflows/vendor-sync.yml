@@ -81,20 +81,6 @@ jobs:
           node scripts/vendor-sync-llm.mjs "${args[@]}"
           cat .vendor-sync/report.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload analysis artifact
-        if: always() && steps.analyze.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: vendor-sync-analysis
-          path: |
-            .vendor-sync/report.md
-            .vendor-sync/verdict.json
-            .vendor-sync/prompts.md
-            .vendor-sync/merge.log
-            .vendor-sync/check.log
-          retention-days: 30
-          if-no-files-found: ignore
-
       # ---- 应用阶段：仅 overall 为 adopt（全包并入）或 mixed（只并入 adopt 的包） ----
 
       - name: Subtree pull adopted packages
@@ -112,7 +98,8 @@ jobs:
           const v = JSON.parse(fs.readFileSync(".vendor-sync/verdict.json", "utf8"));
           for (const p of Object.values(v.packages)) {
             if (p.status !== "changed" || p.verdict !== "adopt") continue;
-            const summary = String(p.summary || "").replace(/[^\x20-\x7e]/g, " ").split("`").join(" ").slice(0, 200);
+            // 只清洗控制字符（含 tab/换行）保证 tsv 单行；保留中文与反引号，提交信息可读
+            const summary = String(p.summary || "").replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 400);
             // resolvedRef 可能是本地 remote-tracking 名（up-x/main），subtree pull 会把它当
             // 远端 refspec 去 fetch，远端不存在同名 ref。tag 跟踪时 resolvedRef 是 tag 名（远端存在），
             // 其余情况退回分支名，两者都是合法的远端 refspec。
@@ -121,20 +108,26 @@ jobs:
             console.log([p.name, p.remote, ref, p.prefix, summary].join("\t"));
           }' > .vendor-sync/adopt.tsv
           : > .vendor-sync/merge.log
+          failed=""
           while IFS=$'\t' read -r name remote ref prefix summary; do
             [ -n "$name" ] || continue
             echo "=== subtree pull $name ($ref)" | tee -a .vendor-sync/merge.log
+            # git subtree 的 -m 是覆盖式赋值，多个 -m 只留最后一个；
+            # 主题与 LLM 摘要必须写在同一个 -m 里（首行=主题，空行后=正文）
             if git subtree pull --prefix="$prefix" "$remote" "$ref" \
-              -m "subtree: sync $name from $ref" \
-              -m "LLM: $summary" 2>&1 | tee -a .vendor-sync/merge.log; then
+              -m "subtree: sync $name from $ref
+
+LLM: $summary" 2>&1 | tee -a .vendor-sync/merge.log; then
               echo "[ok] $name 已合并" | tee -a .vendor-sync/merge.log
             else
               git merge --abort 2>/dev/null || true
-              echo "[fail] $name 合并冲突/失败，已中止 merge（本仓未被改动）" | tee -a .vendor-sync/merge.log
-              exit 42
+              echo "[fail] $name 合并冲突/失败，已中止该包 merge，继续处理其余包" | tee -a .vendor-sync/merge.log
+              failed="$failed $name"
             fi
           done < .vendor-sync/adopt.tsv
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
           echo "合并完成:" && git log --oneline origin/main..HEAD
+          # 不在此处 exit 42：已合并成功的包继续走 check+push，避免单包冲突连坐阻塞全部同步
 
       - name: Run repository checks
         id: check
@@ -165,6 +158,21 @@ jobs:
           echo "已推送 main:"
           git log --oneline origin/main~1..HEAD 2>/dev/null || git log --oneline -3
 
+      # artifact 放在 merge/check 之后上传，否则 merge.log/check.log 还不存在
+      - name: Upload analysis artifact
+        if: always() && steps.analyze.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: vendor-sync-analysis
+          path: |
+            .vendor-sync/report.md
+            .vendor-sync/verdict.json
+            .vendor-sync/prompts.md
+            .vendor-sync/merge.log
+            .vendor-sync/check.log
+          retention-days: 30
+          if-no-files-found: ignore
+
       # ---- 收尾：成功则关闭历史 issue；有任何 hold/manual/失败则汇总发 issue ----
 
       - name: Report and manage follow-up issue
@@ -175,6 +183,7 @@ jobs:
           set -euo pipefail
           overall="$(node -p 'JSON.parse(require("node:fs").readFileSync(".vendor-sync/verdict.json","utf8")).overall')"
           merge="${{ steps.merge.outcome }}"
+          if [ -n "${{ steps.merge.outputs.failed }}" ]; then merge="failure"; fi
           check="${{ steps.check.outcome }}"
           push="${{ steps.push.outcome }}"
           echo "overall=$overall merge=$merge check=$check push=$push"
@@ -190,7 +199,8 @@ jobs:
             echo "全绿自动同步完成"
             if [ -n "$open_issue" ]; then
               printf '本轮 vendor-sync 已自动完成同步并推送 main，关闭本 issue。\n\n%s\n' "$(git log --oneline origin/main~3..HEAD 2>/dev/null | head -5)" \
-                | gh issue close "$open_issue" --comment-file - || true
+                | gh issue close "$open_issue" --comment-file - 2>/dev/null \
+                || gh issue close "$open_issue" --comment "本轮 vendor-sync 已自动完成同步并推送 main，关闭本 issue。$(git log --oneline origin/main~3..HEAD 2>/dev/null | head -5 | sed 's/^/; /')" || true
             fi
             exit 0
           fi
@@ -233,7 +243,7 @@ jobs:
           fi
 
       - name: Fail loudly if apply path failed
-        if: always() && (steps.merge.outcome == 'failure' || steps.check.outcome == 'failure' || steps.push.outcome == 'failure')
+        if: always() && (steps.merge.outcome == 'failure' || steps.check.outcome == 'failure' || steps.push.outcome == 'failure' || steps.merge.outputs.failed != '')
         run: |
           echo "vendor-sync 应用阶段失败，详见上方日志与 issue。"
           exit 1

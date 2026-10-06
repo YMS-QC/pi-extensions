@@ -244,6 +244,19 @@ function buildUserPrompt(p) {
 
 async function callLlm(base, key, model, messages) {
 	const endpoint = `${base.replace(/\/+$/, "")}/chat/completions`;
+	// DeepSeek v4 系 thinking 默认开启且 CoT 计入 max_tokens（默认 effort=high），
+	// 固定 8000 预算下大 diff 会把正文截断在半截 JSON（finish_reason=length 但无闭括号，
+	// 表现为“输出中未找到 JSON 对象”）。对 DeepSeek 显式关思考 + JSON 输出；其他
+	// OpenAI 兼容后端不传这两个字段，靠 finish_reason 检查与重试兑底。
+	const isDeepSeek = /deepseek/i.test(base);
+	const requestBody = {
+		model,
+		messages,
+		temperature: 0.1,
+		max_tokens: 16000,
+		...(isDeepSeek ? { thinking: { type: "disabled" } } : {}),
+		...(isDeepSeek ? { response_format: { type: "json_object" } } : {}),
+	};
 	let lastError;
 	for (let attempt = 0; attempt <= LLM_RETRIES; attempt++) {
 		const controller = new AbortController();
@@ -252,14 +265,23 @@ async function callLlm(base, key, model, messages) {
 			const res = await fetch(endpoint, {
 				method: "POST",
 				headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-				body: JSON.stringify({ model, messages, temperature: 0.1, max_tokens: 8000 }),
+				body: JSON.stringify(requestBody),
 				signal: controller.signal,
 			});
 			if (!res.ok) {
 				throw new Error(`LLM HTTP ${res.status}: ${(await res.text()).slice(0, 400)}`);
 			}
 			const data = await res.json();
-			const content = data?.choices?.[0]?.message?.content;
+			const choice = data?.choices?.[0];
+			if (choice?.finish_reason === "length") {
+				const reasoningTokens = data?.usage?.completion_tokens_details?.reasoning_tokens;
+				throw new Error(
+					`LLM 输出被 max_tokens 截断 (finish_reason=length${
+						reasoningTokens ? `, reasoning_tokens=${reasoningTokens}` : ""
+					})，请复查 max_tokens 与 thinking 设置`,
+				);
+			}
+			const content = choice?.message?.content;
 			if (typeof content !== "string" || !content.trim()) {
 				throw new Error("LLM 返回空内容");
 			}
