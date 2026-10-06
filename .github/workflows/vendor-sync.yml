@@ -111,11 +111,10 @@ jobs:
             [ -n "$name" ] || continue
             echo "=== subtree pull $name ($ref)" | tee -a .vendor-sync/merge.log
             # git subtree 的 -m 是覆盖式赋值，多个 -m 只留最后一个；
-            # 主题与 LLM 摘要必须写在同一个 -m 里（首行=主题，空行后=正文）
+            # 主题与 LLM 摘要必须写在同一个 -m 里（用 $'\n' 拼接，YAML 块内不能出现列 0 续行）
+            msg="subtree: sync $name from $ref"$'\n\n'"LLM: $summary"
             if git subtree pull --prefix="$prefix" "$remote" "$ref" \
-              -m "subtree: sync $name from $ref
-
-LLM: $summary" 2>&1 | tee -a .vendor-sync/merge.log; then
+              -m "$msg" 2>&1 | tee -a .vendor-sync/merge.log; then
               echo "[ok] $name 已合并" | tee -a .vendor-sync/merge.log
             else
               git merge --abort 2>/dev/null || true
