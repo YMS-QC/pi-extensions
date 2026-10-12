@@ -4,7 +4,7 @@
  * See PLAN.md → "Hermes Source File Reference Map" for source lines.
  *
  * Default transport: in-process complete() side-channel (preserves parent LLM cache).
- * Fallback: pi.exec("pi", ["-p", ...]) subprocess when direct path is unavailable.
+ * Fallback when the direct transport is unavailable or fails: a `pi -p` child built by `execChildPrompt` in `pi-child-process.ts`, behind the process-tree watchdog.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";

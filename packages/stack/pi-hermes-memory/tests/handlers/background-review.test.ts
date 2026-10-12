@@ -9,6 +9,7 @@ import {
   type BackgroundReviewDeps,
 } from "../../src/handlers/background-review.js";
 import { resolveWatchedChildPiInvocation } from "../../src/handlers/pi-child-process.js";
+import { MEMORY_WRITE_TOOL_NAMES } from "../../src/constants.js";
 import type { DirectReviewResult } from "../../src/handlers/review-memory-ops.js";
 import type { MemoryConfig } from "../../src/types.js";
 
@@ -795,6 +796,19 @@ describe("setupBackgroundReview", () => {
     assert.deepStrictEqual(logicalChildArgs(0).slice(0, 5), [
       "-p", "--no-session", "--model", "local-llama/local-9b", "--no-extensions",
     ]);
+    // Regression guard for #275. pi keeps the last --tools or --exclude-tools
+    // it parses, so a duplicate would silently replace the earlier value.
+    const fallbackArgs = logicalChildArgs(0);
+    assert.strictEqual(fallbackArgs.filter((arg) => arg === "--tools").length, 1);
+    assert.strictEqual(
+      fallbackArgs[fallbackArgs.indexOf("--tools") + 1],
+      MEMORY_WRITE_TOOL_NAMES.join(","),
+    );
+    assert.strictEqual(fallbackArgs.filter((arg) => arg === "--exclude-tools").length, 1);
+    assert.strictEqual(
+      fallbackArgs[fallbackArgs.indexOf("--exclude-tools") + 1],
+      "mcp__*",
+    );
     assert.deepStrictEqual(execCalls[0][2], {
       cwd: "/tmp/local-session",
       timeout: 125000,
